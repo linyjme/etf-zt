@@ -1,0 +1,40 @@
+{
+  "watchlist": [
+    {
+      "symbol": "510300",
+      "name": "沪深300",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "510500",
+      "name": "中证500",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "563360",
+      "name": "A500",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "512100",
+      "name": "中证1000",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159915",
+      "name": "创业板",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "588000",
+      "name": "科创50",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    }
+  ]
+}
