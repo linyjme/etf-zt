@@ -10,6 +10,8 @@ import threading
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
+from .constants import DEFAULT_GRID_WIDTH_PCT
+
 
 class QuoteHistoryStore:
     def __init__(self, path: Path):
@@ -474,7 +476,7 @@ def load_watchlist(path: Path) -> tuple[WatchItem, ...]:
         name = str(raw_item.get("name") or symbol).strip()
         if not symbol or symbol in symbols:
             raise MarketDataError(f"监控代码为空或重复: {symbol}")
-        grid_width = raw_item.get("grid_width_pct", 0.02)
+        grid_width = raw_item.get("grid_width_pct", DEFAULT_GRID_WIDTH_PCT)
         if isinstance(grid_width, bool) or not isinstance(grid_width, (int, float)):
             raise MarketDataError(f"{symbol}.grid_width_pct 必须是数字")
         grid_width_pct = float(grid_width)

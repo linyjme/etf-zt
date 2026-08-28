@@ -13,6 +13,7 @@ import time
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from .constants import DEFAULT_GRID_WIDTH_PCT
 from .t_monitor import AlertHistoryStore, JsonQuoteAdapter, QuoteHistoryStore, TMonitorEngine, load_watchlist, snapshot_to_dict
 
 
@@ -189,7 +190,7 @@ class MonitorApplication:
         item = {
             "symbol": normalized_symbol,
             "name": normalized_name or normalized_symbol,
-            "grid_width_pct": 0.02,
+            "grid_width_pct": DEFAULT_GRID_WIDTH_PCT,
             "enabled": True,
         }
         with self.watchlist_lock:
