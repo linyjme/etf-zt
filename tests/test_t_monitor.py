@@ -195,7 +195,7 @@ class WatchlistTests(unittest.TestCase):
             ]), encoding="utf-8")
             items = load_watchlist(path)
         self.assertEqual(items[0].grid_width_pct, 0.015)
-        self.assertEqual(items[1].grid_width_pct, 0.02)
+        self.assertEqual(items[1].grid_width_pct, 0.002)
 
     def test_rejects_invalid_grid_width(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -519,7 +519,7 @@ class MonitorWebTests(unittest.TestCase):
             "510300", "159915",
         ])
         self.assertEqual(stored["watchlist"][1]["name"], "创业板ETF")
-        self.assertEqual(stored["watchlist"][1]["grid_width_pct"], 0.02)
+        self.assertEqual(stored["watchlist"][1]["grid_width_pct"], 0.002)
         self.assertTrue(stored["watchlist"][1]["enabled"])
         self.assertEqual(list(self.watchlist.parent.glob(".*.tmp")), [])
 
