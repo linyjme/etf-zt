@@ -4,6 +4,7 @@ import inspect
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -23,6 +24,25 @@ from tests.regime_fixtures import confirmed_range_quote
 
 
 NOW = "2026-08-28T10:00:00+08:00"
+
+
+def run_page_helpers(body: str) -> object:
+    start_marker = "/* PAGE_HELPERS_START */"
+    end_marker = "/* PAGE_HELPERS_END */"
+    if start_marker not in PAGE or end_marker not in PAGE:
+        raise AssertionError("PAGE does not expose its pure JavaScript helpers")
+    helpers = PAGE.split(start_marker, 1)[1].split(end_marker, 1)[0]
+    source = (
+        "const STALE_AFTER_MS=60000,DEFAULT_GRID_WIDTH_PCT=0.002;\n"
+        + helpers + "\n" + body
+    )
+    completed = subprocess.run(
+        ["node", "-"], input=source, text=True, encoding="utf-8",
+        capture_output=True, check=False,
+    )
+    if completed.returncode:
+        raise AssertionError(completed.stderr)
+    return json.loads(completed.stdout)
 
 
 def quote(
@@ -784,6 +804,82 @@ class MonitorWebTests(unittest.TestCase):
         self.assertIn("白线实时价，黄线均价", PAGE)
         self.assertIn("item.previous_close", PAGE)
 
+    def test_page_market_state_hard_gates_candidates_and_connection_status(self) -> None:
+        cases = run_page_helpers(r"""
+const timestamp='2026-08-28T10:00:00+08:00',now=Date.parse('2026-08-28T10:00:30+08:00');
+const rows=[
+  {health_status:'REALTIME',status:'OK',action:'BUY_CANDIDATE',timestamp},
+  {health_status:'DELAYED',status:'OK',action:'BUY_CANDIDATE',timestamp},
+  {health_status:'OUTAGE',status:'OK',action:'SELL_CANDIDATE',timestamp},
+  {health_status:'LUNCH_BREAK',status:'OK',action:'BUY_CANDIDATE',timestamp},
+  {health_status:'CLOSED',status:'OK',action:'SELL_CANDIDATE',timestamp},
+  {health_status:'OUTAGE',status:'MISSING_QUOTE',action:'BUY_CANDIDATE',timestamp},
+];
+console.log(JSON.stringify(rows.map(item=>marketPresentation(item,now))));
+""")
+        self.assertTrue(cases[0]["candidate"])
+        self.assertEqual((cases[0]["statusText"], cases[0]["dotClass"]), ("实时监控中", "live"))
+        expected = (
+            ("行情延迟", "delayed"),
+            ("行情断流", "outage"),
+            ("午间休市", "paused"),
+            ("已收盘", "closed"),
+            ("行情缺失", "missing"),
+        )
+        for state, status in zip(cases[1:], expected):
+            self.assertFalse(state["candidate"])
+            self.assertEqual(state["displayLabel"], "偏离观察")
+            self.assertEqual((state["statusText"], state["dotClass"]), status)
+
+    def test_page_grid_bands_follow_each_points_vwap_and_keep_previous_close_flat(self) -> None:
+        bands = run_page_helpers(r"""
+const points=[{average_price:100},{average_price:102}];
+console.log(JSON.stringify({
+  upper3:points.map(point=>gridBandValue(point,0.002,3,1)),
+  lower5:points.map(point=>gridBandValue(point,0.002,5,-1)),
+}));
+""")
+        self.assertEqual(bands["upper3"], [100.6, 102.612])
+        self.assertEqual(bands["lower5"], [99, 100.98])
+        self.assertIn("pathValue(point=>gridBandValue(point,grid,3,1))", PAGE)
+        self.assertIn("pathValue(point=>gridBandValue(point,grid,5,-1))", PAGE)
+        self.assertIn("horizontal('zero-line',base,'昨收')", PAGE)
+        self.assertNotIn("horizontal('three-grid'", PAGE)
+        self.assertNotIn("horizontal('five-grid'", PAGE)
+
+    def test_page_quote_updates_commit_atomically_after_sequence_and_revision_checks(self) -> None:
+        state = run_page_helpers(r"""
+let selectedSymbol='510300',quoteRequestSequence=1;
+const quotePoints=new Map([['510300',new Map([['old',{timestamp:'old',price:1}]])]]),quoteRevisions=new Map([['510300',3]]);
+const pending=[];
+global.fetch=url=>new Promise(resolve=>pending.push({url,resolve}));
+(async()=>{
+  const older=loadQuoteUpdates('510300',3,1);
+  quoteRequestSequence=2;
+  const newer=loadQuoteUpdates('510300',3,2);
+  pending[1].resolve({ok:true,json:async()=>({symbol:'510300',revision:5,reset:true,upserts:[{timestamp:'new',price:5}]})});
+  await newer;
+  pending[0].resolve({ok:true,json:async()=>({symbol:'510300',revision:4,reset:false,upserts:[{timestamp:'stale',price:4}]})});
+  await older;
+  quoteRequestSequence=3;
+  const regressed=loadQuoteUpdates('510300',5,3);
+  pending[2].resolve({ok:true,json:async()=>({symbol:'510300',revision:4,reset:false,upserts:[{timestamp:'regressed',price:4}]})});
+  await regressed;
+  quoteRequestSequence=4;
+  const mismatched=loadQuoteUpdates('510300',5,4);
+  pending[3].resolve({ok:true,json:async()=>({symbol:'159915',revision:6,reset:true,upserts:[{timestamp:'wrong',price:6}]})});
+  let mismatchRejected=false;try{await mismatched}catch(error){mismatchRejected=true}
+  console.log(JSON.stringify({
+    revision:quoteRevisions.get('510300'),
+    timestamps:[...quotePoints.get('510300').keys()],
+    mismatchRejected,
+  }));
+})().catch(error=>{console.error(error);process.exitCode=1});
+""")
+        self.assertEqual(state["revision"], 5)
+        self.assertEqual(state["timestamps"], ["new"])
+        self.assertTrue(state["mismatchRejected"])
+
     def test_page_is_extracted_and_uses_candidate_language_with_evidence(self) -> None:
         self.assertIsNotNone(importlib.util.find_spec("etf_rotation.t_page"))
         self.assertNotIn("黄金窗口", PAGE)
@@ -805,15 +901,16 @@ class MonitorWebTests(unittest.TestCase):
         self.assertIn('class="x-axis"', PAGE)
         self.assertIn('class="y-axis"', PAGE)
         self.assertIn('id="chart-tooltip"', PAGE)
-        self.assertIn("three_grid", PAGE)
-        self.assertIn("five_grid", PAGE)
+        self.assertIn('class="three-grid"', PAGE)
+        self.assertIn('class="five-grid"', PAGE)
+        self.assertIn("gridBandValue", PAGE)
         self.assertIn("five labeled y ticks", PAGE)
         self.assertIn("sessionAwareTicks", PAGE)
         self.assertIn("/api/quotes?symbol=", PAGE)
         self.assertIn("loadQuoteUpdates", PAGE)
         self.assertIn("point.timestamp", PAGE)
         self.assertIn("payload.reset", PAGE)
-        self.assertIn("quotePoints.delete(symbol)", PAGE)
+        self.assertIn("payload.reset?new Map():new Map(current||[])", PAGE)
         self.assertIn("source.addEventListener('summary'", PAGE)
         self.assertIn("source.addEventListener('delta'", PAGE)
         self.assertIn("source.addEventListener('reset'", PAGE)
@@ -852,7 +949,7 @@ class MonitorWebTests(unittest.TestCase):
         self.assertIn("<h3>做T回测</h3>", PAGE)
 
     def test_page_reloads_daily_history_after_every_detail_render(self) -> None:
-        self.assertIn("dot.classList.toggle('stale',stale);loadAlerts();loadDailyHistory()", PAGE)
+        self.assertIn("updateConnection(state);loadAlerts();loadDailyHistory()", PAGE)
         self.assertIn("alertHistoryCache.get(item.symbol)", PAGE)
         self.assertIn("/api/alerts?symbol=${encodeURIComponent(symbol)}&limit=30", PAGE)
         self.assertIn("sequence!==alertRequestSequence||symbol!==selectedSymbol", PAGE)
@@ -862,9 +959,10 @@ class MonitorWebTests(unittest.TestCase):
 
     def test_page_highlights_fresh_candidates_with_neutral_language_only(self) -> None:
         self.assertIn("item.action==='BUY_CANDIDATE'||item.action==='SELL_CANDIDATE'", PAGE)
-        self.assertIn("candidate=!stale", PAGE)
+        self.assertIn("healthKey==='REALTIME'", PAGE)
+        self.assertIn("candidate=realtime&&!stale&&candidateAction", PAGE)
         self.assertIn("candidateAction=item.action==='BUY_CANDIDATE'||item.action==='SELL_CANDIDATE'", PAGE)
-        self.assertIn("displayLabel=candidate?'做T候选':candidateAction||item.action==='DEVIATION_OBSERVE'?'偏离观察'", PAGE)
+        self.assertIn("displayLabel:candidate?'做T候选':candidateAction||item.action==='DEVIATION_OBSERVE'?'偏离观察'", PAGE)
         self.assertIn("做T候选", PAGE)
         self.assertIn("偏离观察", PAGE)
         self.assertNotIn("做T黄金窗口", PAGE)
@@ -1151,11 +1249,11 @@ class MonitorWebTests(unittest.TestCase):
 
     def test_page_marks_each_stale_market_time_and_shows_t_backtest(self) -> None:
         self.assertIn("const STALE_AFTER_MS=60000", PAGE)
-        self.assertIn("refreshedAt.getTime()-marketAt.getTime()>STALE_AFTER_MS", PAGE)
+        self.assertIn("age<0||age>STALE_AFTER_MS", PAGE)
         self.assertIn("--stale:#ff3b30", PAGE)
         self.assertIn("当前行情数据已过期，请勿按对应价格操作", PAGE)
-        self.assertIn("staleBanner.classList.toggle('visible',stale)", PAGE)
-        self.assertIn("statusNode.textContent=stale?'当前行情已过期':'实时监控中'", PAGE)
+        self.assertIn("staleBanner.classList.toggle('visible',Boolean(state.unsafe))", PAGE)
+        self.assertIn("updateConnection(state)", PAGE)
         self.assertIn("/api/t-backtest", PAGE)
         self.assertIn("<h3>做T回测</h3>", PAGE)
         self.assertIn("backtestSummary(item.symbol)", PAGE)
