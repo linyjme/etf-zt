@@ -634,6 +634,13 @@ class RuntimeTests(unittest.TestCase):
             len(initial["upserts"]),
             len(valid_completed_quote_payload()["quotes"][0]["points"]),
         )
+        self.assertTrue(all(
+            point["schema_version"] == 3
+            and point["trading_date"] == "2026-08-28"
+            and point["observed_at"]
+            and point["is_complete"] is True
+            for point in initial["upserts"]
+        ))
 
         revised = valid_completed_quote_payload()
         latest = revised["quotes"][0]["points"][-1]
@@ -649,6 +656,33 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(delta["upserts"]), 1)
         self.assertEqual(delta["upserts"][0]["timestamp"], latest["timestamp"])
         self.assertEqual(delta["upserts"][0]["price"], 9.931)
+
+    def test_quote_cursor_excludes_the_observation_current_minute(self) -> None:
+        payload = valid_completed_quote_payload()
+        quote = payload["quotes"][0]
+        current_timestamp = quote["observed_at"]
+        quote["points"].append({
+            "timestamp": current_timestamp,
+            "price": quote["price"],
+            "average_price": quote["average_price"],
+            "open": quote["price"],
+            "high": quote["price"],
+            "low": quote["price"],
+            "volume": 100.0,
+            "amount": quote["price"] * 10_000.0,
+        })
+        quote["timestamp"] = current_timestamp
+        collector = StaticCollector(payload)
+        app = self.make_runtime_fixture(collector)
+
+        self.assertTrue(app.refresh_once())
+        result = app.quotes("510300", since=0)
+
+        self.assertNotIn(
+            current_timestamp,
+            {point["timestamp"] for point in result["upserts"]},
+        )
+        self.assertTrue(all(point["is_complete"] for point in result["upserts"]))
 
     def test_since_zero_is_an_initializing_full_reset_at_revision_zero_and_later(self) -> None:
         payload = valid_completed_quote_payload()

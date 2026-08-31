@@ -1112,7 +1112,12 @@ console.log(JSON.stringify({failedState,quotesOnly,summarized,sseRecovered,pollR
             quotes = json.loads(response.read())
         self.assertEqual(quotes["symbol"], "510300")
         self.assertEqual(quotes["revision"], snapshot["revision"])
-        self.assertEqual(len(quotes["upserts"]), 2)
+        self.assertEqual(len(quotes["upserts"]), 1)
+        self.assertEqual(quotes["upserts"][0]["timestamp"], "2026-08-28T09:30:00+08:00")
+        self.assertEqual(quotes["upserts"][0]["schema_version"], 3)
+        self.assertEqual(quotes["upserts"][0]["trading_date"], "2026-08-28")
+        self.assertEqual(quotes["upserts"][0]["observed_at"], "2026-08-28T10:00:05+08:00")
+        self.assertTrue(quotes["upserts"][0]["is_complete"])
 
     def test_quotes_endpoint_strictly_validates_symbol_and_cursor(self) -> None:
         invalid_queries = (

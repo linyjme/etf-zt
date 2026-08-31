@@ -9,6 +9,7 @@ from pathlib import Path
 import threading
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from .constants import DEFAULT_GRID_WIDTH_PCT
 from .regime import RegimeDetector
@@ -21,6 +22,7 @@ from .t_strategy import (
 
 
 _CURRENT_CANDIDATE_ACTIONS = frozenset({"BUY_CANDIDATE", "SELL_CANDIDATE"})
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def _is_current_candidate(item: object) -> bool:
@@ -752,7 +754,13 @@ def snapshot_to_dict(snapshot: MonitorSnapshot) -> dict[str, Any]:
                 "blocked_reasons": list(signal.blocked_reasons),
                 "points": [
                     {
-                        "timestamp": point.timestamp.isoformat(),
+                        "schema_version": 3,
+                        "trading_date": point.timestamp.astimezone(_SHANGHAI).date().isoformat(),
+                        "timestamp": point.timestamp.astimezone(_SHANGHAI).isoformat(),
+                        "observed_at": snapshot.quotes[signal.symbol].observed_at.astimezone(_SHANGHAI).isoformat(),
+                        "is_complete": True,
+                        "source": snapshot.quotes[signal.symbol].source,
+                        "previous_close": snapshot.quotes[signal.symbol].previous_close,
                         "price": point.price,
                         "average_price": point.average_price,
                         "open": point.open,
@@ -762,6 +770,8 @@ def snapshot_to_dict(snapshot: MonitorSnapshot) -> dict[str, Any]:
                         "amount": point.amount,
                     }
                     for point in snapshot.quotes[signal.symbol].points
+                    if snapshot.quotes[signal.symbol].observed_at
+                    >= point.timestamp + timedelta(minutes=1)
                 ] if signal.symbol in snapshot.quotes else [],
             }
             for signal in snapshot.signals

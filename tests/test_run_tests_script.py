@@ -7,6 +7,19 @@ import unittest
 
 
 class RunTestsScriptTests(unittest.TestCase):
+    def test_start_monitor_probes_compatible_runtime_before_writing_pid(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1] / "scripts" / "start-monitor.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("-3.14", script)
+        self.assertIn("sys.version_info < (3, 12)", script)
+        self.assertIn("Python 3.12 or newer runtime not found", script)
+        self.assertIn("if ($process.HasExited)", script)
+        self.assertLess(
+            script.index("if ($process.HasExited)"),
+            script.index("Set-Content -LiteralPath"),
+        )
+
     def test_rejects_noop_application_as_python_runtime(self) -> None:
         powershell = shutil.which("pwsh") or shutil.which("powershell")
         self.assertIsNotNone(powershell, "PowerShell is required to test run-tests.ps1")
