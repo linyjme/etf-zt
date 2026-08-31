@@ -121,16 +121,26 @@ class Trends2QuoteCollector:
         symbols = [item.symbol for item in enabled]
         if len(set(symbols)) != len(symbols):
             raise MarketDataError("监控列表存在重复证券代码")
+        observed_at = self.now()
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise MarketDataError("采集时间必须带时区")
         records = []
         urls = []
         for item in enabled:
             url = self._url(item.symbol)
             urls.append(url)
             records.append(self._fetch(item, url))
-        observed_at = self.now()
-        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
-            raise MarketDataError("采集时间必须带时区")
         for record in records:
+            safe_points = [
+                point for point in record["points"]
+                if datetime.fromisoformat(point["timestamp"]) <= observed_at
+            ]
+            if not safe_points:
+                raise MarketDataError(f"{record['symbol']}没有不晚于观测时间的分钟点")
+            record["points"] = safe_points
+            record["price"] = safe_points[-1]["price"]
+            record["average_price"] = safe_points[-1]["average_price"]
+            record["timestamp"] = safe_points[-1]["timestamp"]
             record["observed_at"] = observed_at.isoformat()
             record["collected_at"] = observed_at.isoformat()
         quotes = JsonQuoteAdapter().parse({"quotes": records})

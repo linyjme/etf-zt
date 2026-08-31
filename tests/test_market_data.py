@@ -279,7 +279,7 @@ class QuoteObservationTests(unittest.TestCase):
             self.assertEqual(record["collected_at"], payload["observed_at"])
             self.assertEqual(record["source"], SOURCE_NAME)
 
-    def test_collector_observes_batch_after_cross_minute_requests(self) -> None:
+    def test_collector_preserves_batch_start_boundary_across_minute_requests(self) -> None:
         clock = {"now": datetime.fromisoformat("2026-08-28T10:00:30+08:00")}
         request_count = 0
 
@@ -288,9 +288,9 @@ class QuoteObservationTests(unittest.TestCase):
             request_count += 1
             symbol = "510300" if "1.510300" in request.full_url else "159915"
             market = 1 if symbol == "510300" else 0
-            minute = "2026-08-28 10:00"
+            trends = ["2026-08-28 10:00,10.0,10.0,10.0,10.0,100,100000,10.0"]
             if request_count == 2:
-                minute = "2026-08-28 10:01"
+                trends.append("2026-08-28 10:01,10.0,10.0,10.0,10.0,100,100000,10.0")
                 clock["now"] = datetime.fromisoformat("2026-08-28T10:01:05+08:00")
             return json.dumps({
                 "rc": 0,
@@ -299,7 +299,7 @@ class QuoteObservationTests(unittest.TestCase):
                     "market": market,
                     "name": symbol,
                     "preClose": 10.0,
-                    "trends": [f"{minute},10.0,10.0,10.0,10.0,100,100000,10.0"],
+                    "trends": trends,
                 },
             }).encode("utf-8")
 
@@ -312,13 +312,15 @@ class QuoteObservationTests(unittest.TestCase):
         ))
 
         observed_at = datetime.fromisoformat(payload["observed_at"])
-        self.assertEqual(observed_at, datetime.fromisoformat("2026-08-28T10:01:05+08:00"))
+        self.assertEqual(observed_at, datetime.fromisoformat("2026-08-28T10:00:30+08:00"))
         self.assertEqual({record["observed_at"] for record in payload["quotes"]}, {payload["observed_at"]})
         self.assertTrue(all(
-            datetime.fromisoformat(point_value["timestamp"]) <= observed_at
+            [point_value["timestamp"] for point_value in record["points"]]
+            == ["2026-08-28T10:00:00+08:00"]
             for record in payload["quotes"]
-            for point_value in record["points"]
         ))
+        quotes = JsonQuoteAdapter().parse(payload)
+        self.assertTrue(all(not finalized_points(quote.points, quote.observed_at) for quote in quotes.values()))
 
     def test_collector_rejects_a_minute_later_than_batch_observation(self) -> None:
         def transport(request: Request, timeout: float) -> bytes:
