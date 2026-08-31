@@ -119,7 +119,10 @@ class MonitorApplication:
                     quote.points[index - 1].timestamp, quote.points[:index],
                     quote.observed_at, quote.source,
                 )
-                signal = TMonitorEngine().evaluate((item,), {quote.symbol: decision_quote}).signals[0]
+                signal = TMonitorEngine().evaluate(
+                    (item,), {quote.symbol: decision_quote},
+                    generated_at=point.timestamp,
+                ).signals[0]
                 if signal.action == "BUY_CANDIDATE" and position is None:
                     shares = int(cash / (point.price * (1 + constants.SLIPPAGE_RATE) * (1 + constants.BUY_COMMISSION_RATE)) / 100) * 100
                     if shares:

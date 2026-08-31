@@ -866,6 +866,39 @@ class MonitorWebTests(unittest.TestCase):
         self.assertNotIn('signal.action == "BUY_REMINDER"', source)
         self.assertNotIn('signal.action == "SELL_REMINDER"', source)
 
+    def test_backtest_replay_executes_candidate_at_next_historical_point(self) -> None:
+        candidate_quote = confirmed_range_quote(-0.008, -0.007)
+        execution_point = replace(
+            candidate_quote.points[-1],
+            timestamp=candidate_quote.points[-1].timestamp + timedelta(minutes=1),
+        )
+        points = candidate_quote.points + (execution_point,)
+        self.quotes.write_text(json.dumps([{
+            "schema_version": 2,
+            "symbol": candidate_quote.symbol,
+            "name": candidate_quote.name,
+            "price": execution_point.price,
+            "average_price": execution_point.average_price,
+            "previous_close": candidate_quote.previous_close,
+            "timestamp": execution_point.timestamp.isoformat(),
+            "observed_at": (execution_point.timestamp + timedelta(minutes=1)).isoformat(),
+            "source": "TEST_FIXTURE",
+            "points": [[
+                point.timestamp.isoformat(), point.price, point.average_price,
+                point.open, point.high, point.low, point.volume, point.amount,
+            ] for point in points],
+        }], ensure_ascii=False), encoding="utf-8")
+        self.watchlist.write_text(json.dumps([{
+            "symbol": candidate_quote.symbol,
+            "name": candidate_quote.name,
+            "grid_width_pct": 0.002,
+        }], ensure_ascii=False), encoding="utf-8")
+
+        result = MonitorApplication(self.quotes, self.watchlist).backtest()
+
+        self.assertGreaterEqual(result["items"][0]["trade_count"], 1)
+        self.assertIn("BUY", [trade["action"] for trade in result["items"][0]["trades"]])
+
     def test_page_marks_each_stale_market_time_and_shows_independent_backtest(self) -> None:
         self.assertIn("const STALE_AFTER_MS=60000", PAGE)
         self.assertIn("refreshedAt.getTime()-marketAt.getTime()>STALE_AFTER_MS", PAGE)
