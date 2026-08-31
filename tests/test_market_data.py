@@ -172,7 +172,7 @@ class MarketDataTests(unittest.TestCase):
                 if (
                     not injected
                     and Path(source).suffix == ".tmp"
-                    and Path(destination) == daily
+                    and Path(destination).resolve(strict=False) == daily.resolve(strict=False)
                 ):
                     injected = True
                     raise OSError("injected daily replace failure")
@@ -209,6 +209,164 @@ class MarketDataTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(OSError, "replace failed"):
                     store.upsert({"510300": quote}, metadata_for_test())
+
+    def test_readers_hold_shared_lock_during_history_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            writer = MinuteHistoryStore(path)
+            quote = history_quote(4.684, 4.691, "2026-08-28T09:31:01+08:00")
+            writer.upsert({"510300": quote}, metadata_for_test())
+            operations = {
+                "query": lambda store: store.query("2026-08-28", "510300"),
+                "available_dates": lambda store: store.available_dates(),
+                "merge": lambda store: store.merge({"510300": quote}),
+            }
+
+            for name, operation in operations.items():
+                with self.subTest(operation=name):
+                    hidden = path.with_name(f".{path.name}.{name}.hidden")
+                    missing = threading.Event()
+                    release = threading.Event()
+                    finished = threading.Event()
+                    errors: list[BaseException] = []
+
+                    def hold_replace_window() -> None:
+                        with writer._lock:
+                            os.replace(path, hidden)
+                            missing.set()
+                            release.wait(timeout=1)
+                            os.replace(hidden, path)
+
+                    def read() -> None:
+                        try:
+                            operation(MinuteHistoryStore(path))
+                        except BaseException as error:
+                            errors.append(error)
+                        finally:
+                            finished.set()
+
+                    replace_thread = threading.Thread(target=hold_replace_window)
+                    replace_thread.start()
+                    self.assertTrue(missing.wait(timeout=1))
+                    read_thread = threading.Thread(target=read)
+                    read_thread.start()
+                    finished_while_missing = finished.wait(timeout=0.05)
+                    release.set()
+                    replace_thread.join(timeout=1)
+                    read_thread.join(timeout=1)
+
+                    self.assertFalse(finished_while_missing)
+                    self.assertEqual(errors, [])
+                    self.assertTrue(path.exists())
+
+    def test_failed_rollback_is_recovered_by_the_next_store_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:31:01+08:00",
+            )}, metadata_for_test())
+            daily = store.daily_root / "2026-08-28" / "quotes.jsonl"
+            original_canonical = path.read_bytes()
+            original_daily = daily.read_bytes()
+            journal = path.parent / f".{path.name}.transaction.json"
+            real_replace = os.replace
+            commit_failed = False
+            restore_failed = False
+
+            def fail_commit_and_one_restore(source: object, destination: object) -> None:
+                nonlocal commit_failed, restore_failed
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    not commit_failed
+                    and source_path.suffix == ".tmp"
+                    and destination_path.resolve(strict=False) == daily.resolve(strict=False)
+                    and ".restore." not in source_path.name
+                ):
+                    commit_failed = True
+                    raise OSError("injected commit failure")
+                if (
+                    commit_failed
+                    and not restore_failed
+                    and ".restore." in source_path.name
+                    and destination_path.resolve(strict=False) == path.resolve(strict=False)
+                ):
+                    restore_failed = True
+                    raise OSError("injected restore failure")
+                real_replace(source, destination)
+
+            later = history_quote(
+                4.685,
+                4.691,
+                "2026-08-28T09:32:01+08:00",
+                timestamp="2026-08-28T09:31:00+08:00",
+            )
+            with patch(
+                "etf_rotation.market_data.os.replace",
+                side_effect=fail_commit_and_one_restore,
+            ):
+                with self.assertRaisesRegex(MarketDataError, "事务.*恢复"):
+                    store.upsert({"510300": later}, metadata_for_test())
+
+            self.assertTrue(commit_failed)
+            self.assertTrue(restore_failed)
+            self.assertTrue(journal.exists())
+            self.assertNotEqual(path.read_bytes(), original_canonical)
+
+            recovered = MinuteHistoryStore(path).query("2026-08-28", "510300")
+
+            self.assertEqual(len(recovered), 1)
+            self.assertEqual(path.read_bytes(), original_canonical)
+            self.assertEqual(daily.read_bytes(), original_daily)
+            self.assertFalse(journal.exists())
+            self.assertEqual(list(Path(temporary).rglob("*.bak")), [])
+            self.assertEqual(list(Path(temporary).rglob("*.tmp")), [])
+
+    def test_store_recovers_a_manifest_with_partially_replaced_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:31:01+08:00",
+            )}, metadata_for_test())
+            daily = store.daily_root / "2026-08-28" / "quotes.jsonl"
+            original_canonical = path.read_bytes()
+            original_daily = daily.read_bytes()
+            canonical_backup = path.parent / f".{path.name}.crash.bak"
+            daily_backup = daily.parent / f".{daily.name}.crash.bak"
+            leftover_stage = path.parent / f".{path.name}.crash.tmp"
+            canonical_backup.write_bytes(original_canonical)
+            daily_backup.write_bytes(original_daily)
+            leftover_stage.write_text("staged\n", encoding="utf-8")
+            path.write_text('{"partial":true}\n', encoding="utf-8")
+            daily.write_text('{"partial":true}\n', encoding="utf-8")
+            journal = path.parent / f".{path.name}.transaction.json"
+            journal.write_text(json.dumps({
+                "schema_version": 1,
+                "targets": [
+                    {
+                        "target": str(path.resolve()),
+                        "backup": str(canonical_backup.resolve()),
+                        "existed": True,
+                        "staged": str(leftover_stage.resolve()),
+                    },
+                    {
+                        "target": str(daily.resolve()),
+                        "backup": str(daily_backup.resolve()),
+                        "existed": True,
+                        "staged": None,
+                    },
+                ],
+            }, separators=(",", ":")), encoding="utf-8")
+
+            recovered = MinuteHistoryStore(path).query("2026-08-28", "510300")
+
+            self.assertEqual(len(recovered), 1)
+            self.assertEqual(path.read_bytes(), original_canonical)
+            self.assertEqual(daily.read_bytes(), original_daily)
+            for artifact in (journal, canonical_backup, daily_backup, leftover_stage):
+                self.assertFalse(artifact.exists())
 
     def test_incomplete_legacy_record_is_filtered_and_cannot_be_upgraded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

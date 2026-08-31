@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import threading
 from types import MappingProxyType
@@ -191,6 +192,7 @@ class MinuteHistoryStore:
         metadata: Mapping[str, EtfMetadata],
     ) -> int:
         with self._lock:
+            self._recover_interrupted_transaction()
             indexed = self._indexed(self._read_path(self.path, strict=True))
             changed = 0
             for symbol, quote in quotes.items():
@@ -216,58 +218,65 @@ class MinuteHistoryStore:
             return changed
 
     def available_dates(self) -> list[str]:
-        dates = {str(item["trading_date"]) for item in self._read_path(self.path)}
-        return sorted((value for value in dates if value), reverse=True)
+        with self._lock:
+            self._recover_interrupted_transaction()
+            dates = {str(item["trading_date"]) for item in self._read_path(self.path)}
+            return sorted((value for value in dates if value), reverse=True)
 
     def query(self, trading_date: str, symbol: str | None = None) -> list[dict[str, Any]]:
-        records = [
-            item for item in self._read_path(self.path)
-            if item["trading_date"] == trading_date
-        ]
-        return [
-            item for item in records
-            if symbol is None or item["symbol"] == symbol
-        ]
+        with self._lock:
+            self._recover_interrupted_transaction()
+            records = [
+                item for item in self._read_path(self.path)
+                if item["trading_date"] == trading_date
+            ]
+            return [
+                item for item in records
+                if symbol is None or item["symbol"] == symbol
+            ]
 
     def merge(self, quotes: Mapping[str, Quote]) -> Mapping[str, Quote]:
-        history: dict[str, list[dict[str, Any]]] = {}
-        for item in self._read_path(self.path):
-            history.setdefault(item["symbol"], []).append(item)
-        result: dict[str, Quote] = {}
-        for symbol, quote in quotes.items():
-            points = {point.timestamp: point for point in quote.points}
-            for record in history.get(symbol, ()):
-                try:
-                    point = QuotePoint(
-                        datetime.fromisoformat(record["timestamp"]),
-                        float(record["price"]),
-                        float(record["average_price"]),
-                        float(record["open"]),
-                        float(record["high"]),
-                        float(record["low"]),
-                        float(record["volume"]),
-                        float(record["amount"]),
-                    )
-                except (KeyError, TypeError, ValueError) as error:
-                    raise MarketDataError(f"历史行情记录无效: {error}") from error
-                points.setdefault(point.timestamp, point)
-            ordered = tuple(points[key] for key in sorted(points))
-            result[symbol] = Quote(
-                quote.symbol,
-                quote.name,
-                quote.price,
-                quote.average_price,
-                quote.previous_close,
-                quote.timestamp,
-                ordered,
-                quote.observed_at,
-                quote.source,
-            )
-        return MappingProxyType(result)
+        with self._lock:
+            self._recover_interrupted_transaction()
+            history: dict[str, list[dict[str, Any]]] = {}
+            for item in self._read_path(self.path):
+                history.setdefault(item["symbol"], []).append(item)
+            result: dict[str, Quote] = {}
+            for symbol, quote in quotes.items():
+                points = {point.timestamp: point for point in quote.points}
+                for record in history.get(symbol, ()):
+                    try:
+                        point = QuotePoint(
+                            datetime.fromisoformat(record["timestamp"]),
+                            float(record["price"]),
+                            float(record["average_price"]),
+                            float(record["open"]),
+                            float(record["high"]),
+                            float(record["low"]),
+                            float(record["volume"]),
+                            float(record["amount"]),
+                        )
+                    except (KeyError, TypeError, ValueError) as error:
+                        raise MarketDataError(f"历史行情记录无效: {error}") from error
+                    points.setdefault(point.timestamp, point)
+                ordered = tuple(points[key] for key in sorted(points))
+                result[symbol] = Quote(
+                    quote.symbol,
+                    quote.name,
+                    quote.price,
+                    quote.average_price,
+                    quote.previous_close,
+                    quote.timestamp,
+                    ordered,
+                    quote.observed_at,
+                    quote.source,
+                )
+            return MappingProxyType(result)
 
     def append_legacy(self, quotes: Mapping[str, Quote]) -> None:
         """Preserve the pre-upsert producer API until its metadata wiring is migrated."""
         with self._lock:
+            self._recover_interrupted_transaction()
             indexed = self._indexed(self._read_path(self.path, strict=True))
             for quote in quotes.values():
                 for point in finalized_points(quote.points, quote.observed_at):
@@ -306,49 +315,204 @@ class MinuteHistoryStore:
         targets: Sequence[tuple[Path, Sequence[Mapping[str, Any]] | None]],
     ) -> None:
         staged: dict[Path, Path] = {}
-        backups: dict[Path, Path] = {}
-        processed: list[tuple[Path, bool]] = []
-        committed = False
+        entries: list[dict[str, Any]] = []
+        journal_written = False
         try:
-            for path, records in targets:
+            normalized_targets = [
+                (path.resolve(strict=False), records) for path, records in targets
+            ]
+            for path, records in normalized_targets:
                 if records is not None:
                     staged[path] = self._stage_records(path, records)
-            for path, records in targets:
+            for path, records in normalized_targets:
                 existed = path.exists()
-                processed.append((path, existed))
+                backup: Path | None = None
                 if existed:
                     backup = path.parent / f".{path.name}.{uuid.uuid4().hex}.bak"
-                    backups[path] = backup
-                    os.replace(path, backup)
+                    self._copy_and_fsync(path, backup)
+                entries.append({
+                    "target": str(path),
+                    "backup": str(backup) if backup is not None else None,
+                    "existed": existed,
+                    "staged": str(staged[path]) if path in staged else None,
+                })
+            self._write_transaction_journal(entries)
+            journal_written = True
+            for (path, records), entry in zip(normalized_targets, entries):
                 if records is not None:
                     os.replace(staged[path], path)
-                    staged.pop(path, None)
-        except BaseException:
-            self._rollback_replacements(processed, backups)
-            raise
-        else:
-            committed = True
-        finally:
+                staged.pop(path, None)
+                entry["staged"] = None
+                if records is None and path.exists():
+                    path.unlink()
+            self._journal_path().unlink()
+            journal_written = False
+        except BaseException as original_error:
+            if journal_written or self._journal_path().exists():
+                try:
+                    self._recover_interrupted_transaction()
+                except MarketDataError as recovery_error:
+                    raise MarketDataError(
+                        f"历史事务失败且恢复失败: {original_error}; {recovery_error}"
+                    ) from original_error
             for path in staged.values():
                 self._safe_unlink(path)
-            if committed:
-                for path in backups.values():
-                    self._safe_unlink(path)
-
-    def _rollback_replacements(
-        self,
-        processed: Sequence[tuple[Path, bool]],
-        backups: Mapping[Path, Path],
-    ) -> None:
-        for path, existed in reversed(processed):
-            backup = backups.get(path)
-            if existed and backup is not None and backup.exists():
-                try:
-                    os.replace(backup, path)
-                except OSError:
-                    pass
-            elif not existed:
+            for entry in entries:
+                backup_value = entry.get("backup")
+                if isinstance(backup_value, str):
+                    self._safe_unlink(Path(backup_value))
+            raise
+        else:
+            for path in staged.values():
                 self._safe_unlink(path)
+            for entry in entries:
+                backup_value = entry.get("backup")
+                if isinstance(backup_value, str):
+                    self._safe_unlink(Path(backup_value))
+
+    def _journal_path(self) -> Path:
+        canonical = self.path.resolve(strict=False)
+        return canonical.parent / f".{canonical.name}.transaction.json"
+
+    def _write_transaction_journal(self, entries: Sequence[Mapping[str, Any]]) -> None:
+        path = self._journal_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="",
+                delete=False,
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+            ) as handle:
+                temporary_path = Path(handle.name)
+                json.dump(
+                    {"schema_version": 1, "targets": list(entries)},
+                    handle,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+            temporary_path = None
+        except BaseException:
+            if temporary_path is not None:
+                self._safe_unlink(temporary_path)
+            raise
+
+    def _recover_interrupted_transaction(self) -> None:
+        journal = self._journal_path()
+        if not journal.exists():
+            return
+        entries = self._load_transaction_journal(journal)
+        try:
+            for entry in reversed(entries):
+                target = entry["target"]
+                if entry["existed"]:
+                    backup = entry["backup"]
+                    if backup is None or not backup.exists():
+                        raise OSError(f"事务备份缺失: {target}")
+                    restore = target.parent / (
+                        f".{target.name}.restore.{uuid.uuid4().hex}.tmp"
+                    )
+                    try:
+                        self._copy_and_fsync(backup, restore)
+                        os.replace(restore, target)
+                    finally:
+                        self._safe_unlink(restore)
+                elif target.exists():
+                    target.unlink()
+        except OSError as error:
+            raise MarketDataError(f"历史事务恢复失败: {error}") from error
+        try:
+            journal.unlink()
+        except OSError as error:
+            raise MarketDataError(f"历史事务journal清理失败: {error}") from error
+        for entry in entries:
+            backup = entry["backup"]
+            staged_path = entry["staged"]
+            if backup is not None:
+                self._safe_unlink(backup)
+            if staged_path is not None:
+                self._safe_unlink(staged_path)
+
+    def _load_transaction_journal(self, journal: Path) -> list[dict[str, Any]]:
+        try:
+            payload = json.loads(journal.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise MarketDataError(f"历史事务journal读取失败: {error}") from error
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("schema_version") != 1
+            or not isinstance(payload.get("targets"), list)
+        ):
+            raise MarketDataError("历史事务journal格式无效")
+        entries: list[dict[str, Any]] = []
+        seen: set[Path] = set()
+        for value in payload["targets"]:
+            if not isinstance(value, Mapping) or type(value.get("existed")) is not bool:
+                raise MarketDataError("历史事务journal目标无效")
+            target = self._journal_artifact_path(value.get("target"), "target")
+            if target in seen or not self._allowed_transaction_target(target):
+                raise MarketDataError("历史事务journal目标越界或重复")
+            seen.add(target)
+            backup_value = value.get("backup")
+            backup = None if backup_value is None else self._journal_artifact_path(
+                backup_value, "backup",
+            )
+            if value["existed"] and (
+                backup is None
+                or backup.parent != target.parent
+                or not backup.name.startswith(f".{target.name}.")
+                or backup.suffix != ".bak"
+            ):
+                raise MarketDataError("历史事务journal备份无效")
+            if not value["existed"] and backup is not None:
+                raise MarketDataError("历史事务journal不存在目标不能有备份")
+            staged_value = value.get("staged")
+            staged_path = None if staged_value is None else self._journal_artifact_path(
+                staged_value, "staged",
+            )
+            if staged_path is not None and (
+                staged_path.parent != target.parent or staged_path.suffix != ".tmp"
+            ):
+                raise MarketDataError("历史事务journal临时文件无效")
+            entries.append({
+                "target": target,
+                "backup": backup,
+                "existed": value["existed"],
+                "staged": staged_path,
+            })
+        if not entries:
+            raise MarketDataError("历史事务journal没有目标")
+        return entries
+
+    def _journal_artifact_path(self, value: object, label: str) -> Path:
+        if not isinstance(value, str) or not value:
+            raise MarketDataError(f"历史事务journal {label}路径无效")
+        return Path(value).resolve(strict=False)
+
+    def _allowed_transaction_target(self, target: Path) -> bool:
+        canonical = self.path.resolve(strict=False)
+        if target == canonical:
+            return True
+        daily_root = self.daily_root.resolve(strict=False)
+        return (
+            target.name == "quotes.jsonl"
+            and target.parent.parent == daily_root
+        )
+
+    @staticmethod
+    def _copy_and_fsync(source: Path, destination: Path) -> None:
+        shutil.copy2(source, destination)
+        with destination.open("r+b") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
 
     def _stage_records(
         self, path: Path, records: Sequence[Mapping[str, Any]],
