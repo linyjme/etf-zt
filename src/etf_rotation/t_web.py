@@ -48,12 +48,14 @@ class MonitorApplication:
     watchlist_lock: threading.Lock = field(default_factory=threading.Lock, compare=False)
     refresh_lock: threading.Lock = field(default_factory=threading.Lock, compare=False)
     producer_lock: threading.Lock = field(default_factory=threading.Lock, compare=False)
+    lifecycle_gate: Any = field(default_factory=threading.RLock, compare=False)
     refresh_error: str | None = None
     last_refresh_at: str | None = None
     _stop_event: threading.Event = field(default_factory=threading.Event, compare=False)
     _refresh_thread: threading.Thread | None = field(default=None, compare=False)
     _published: dict[str, Any] = field(default_factory=dict, init=False, compare=False)
     _revision: int = field(default=0, init=False, compare=False)
+    _generation: int = field(default=0, init=False, compare=False)
     _publish_condition: threading.Condition = field(init=False, compare=False)
     _revision_events: deque[dict[str, Any]] = field(init=False, compare=False)
     metadata_store: EtfMetadataStore = field(init=False, compare=False)
@@ -119,19 +121,25 @@ class MonitorApplication:
         }
 
     def start_refresh(self) -> None:
-        with self.refresh_lock:
+        with self.lifecycle_gate:
             if self.collector is None or self._refresh_thread is not None:
                 return
             self._stop_event.clear()
-            thread = threading.Thread(target=self._refresh_loop, daemon=True)
+            self._generation += 1
+            generation = self._generation
+            thread = threading.Thread(
+                target=self._refresh_loop, args=(generation,), daemon=True,
+            )
             self._refresh_thread = thread
             thread.start()
 
     def stop_refresh(self) -> None:
-        self._stop_event.set()
+        with self.lifecycle_gate:
+            self._stop_event.set()
+            self._generation += 1
+            thread = self._refresh_thread
         with self._publish_condition:
             self._publish_condition.notify_all()
-            thread = self._refresh_thread
         if thread is not None:
             thread.join(timeout=max(self.refresh_interval, 1.0) + 1.0)
 
@@ -145,10 +153,24 @@ class MonitorApplication:
         selected: dict[str, Any] | None = None
         with self._publish_condition:
             while selected is None:
-                selected = next((
+                current = self._published
+                current_revision = int(current.get("revision", 0))
+                events = tuple(self._revision_events)
+                if after_revision > current_revision:
+                    selected = current
+                elif (
+                    after_revision < current_revision
+                    and (
+                        not events
+                        or after_revision < int(events[0]["revision"]) - 1
+                    )
+                ):
+                    selected = current
+                else:
+                    selected = next((
                     event for event in self._revision_events
                     if event["revision"] > after_revision
-                ), None)
+                    ), None)
                 if selected is not None or self._stop_event.is_set():
                     break
                 remaining = deadline - time.monotonic()
@@ -158,6 +180,9 @@ class MonitorApplication:
         return copy.deepcopy(selected) if selected is not None else None
 
     def refresh_once(self) -> bool:
+        return self._refresh_once(generation=None)
+
+    def _refresh_once(self, generation: int | None) -> bool:
         with self.producer_lock:
             if self.collector is None:
                 return False
@@ -170,36 +195,79 @@ class MonitorApplication:
                 if not isinstance(payload, Mapping):
                     raise ValueError("行情文件必须是对象")
                 quotes = JsonQuoteAdapter().parse(payload)
+                metadata: Mapping[str, Any] = {}
                 if self.history_store is not None:
                     metadata = self.metadata_store.load()
                     self._validate_quotes(quotes, metadata)
-                    self.history_store.upsert(quotes, metadata)
-                now = self.clock()
-                health = self._health_by_symbol(quotes, now)
-                published = snapshot_to_dict(self.engine.evaluate(
-                    watchlist, quotes, generated_at=now, health=health,
-                ))
-                if self.alert_store is not None:
-                    self.alert_store.append_candidates(published)
-                self._commit_staged_quotes(staging)
-                staging = None
             except Exception as error:
-                self._publish_outage(str(error))
+                if staging is not None:
+                    staging.unlink(missing_ok=True)
+                    staging = None
+                with self.lifecycle_gate:
+                    if self._generation_cancelled(generation):
+                        return False
+                    self._publish_outage(str(error))
                 return False
+            try:
+                with self.lifecycle_gate:
+                    if self._generation_cancelled(generation):
+                        return False
+                    try:
+                        now = self.clock()
+                        health = self._health_by_symbol(quotes, now)
+                        published = snapshot_to_dict(self.engine.evaluate(
+                            watchlist, quotes, generated_at=now, health=health,
+                        ))
+                    except Exception as error:
+                        self._publish_outage(str(error))
+                        return False
+                    try:
+                        self._commit_staged_quotes(staging)
+                        staging = None
+                    except Exception as error:
+                        self._publish_outage(str(error))
+                        return False
+
+                    persistence_errors: list[str] = []
+                    if self.history_store is not None:
+                        try:
+                            self.history_store.upsert(quotes, metadata)
+                        except Exception as error:
+                            persistence_errors.append(str(error))
+                    if self.alert_store is not None:
+                        try:
+                            self.alert_store.append_candidates(published)
+                        except Exception as error:
+                            persistence_errors.append(str(error))
+                    self._publish(
+                        published, payload, persistence_errors=persistence_errors,
+                    )
+                    return True
             finally:
                 if staging is not None:
                     staging.unlink(missing_ok=True)
-            self._publish(published, payload)
-            return True
 
-    def _refresh_loop(self) -> None:
+    def _generation_cancelled(self, generation: int | None) -> bool:
+        return (
+            generation is not None
+            and (
+                self._stop_event.is_set()
+                or generation != self._generation
+                or self._refresh_thread is not threading.current_thread()
+            )
+        )
+
+    def _refresh_loop(self, generation: int) -> None:
         thread = threading.current_thread()
         try:
-            while not self._stop_event.is_set():
-                self.refresh_once()
+            while True:
+                with self.lifecycle_gate:
+                    if self._generation_cancelled(generation):
+                        break
+                self._refresh_once(generation)
                 self._stop_event.wait(self.refresh_interval)
         finally:
-            with self.refresh_lock:
+            with self.lifecycle_gate:
                 if self._refresh_thread is thread:
                     self._refresh_thread = None
 
@@ -282,6 +350,7 @@ class MonitorApplication:
             "revision": 0,
             "source": None,
             "refresh_error": None,
+            "persistence_errors": [],
             "last_refresh_at": None,
         }
 
@@ -291,6 +360,7 @@ class MonitorApplication:
         payload: Mapping[str, Any],
         *,
         error: str | None = None,
+        persistence_errors: list[str] | None = None,
         increment_revision: bool = True,
     ) -> None:
         with self._publish_condition:
@@ -300,6 +370,11 @@ class MonitorApplication:
             result["revision"] = self._revision
             result["source"] = copy.deepcopy(payload.get("source"))
             result["refresh_error"] = error
+            result["persistence_errors"] = list(persistence_errors or [])
+            if persistence_errors:
+                result["errors"] = [
+                    *list(result.get("errors") or []), *persistence_errors,
+                ]
             result["last_refresh_at"] = payload.get("collected_at")
             self.refresh_error = error
             self.last_refresh_at = result["last_refresh_at"]
@@ -315,6 +390,7 @@ class MonitorApplication:
             result["generated_at"] = self.clock().isoformat()
             result["errors"] = [message]
             result["refresh_error"] = message
+            result["persistence_errors"] = []
             for item in result.get("items", []):
                 if item.get("action") in {"BUY_CANDIDATE", "SELL_CANDIDATE"}:
                     item["action"] = "DEVIATION_OBSERVE"

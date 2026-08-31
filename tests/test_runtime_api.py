@@ -147,13 +147,16 @@ class FailingStore:
     def __init__(self, message: str, method: str):
         self.message = message
         self.method = method
+        self.calls = 0
 
     def upsert(self, quotes: object, metadata: object) -> int:
+        self.calls += 1
         if self.method == "upsert":
             raise OSError(self.message)
         return 0
 
     def append_candidates(self, payload: object) -> None:
+        self.calls += 1
         if self.method == "append_candidates":
             raise OSError(self.message)
 
@@ -181,6 +184,25 @@ class ScriptedEventApplication:
             self._stop_event.set()
             return None
         return item
+
+    def is_stopping(self) -> bool:
+        return self._stop_event.is_set()
+
+
+class RestartCursorApplication:
+    def __init__(self) -> None:
+        self._stop_event = threading.Event()
+        self.waits: list[int] = []
+
+    def snapshot(self) -> dict[str, object]:
+        return {"revision": 1, "items": []}
+
+    def wait_for_revision(
+        self, after_revision: int, timeout: float,
+    ) -> dict[str, object] | None:
+        self.waits.append(after_revision)
+        self._stop_event.set()
+        return self.snapshot()
 
     def is_stopping(self) -> bool:
         return self._stop_event.is_set()
@@ -219,7 +241,10 @@ class RuntimeTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def make_runtime_fixture(
-        self, collector: object | None = _DEFAULT_COLLECTOR,
+        self,
+        collector: object | None = _DEFAULT_COLLECTOR,
+        *,
+        revision_event_limit: int = 128,
     ) -> MonitorApplication:
         if collector is _DEFAULT_COLLECTOR:
             collector = StaticCollector(valid_completed_quote_payload())
@@ -233,6 +258,7 @@ class RuntimeTests(unittest.TestCase):
             metadata_path=self.paths.metadata,
             calendar_path=self.paths.calendar,
             clock=lambda: datetime.fromisoformat("2026-08-28T10:02:00+08:00"),
+            revision_event_limit=revision_event_limit,
         )
 
     def test_snapshot_reads_published_state_without_writing_or_revising(self) -> None:
@@ -330,10 +356,11 @@ class RuntimeTests(unittest.TestCase):
             app.stop_refresh()
         self.assertEqual(collector.calls, 1)
 
-    def test_timed_out_stop_keeps_thread_owned_and_restart_does_not_spawn(self) -> None:
+    def test_stop_cancels_blocked_generation_without_any_commit_side_effect(self) -> None:
         collector = LifecycleCollector(valid_completed_quote_payload())
         app = self.make_runtime_fixture(collector)
         app.refresh_interval = 0.01
+        before = app.snapshot()
         app.start_refresh()
         self.assertTrue(collector.entered.wait(1))
         thread = app._refresh_thread
@@ -347,6 +374,24 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertIsNone(app._refresh_thread)
         self.assertEqual(collector.calls, 1)
+        self.assertEqual(app.snapshot(), before)
+        self.assertFalse(self.paths.quotes.exists())
+        self.assertEqual(self.paths.history.read_bytes(), b"")
+        self.assertEqual(self.paths.alerts.read_bytes(), b"")
+        self.assertEqual(list(self.paths.quotes.parent.glob("*.staging")), [])
+
+        app.collector = StaticCollector(valid_completed_quote_payload())
+        app.refresh_interval = 5.0
+        app.start_refresh()
+        for _ in range(50):
+            if app.snapshot()["revision"] == 1:
+                break
+            threading.Event().wait(0.01)
+        app.stop_refresh()
+        self.assertEqual(app.snapshot()["revision"], 1)
+        self.assertTrue(self.paths.quotes.exists())
+        self.assertTrue(self.paths.history.read_bytes())
+        self.assertTrue(self.paths.alerts.read_bytes())
 
     def test_failed_refresh_immediately_revokes_published_candidate(self) -> None:
         app = self.make_runtime_fixture()
@@ -365,56 +410,97 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(failed["errors"], ["断流"])
         self.assertEqual(self.paths.alerts.read_bytes(), alerts_before)
 
-    def test_history_or_alert_failure_never_publishes_success_state(self) -> None:
+    def test_derived_failure_publishes_primary_and_retries_without_duplicates(self) -> None:
         for attribute, method in (("history_store", "upsert"), ("alert_store", "append_candidates")):
             with self.subTest(attribute=attribute):
-                app = self.make_runtime_fixture()
-                setattr(app, attribute, FailingStore(f"{attribute} failed", method))
-                self.assertFalse(app.refresh_once())
+                root = self.paths.quotes.parent / attribute
+                root.mkdir()
+                quotes = root / "quotes.json"
+                history = root / "quotes.jsonl"
+                alerts = root / "alerts.jsonl"
+                history.write_bytes(b"")
+                alerts.write_bytes(b"")
+                old_payload = valid_completed_quote_payload()
+                old_payload["source"] = {"name": "OLD"}
+                quotes.write_text(json.dumps(old_payload, ensure_ascii=False), encoding="utf-8")
+                current_payload = valid_completed_quote_payload()
+                current_payload["source"] = {"name": "CURRENT"}
+                app = MonitorApplication(
+                    quotes_path=quotes,
+                    watchlist_path=self.paths.watchlist,
+                    history_path=history,
+                    collector=StaticCollector(current_payload),
+                    alert_history_path=alerts,
+                    metadata_path=self.paths.metadata,
+                    calendar_path=self.paths.calendar,
+                    clock=lambda: datetime.fromisoformat("2026-08-28T10:02:00+08:00"),
+                )
+                original_store = getattr(app, attribute)
+                failing = FailingStore(f"{attribute} failed", method)
+                setattr(app, attribute, failing)
+                self.assertTrue(app.refresh_once())
                 snapshot = app.snapshot()
                 self.assertEqual(snapshot["revision"], 1)
                 self.assertEqual(snapshot["errors"], [f"{attribute} failed"])
-                self.assertFalse(any(
+                self.assertEqual(snapshot["persistence_errors"], [f"{attribute} failed"])
+                self.assertIsNone(snapshot["refresh_error"])
+                self.assertTrue(any(
                     item["action"] in {"BUY_CANDIDATE", "SELL_CANDIDATE"}
                     for item in snapshot["items"]
                 ))
+                self.assertEqual(
+                    json.loads(quotes.read_text(encoding="utf-8"))["source"]["name"],
+                    "CURRENT",
+                )
 
-    def test_failed_validation_or_store_never_replaces_official_quotes(self) -> None:
+                setattr(app, attribute, original_store)
+                self.assertTrue(app.refresh_once())
+                records = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+                alert_records = [json.loads(line) for line in alerts.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual(
+                    len({(item["symbol"], item["timestamp"]) for item in records}),
+                    len(records),
+                )
+                self.assertEqual(len(records), len(current_payload["quotes"][0]["points"]))
+                self.assertEqual(len(alert_records), 1)
+                self.assertEqual(app.snapshot()["persistence_errors"], [])
+
+    def test_failed_validation_never_replaces_official_quotes(self) -> None:
         old_payload = valid_completed_quote_payload()
         old_bytes = json.dumps(old_payload, ensure_ascii=False).encode("utf-8")
         rejected_payload = copy.deepcopy(old_payload)
         rejected_payload["source"] = {"name": "REJECTED"}
-        scenarios = (
-            ("metadata", "metadata_store", None),
-            ("history", "history_store", FailingStore("history failed", "upsert")),
-            ("alert", "alert_store", FailingStore("alert failed", "append_candidates")),
+        self.paths.quotes.write_bytes(old_bytes)
+        app = self.make_runtime_fixture(StaticCollector(rejected_payload))
+        self.paths.metadata.write_text(
+            json.dumps({"schema_version": 2, "items": []}), encoding="utf-8",
         )
-        for name, attribute, replacement in scenarios:
-            with self.subTest(name=name):
-                self.paths.quotes.write_bytes(old_bytes)
-                self.paths.metadata.write_text(
-                    json.dumps(test_metadata_document()), encoding="utf-8",
-                )
-                app = self.make_runtime_fixture(StaticCollector(rejected_payload))
-                if name == "metadata":
-                    self.paths.metadata.write_text(
-                        json.dumps({"schema_version": 2, "items": []}), encoding="utf-8",
-                    )
-                else:
-                    setattr(app, attribute, replacement)
-                self.assertFalse(app.refresh_once())
-                self.assertEqual(self.paths.quotes.read_bytes(), old_bytes)
-                self.assertEqual(list(self.paths.quotes.parent.glob("*.staging")), [])
+        self.assertFalse(app.refresh_once())
+        self.assertEqual(self.paths.quotes.read_bytes(), old_bytes)
+        self.assertEqual(list(self.paths.quotes.parent.glob("*.staging")), [])
 
-                self.paths.metadata.write_text(
-                    json.dumps(test_metadata_document()), encoding="utf-8",
-                )
-                restarted = self.make_runtime_fixture(collector=None)
-                self.assertEqual(restarted.snapshot()["revision"], 1)
-                self.assertEqual(
-                    restarted.snapshot()["items"][0]["price"],
-                    old_payload["quotes"][0]["price"],
-                )
+        self.paths.metadata.write_text(
+            json.dumps(test_metadata_document()), encoding="utf-8",
+        )
+        restarted = self.make_runtime_fixture(collector=None)
+        self.assertEqual(restarted.snapshot()["revision"], 1)
+        self.assertEqual(
+            restarted.snapshot()["items"][0]["price"],
+            old_payload["quotes"][0]["price"],
+        )
+
+    def test_primary_replace_failure_skips_all_derived_stores(self) -> None:
+        app = self.make_runtime_fixture()
+        history = FailingStore("must not run history", "none")
+        alerts = FailingStore("must not run alerts", "none")
+        app.history_store = history
+        app.alert_store = alerts
+        with patch("etf_rotation.t_web.os.replace", side_effect=OSError("replace failed")):
+            self.assertFalse(app.refresh_once())
+        self.assertEqual(history.calls, 0)
+        self.assertEqual(alerts.calls, 0)
+        self.assertFalse(self.paths.quotes.exists())
+        self.assertEqual(app.snapshot()["errors"], ["replace failed"])
 
     def test_invalid_calendar_fails_application_startup(self) -> None:
         self.paths.calendar.write_text("{}", encoding="utf-8")
@@ -530,6 +616,16 @@ class RuntimeTests(unittest.TestCase):
             app.stop_refresh()
             self.assertIsNone(waiting.result(timeout=0.5))
 
+    def test_revision_cursor_outside_retained_range_returns_current_snapshot(self) -> None:
+        app = self.make_runtime_fixture(revision_event_limit=2)
+        self.assertTrue(app.refresh_once())
+        self.assertEqual(app.wait_for_revision(999, timeout=0.01)["revision"], 1)
+        app.collector = FailingCollector("断流")
+        self.assertFalse(app.refresh_once())
+        app.collector = StaticCollector(valid_completed_quote_payload())
+        self.assertTrue(app.refresh_once())
+        self.assertEqual(app.wait_for_revision(0, timeout=0.01)["revision"], 3)
+
     def test_sse_uses_revision_ids_cursor_and_heartbeat_without_sleeping(self) -> None:
         application = ScriptedEventApplication()
         handler = object.__new__(MonitorRequestHandler)
@@ -549,6 +645,21 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(stream.count("id: 8\n"), 1)
         self.assertEqual(stream.count("id: 9\n"), 1)
         self.assertIn(": heartbeat\n\n", stream)
+
+    def test_sse_restart_cursor_ahead_of_current_gets_full_snapshot(self) -> None:
+        application = RestartCursorApplication()
+        handler = object.__new__(MonitorRequestHandler)
+        handler.server = SimpleNamespace(application=application)
+        handler.headers = {"Last-Event-ID": "999"}
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+        handler._events()
+        stream = handler.wfile.getvalue().decode("utf-8")
+        self.assertEqual(application.waits, [999])
+        self.assertIn("id: 1\n", stream)
+        self.assertNotIn(": heartbeat", stream)
 
     def test_health_summary_tracks_latest_outage_revision(self) -> None:
         app = self.make_runtime_fixture()
