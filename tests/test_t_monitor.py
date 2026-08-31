@@ -848,23 +848,59 @@ class MonitorWebTests(unittest.TestCase):
         with urlopen(self.base + "/api/backtest", timeout=2) as response:
             payload = json.loads(response.read())
         self.assertTrue(payload["read_only"])
-        self.assertEqual(payload["execution"], "NEXT_POINT")
+        self.assertEqual(payload["mode"], "T_BACKTEST")
+        self.assertEqual(payload["execution_mode"], "NEXT_COMPLETED_BAR")
         self.assertEqual([item["symbol"] for item in payload["items"]], ["510300", "159915"])
-        self.assertEqual(payload["items"][0]["status"], "OK")
-        self.assertIn("maximum_drawdown", payload["items"][0])
+        completed = payload["items"][0]
+        self.assertEqual(completed["status"], "NO_COMPLETED_PAIRS")
+        for field in (
+            "baseline_equity_cny", "strategy_equity_cny", "t_net_gain_cny",
+            "completed_pair_count", "open_leg_count", "inventory", "costs",
+            "execution_mode",
+        ):
+            self.assertIn(field, completed)
+        self.assertEqual(completed["execution_mode"], "NEXT_COMPLETED_BAR")
+        self.assertEqual(completed["completed_pair_count"], 0)
+        self.assertEqual(completed["open_leg_count"], 0)
+        self.assertEqual(completed["t_net_gain_cny"], 0.0)
+        self.assertIsNone(completed["outperformed_baseline"])
         self.assertEqual(payload["items"][1]["status"], "MISSING_QUOTE")
-        self.assertIsNone(payload["items"][1]["initial_capital_cny"])
-        self.assertIsNone(payload["items"][1]["ending_value_cny"])
+        self.assertIsNone(payload["items"][1]["baseline_equity_cny"])
+        self.assertIsNone(payload["items"][1]["strategy_equity_cny"])
         self.assertEqual(payload["buy_commission_rate"], 0.00012)
         self.assertEqual(payload["minimum_commission_cny"], 0.0)
         self.assertTrue(payload["commission_minimum_waived"])
+        self.assertEqual(
+            self.server.application.backtest(),
+            self.server.application.t_backtest(),
+        )
 
     def test_backtest_replay_recognizes_new_candidate_actions(self) -> None:
-        source = inspect.getsource(MonitorApplication.backtest)
+        source = inspect.getsource(MonitorApplication.signal_replay)
         self.assertIn('signal.action == "BUY_CANDIDATE"', source)
         self.assertIn('signal.action == "SELL_CANDIDATE"', source)
         self.assertNotIn('signal.action == "BUY_REMINDER"', source)
         self.assertNotIn('signal.action == "SELL_REMINDER"', source)
+
+        payload = self.server.application.signal_replay()
+        self.assertEqual(payload["mode"], "SIGNAL_ROUGH_REPLAY")
+        self.assertEqual([item["symbol"] for item in payload["items"]], ["510300"])
+
+        def keys(value: object) -> list[str]:
+            if isinstance(value, dict):
+                return [
+                    str(key)
+                    for key, nested in value.items()
+                ] + [key for nested in value.values() for key in keys(nested)]
+            if isinstance(value, list):
+                return [key for nested in value for key in keys(nested)]
+            return []
+
+        for key in keys(payload):
+            self.assertFalse(
+                any(term in key.lower() for term in ("return", "outperformance", "equity", "pnl")),
+                key,
+            )
 
     def test_backtest_replay_executes_candidate_at_next_historical_point(self) -> None:
         candidate_quote = confirmed_range_quote(-0.008, -0.007)
@@ -894,10 +930,16 @@ class MonitorWebTests(unittest.TestCase):
             "grid_width_pct": 0.002,
         }], ensure_ascii=False), encoding="utf-8")
 
-        result = MonitorApplication(self.quotes, self.watchlist).backtest()
+        result = MonitorApplication(self.quotes, self.watchlist).t_backtest()
 
-        self.assertGreaterEqual(result["items"][0]["trade_count"], 1)
-        self.assertIn("BUY", [trade["action"] for trade in result["items"][0]["trades"]])
+        item = result["items"][0]
+        self.assertEqual(item["execution_mode"], "NEXT_COMPLETED_BAR")
+        self.assertEqual(item["completed_pair_count"], 0)
+        self.assertEqual(item["open_leg_count"], 1)
+        self.assertEqual(item["open_legs"][0]["side"], "BUY")
+        self.assertEqual(item["open_legs"][0]["timestamp"], execution_point.timestamp.isoformat())
+        self.assertEqual(item["t_net_gain_cny"], 0.0)
+        self.assertIsNone(item["outperformed_baseline"])
 
     def test_page_marks_each_stale_market_time_and_shows_independent_backtest(self) -> None:
         self.assertIn("const STALE_AFTER_MS=60000", PAGE)

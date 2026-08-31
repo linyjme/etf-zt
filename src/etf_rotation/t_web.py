@@ -25,6 +25,7 @@ from .market_data import (
     finalized_points,
     load_closed_dates,
 )
+from .t_backtest import TBacktester
 from .t_monitor import AlertHistoryStore, JsonQuoteAdapter, QuoteHistoryStore, TMonitorEngine, load_watchlist, snapshot_to_dict
 
 
@@ -406,93 +407,135 @@ class MonitorApplication:
             self._revision_events.append(result)
             self._publish_condition.notify_all()
 
-    def backtest(self) -> dict[str, Any]:
+    def t_backtest(self) -> dict[str, Any]:
         quotes = JsonQuoteAdapter().load(self.quotes_path)
         if self.history_path is not None:
             store = QuoteHistoryStore(self.history_path)
             quotes = store.merge(quotes)
         watchlist = load_watchlist(self.watchlist_path)
+        metadata = self.metadata_store.load()
         items = []
         for item in watchlist:
             if not item.enabled:
                 continue
             quote = quotes.get(item.symbol)
             if quote is None:
-                items.append({
-                    "symbol": item.symbol, "status": "MISSING_QUOTE",
-                    "initial_capital_cny": None, "ending_value_cny": None,
-                    "cumulative_return": None, "maximum_drawdown": None,
-                    "trade_count": None, "trades": [],
-                })
+                items.append(self._empty_backtest_item(item.symbol, "MISSING_QUOTE"))
                 continue
-            initial = constants.DEFAULT_BASE_NOTIONAL_CNY
-            cash = initial
-            position: tuple[int, float] | None = None
-            trades: list[dict[str, Any]] = []
-            curve: list[float] = [initial]
-            for index in range(1, len(quote.points)):
-                point = quote.points[index]
-                decision_quote = type(quote)(
-                    quote.symbol, quote.name, quote.points[index - 1].price,
-                    quote.points[index - 1].average_price, quote.previous_close,
-                    quote.points[index - 1].timestamp, quote.points[:index],
-                    quote.observed_at, quote.source,
-                )
-                signal = TMonitorEngine().evaluate(
-                    (item,), {quote.symbol: decision_quote},
-                    generated_at=point.timestamp,
-                ).signals[0]
-                if signal.action == "BUY_CANDIDATE" and position is None:
-                    shares = int(cash / (point.price * (1 + constants.SLIPPAGE_RATE) * (1 + constants.BUY_COMMISSION_RATE)) / 100) * 100
-                    if shares:
-                        fill = point.price * (1 + constants.SLIPPAGE_RATE)
-                        fee = max(shares * fill * constants.BUY_COMMISSION_RATE, constants.MINIMUM_COMMISSION_CNY)
-                        cash -= shares * fill + fee
-                        position = (shares, shares * fill + fee)
-                        trades.append({"timestamp": point.timestamp.isoformat(), "action": "BUY", "symbol": quote.symbol, "shares": shares, "price": fill, "fee": fee})
-                elif signal.action == "SELL_CANDIDATE" and position is not None:
-                    shares, basis = position
-                    fill = point.price * (1 - constants.SLIPPAGE_RATE)
-                    fee = max(shares * fill * constants.SELL_COMMISSION_RATE, constants.MINIMUM_COMMISSION_CNY)
-                    proceeds = shares * fill - fee
-                    cash += proceeds
-                    position = None
-                    trades.append({"timestamp": point.timestamp.isoformat(), "action": "SELL", "symbol": quote.symbol, "shares": shares, "price": fill, "fee": fee, "pnl": proceeds - basis})
-                curve.append(cash + (position[0] * point.price if position else 0.0))
-            peak = initial
-            maximum_drawdown = 0.0
-            for value in curve:
-                peak = max(peak, value)
-                maximum_drawdown = max(maximum_drawdown, 1 - value / peak)
-            ending = curve[-1]
-            first_price = quote.points[0].price
-            hold_ending = initial * quote.points[-1].price / first_price
-            realized = [trade["pnl"] for trade in trades if "pnl" in trade]
-            wins = sum(1 for pnl in realized if pnl > 0)
-            items.append({
-                "symbol": item.symbol, "status": "OK",
-                "strategy_version": "T_V1_BASELINE",
-                "initial_capital_cny": initial, "ending_value_cny": ending,
-                "cumulative_return": ending / initial - 1,
-                "maximum_drawdown": maximum_drawdown,
-                "trade_count": len(trades), "trades": trades,
-                "buy_and_hold_ending_value_cny": hold_ending,
-                "buy_and_hold_return": hold_ending / initial - 1,
-                "excess_return_vs_hold": ending / initial - hold_ending / initial,
-                "winning_trade_count": wins,
-                "win_rate": wins / len(realized) if realized else None,
-                "realized_trade_count": len(realized),
-            })
+            item_metadata = metadata.get(item.symbol)
+            if item_metadata is None:
+                items.append(self._empty_backtest_item(item.symbol, "MISSING_METADATA"))
+                continue
+            try:
+                result = TBacktester(engine=self.engine).run(
+                    quote, item, item_metadata.trading,
+                ).to_dict()
+            except ValueError as error:
+                invalid = self._empty_backtest_item(item.symbol, "INVALID_DATA")
+                invalid["reason"] = str(error)
+                items.append(invalid)
+                continue
+            result["symbol"] = item.symbol
+            items.append(result)
         return {
+            "mode": "T_BACKTEST",
             "items": items,
             "commission_rate": constants.BUY_COMMISSION_RATE,
             "buy_commission_rate": constants.BUY_COMMISSION_RATE,
             "sell_commission_rate": constants.SELL_COMMISSION_RATE,
             "minimum_commission_cny": constants.MINIMUM_COMMISSION_CNY,
-            "commission_minimum_waived": True,
+            "commission_minimum_waived": constants.MINIMUM_COMMISSION_CNY == 0,
             "slippage_rate": constants.SLIPPAGE_RATE,
-            "execution": "NEXT_POINT",
+            "volume_participation": constants.DEFAULT_VOLUME_PARTICIPATION,
+            "execution_mode": "NEXT_COMPLETED_BAR",
             "read_only": True,
+        }
+
+    def backtest(self) -> dict[str, Any]:
+        return self.t_backtest()
+
+    def signal_replay(self) -> dict[str, Any]:
+        quotes = JsonQuoteAdapter().load(self.quotes_path)
+        if self.history_path is not None:
+            quotes = QuoteHistoryStore(self.history_path).merge(quotes)
+        items: list[dict[str, Any]] = []
+        for item in load_watchlist(self.watchlist_path):
+            if not item.enabled:
+                continue
+            quote = quotes.get(item.symbol)
+            if quote is None:
+                items.append({
+                    "symbol": item.symbol,
+                    "status": "MISSING_QUOTE",
+                    "evaluated_signal_count": 0,
+                    "candidate_action_count": 0,
+                    "actions": [],
+                })
+                continue
+            completed = finalized_points(quote.points, quote.observed_at)
+            actions: list[dict[str, Any]] = []
+            for index in range(1, len(completed)):
+                point = completed[index]
+                previous = completed[index - 1]
+                decision_quote = type(quote)(
+                    quote.symbol,
+                    quote.name,
+                    previous.price,
+                    previous.average_price,
+                    quote.previous_close,
+                    previous.timestamp,
+                    completed[:index],
+                    point.timestamp,
+                    quote.source,
+                )
+                signal = self.engine.evaluate(
+                    (item,),
+                    {quote.symbol: decision_quote},
+                    generated_at=point.timestamp,
+                ).signals[0]
+                if signal.action == "BUY_CANDIDATE":
+                    actions.append({
+                        "action": signal.action,
+                        "signal_timestamp": previous.timestamp.isoformat(),
+                        "next_completed_timestamp": point.timestamp.isoformat(),
+                    })
+                elif signal.action == "SELL_CANDIDATE":
+                    actions.append({
+                        "action": signal.action,
+                        "signal_timestamp": previous.timestamp.isoformat(),
+                        "next_completed_timestamp": point.timestamp.isoformat(),
+                    })
+            items.append({
+                "symbol": item.symbol,
+                "status": "OK",
+                "evaluated_signal_count": max(0, len(completed) - 1),
+                "candidate_action_count": len(actions),
+                "actions": actions,
+            })
+        return {
+            "mode": "SIGNAL_ROUGH_REPLAY",
+            "execution_mode": "NEXT_COMPLETED_BAR",
+            "items": items,
+            "read_only": True,
+        }
+
+    @staticmethod
+    def _empty_backtest_item(symbol: str, status: str) -> dict[str, Any]:
+        return {
+            "symbol": symbol,
+            "status": status,
+            "baseline_equity_cny": None,
+            "strategy_equity_cny": None,
+            "t_net_gain_cny": None,
+            "completed_pair_count": 0,
+            "completed_pairs": [],
+            "open_leg_count": 0,
+            "open_legs": [],
+            "rejections": [],
+            "inventory": None,
+            "costs": None,
+            "execution_mode": "NEXT_COMPLETED_BAR",
+            "outperformed_baseline": None,
         }
 
     def add_watch_item(self, symbol: object, name: object) -> dict[str, Any]:

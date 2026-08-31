@@ -191,6 +191,8 @@ class WatchItem:
     name: str
     grid_width_pct: float
     enabled: bool = True
+    base_shares: int | None = None
+    t_capacity_shares: int | None = None
 
 
 @dataclass(frozen=True)
@@ -428,7 +430,22 @@ def load_watchlist(path: Path) -> tuple[WatchItem, ...]:
         enabled = raw_item.get("enabled", True)
         if not isinstance(enabled, bool):
             raise MarketDataError(f"{symbol}.enabled 必须是布尔值")
-        result.append(WatchItem(symbol, name, grid_width_pct, enabled))
+        share_overrides: dict[str, int | None] = {}
+        for field in ("base_shares", "t_capacity_shares"):
+            value = raw_item.get(field)
+            if value is not None and (
+                type(value) is not int or value < 0 or value % 100 != 0
+            ):
+                raise MarketDataError(f"{symbol}.{field} 必须是非负整手")
+            share_overrides[field] = value
+        result.append(WatchItem(
+            symbol,
+            name,
+            grid_width_pct,
+            enabled,
+            share_overrides["base_shares"],
+            share_overrides["t_capacity_shares"],
+        ))
         symbols.add(symbol)
     return tuple(result)
 

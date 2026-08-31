@@ -1,0 +1,210 @@
+import unittest
+from datetime import datetime, timedelta
+import json
+from pathlib import Path
+import tempfile
+
+from etf_rotation.etf_metadata import TradingMetadata
+from etf_rotation.t_backtest import FillBar, TAccount, TBacktester
+from etf_rotation.t_monitor import MarketDataError, Quote, QuotePoint, WatchItem, load_watchlist
+
+
+class WatchItemBacktestConfigTests(unittest.TestCase):
+    def test_optional_share_overrides_are_whole_lots_or_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "watchlist.json"
+            path.write_text(json.dumps([
+                {"symbol": "510300"},
+                {"symbol": "510500", "base_shares": 1_000, "t_capacity_shares": 200},
+            ]), encoding="utf-8")
+            items = load_watchlist(path)
+            self.assertIsNone(items[0].base_shares)
+            self.assertIsNone(items[0].t_capacity_shares)
+            self.assertEqual(items[1].base_shares, 1_000)
+            self.assertEqual(items[1].t_capacity_shares, 200)
+
+            for field, value in (
+                ("base_shares", True),
+                ("base_shares", -100),
+                ("base_shares", 150),
+                ("t_capacity_shares", False),
+                ("t_capacity_shares", -100),
+                ("t_capacity_shares", 150),
+            ):
+                with self.subTest(field=field, value=value):
+                    path.write_text(json.dumps([{
+                        "symbol": "510300", field: value,
+                    }]), encoding="utf-8")
+                    with self.assertRaisesRegex(MarketDataError, field):
+                        load_watchlist(path)
+
+
+class TAccountTests(unittest.TestCase):
+    def test_low_buy_then_sell_uses_overnight_inventory(self) -> None:
+        account = TAccount.create(base_shares=10_000, t_capacity_shares=2_000, first_price=10.0, lot_size=100, intraday_turnaround=False)
+        account.execute("BUY_CANDIDATE", FillBar("2026-08-28T10:00:00+08:00", 9.8, 50_000), requested_shares=2_000)
+        self.assertEqual(account.today_bought_shares, 2_000)
+        self.assertEqual(account.overnight_sellable_shares, 10_000)
+        account.execute("SELL_CANDIDATE", FillBar("2026-08-28T10:30:00+08:00", 10.1, 50_000), requested_shares=2_000)
+        self.assertEqual(account.today_bought_shares, 2_000)
+        self.assertEqual(account.overnight_sellable_shares, 8_000)
+        self.assertEqual(len(account.completed_pairs), 1)
+        self.assertEqual(account.total_shares, 10_000)
+
+    def test_high_sell_then_buyback_restores_total_inventory(self) -> None:
+        account = TAccount.create(base_shares=10_000, t_capacity_shares=2_000, first_price=10.0, lot_size=100, intraday_turnaround=False)
+        account.execute("SELL_CANDIDATE", FillBar("2026-08-28T10:00:00+08:00", 10.2, 50_000), 2_000)
+        account.execute("BUY_CANDIDATE", FillBar("2026-08-28T10:30:00+08:00", 9.9, 50_000), 2_000)
+        self.assertEqual(account.total_shares, 10_000)
+        self.assertEqual(len(account.completed_pairs), 1)
+        self.assertGreater(account.completed_pairs[0].net_pnl, 0)
+
+    def test_zero_volume_and_participation_limit_prevent_impossible_fills(self) -> None:
+        account = TAccount.create(base_shares=10_000, t_capacity_shares=2_000, first_price=10.0, lot_size=100, intraday_turnaround=False)
+        rejected = account.execute("SELL_CANDIDATE", FillBar("2026-08-28T10:00:00+08:00", 10.2, 0), 2_000)
+        self.assertEqual(rejected.reason, "ZERO_VOLUME")
+        limited = account.execute("SELL_CANDIDATE", FillBar("2026-08-28T10:01:00+08:00", 10.2, 20), 2_000)
+        self.assertEqual(limited.shares, 200)
+
+    def test_no_completed_pairs_never_claims_outperformance(self) -> None:
+        result = TBacktester().summarize_no_trade(base_shares=1_000, reserve_cash=2_000, first_price=10.0, last_price=9.0)
+        self.assertEqual(result.status, "NO_COMPLETED_PAIRS")
+        self.assertEqual(result.t_net_gain_cny, 0.0)
+        self.assertEqual(result.strategy_ending_equity_cny, result.baseline_ending_equity_cny)
+
+
+class TBacktesterRunTests(unittest.TestCase):
+    trading = TradingMetadata(
+        "SSE", "DOMESTIC_EQUITY_ETF", False, 1, 100, 0.001, 0.10, 100,
+    )
+
+    @staticmethod
+    def market_quote(
+        prices: tuple[float, ...], volumes: tuple[float, ...], *, complete_count: int,
+    ) -> Quote:
+        start = datetime.fromisoformat("2026-08-28T10:00:00+08:00")
+        points = tuple(
+            QuotePoint(
+                start + timedelta(minutes=index),
+                price,
+                10.0,
+                volume=volumes[index],
+            )
+            for index, price in enumerate(prices)
+        )
+        observed_at = points[complete_count - 1].timestamp + timedelta(minutes=1)
+        if complete_count < len(points):
+            observed_at = points[complete_count].timestamp + timedelta(seconds=5)
+        return Quote(
+            "510300", "ETF", points[-1].price, 10.0, 10.0,
+            points[-1].timestamp, points, observed_at, "TEST_FIXTURE",
+        )
+
+    def test_run_executes_signal_on_next_completed_bar_with_volume_partial_fill(self) -> None:
+        seen: list[str] = []
+
+        def signal(decision_quote: Quote, _item: WatchItem, _bar: QuotePoint) -> str:
+            seen.append(decision_quote.timestamp.isoformat())
+            return "BUY_CANDIDATE"
+
+        market_quote = self.market_quote(
+            (10.0, 9.8, 9.7), (10_000, 10, 10_000), complete_count=2,
+        )
+        result = TBacktester(signal_callback=signal).run(
+            market_quote,
+            WatchItem("510300", "ETF", 0.002, True, 1_000, 200),
+            self.trading,
+        )
+
+        self.assertEqual(seen, ["2026-08-28T10:00:00+08:00"])
+        self.assertEqual(result.execution_mode, "NEXT_COMPLETED_BAR")
+        self.assertEqual(result.open_leg_count, 1)
+        self.assertEqual(result.open_legs[0].timestamp, "2026-08-28T10:01:00+08:00")
+        self.assertEqual(result.open_legs[0].shares, 100)
+        self.assertEqual(result.rejections[0].reason, "PARTICIPATION_LIMIT")
+        self.assertEqual(result.last_price, 9.8)
+
+    def test_run_with_no_actions_matches_same_inventory_and_cash_baseline(self) -> None:
+        market_quote = self.market_quote(
+            (10.0, 9.0), (10_000, 10_000), complete_count=2,
+        )
+        result = TBacktester(signal_callback=lambda *_: "WAIT").run(
+            market_quote,
+            WatchItem("510300", "ETF", 0.002, True, 1_000, 200),
+            self.trading,
+            reserve_cash=2_000.0,
+        )
+        self.assertEqual(result.status, "NO_COMPLETED_PAIRS")
+        self.assertEqual(result.strategy_ending_equity_cny, 11_000.0)
+        self.assertEqual(result.baseline_ending_equity_cny, 11_000.0)
+        self.assertEqual(result.t_net_gain_cny, 0.0)
+        self.assertIsNone(result.outperformed_baseline)
+
+    def test_records_and_backtest_result_are_json_serializable(self) -> None:
+        account = TAccount.create(
+            base_shares=1_000,
+            t_capacity_shares=200,
+            first_price=10.0,
+            lot_size=100,
+            intraday_turnaround=False,
+        )
+        bar = FillBar("2026-08-28T10:00:00+08:00", 9.8, 50_000)
+        buy = account.execute("BUY_CANDIDATE", bar, 200)
+        account.execute(
+            "SELL_CANDIDATE",
+            FillBar("2026-08-28T10:01:00+08:00", 10.1, 50_000),
+            200,
+        )
+        rejected = account.execute(
+            "SELL_CANDIDATE",
+            FillBar("2026-08-28T10:02:00+08:00", 10.1, 0),
+            200,
+        )
+        result = TBacktester().summarize(
+            account, first_price=10.0, last_price=10.1,
+        )
+        for record in (bar, buy, account.completed_pairs[0], rejected, result):
+            with self.subTest(record=type(record).__name__):
+                self.assertIsInstance(json.loads(json.dumps(record.to_dict())), dict)
+
+    def test_t_plus_one_sale_never_consumes_today_bought_inventory(self) -> None:
+        account = TAccount.create(base_shares=100, t_capacity_shares=200, first_price=10.0, lot_size=100, intraday_turnaround=False)
+        account.execute("BUY_CANDIDATE", FillBar("2026-08-28T10:00:00+08:00", 9.0, 50_000), 200)
+        sale = account.execute("SELL_CANDIDATE", FillBar("2026-08-28T10:30:00+08:00", 10.0, 50_000), 200)
+        self.assertEqual(sale.shares, 100)
+        self.assertEqual(account.today_bought_shares, 200)
+        self.assertEqual(account.overnight_sellable_shares, 0)
+        self.assertEqual(account.total_shares, 200)
+
+    def test_rejections_distinguish_lot_inventory_and_cash_limits(self) -> None:
+        account = TAccount.create(base_shares=0, t_capacity_shares=100, first_price=10.0, lot_size=100, intraday_turnaround=False)
+        self.assertEqual(account.execute("BUY_CANDIDATE", FillBar("2026-08-28T10:00:00+08:00", 10.0, 50_000), 50).reason, "LOT_SIZE")
+        self.assertEqual(account.execute("SELL_CANDIDATE", FillBar("2026-08-28T10:01:00+08:00", 10.0, 50_000), 100).reason, "INSUFFICIENT_INVENTORY")
+        no_cash = TAccount.create(base_shares=100, t_capacity_shares=100, first_price=10.0, lot_size=100, intraday_turnaround=False, reserve_cash=0.0)
+        self.assertEqual(no_cash.execute("BUY_CANDIDATE", FillBar("2026-08-28T10:02:00+08:00", 10.0, 50_000), 100).reason, "INSUFFICIENT_CASH")
+
+    def test_unclosed_sell_leg_is_marked_and_reports_sell_fly_loss(self) -> None:
+        start = datetime.fromisoformat("2026-08-28T10:00:00+08:00")
+        points = (
+            QuotePoint(start, 10.0, 10.0, volume=10_000),
+            QuotePoint(start + timedelta(minutes=1), 11.0, 10.0, volume=10_000),
+        )
+        market_quote = Quote(
+            "510300", "ETF", 11.0, 10.0, 10.0, points[-1].timestamp,
+            points, points[-1].timestamp + timedelta(minutes=1), "TEST_FIXTURE",
+        )
+        trading = TradingMetadata("SSE", "DOMESTIC_EQUITY_ETF", False, 1, 100, 0.001, 0.10, 100)
+        result = TBacktester(signal_callback=lambda *_: "SELL_CANDIDATE").run(
+            market_quote,
+            WatchItem("510300", "ETF", 0.002, True, 1_000, 200),
+            trading,
+        )
+        self.assertEqual(result.status, "OPEN_LEG")
+        self.assertEqual(result.open_leg_count, 1)
+        self.assertEqual(result.open_legs[0].side, "SELL")
+        self.assertGreater(result.sell_fly_loss_cny, 0)
+        self.assertEqual(result.t_net_gain_cny, 0.0)
+
+
+if __name__ == "__main__":
+    unittest.main()
