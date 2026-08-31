@@ -164,7 +164,6 @@ class RuntimeTests(unittest.TestCase):
             refresh_interval=5.0,
             alert_history_path=self.paths.alerts,
             metadata_path=self.paths.metadata,
-            valuation_path=None,
             calendar_path=self.paths.calendar,
             clock=lambda: datetime.fromisoformat("2026-08-28T10:02:00+08:00"),
         )
