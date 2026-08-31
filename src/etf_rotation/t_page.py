@@ -22,12 +22,22 @@ const esc=v=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'
 const num=(v,digits=3)=>v==null||!Number.isFinite(Number(v))?'—':Number(v).toFixed(digits),pct=v=>v==null||!Number.isFinite(Number(v))?'—':(Number(v)*100).toFixed(2)+'%';
 let latestData=null,backtests=new Map(),replays=new Map(),selectedSymbol=null,alertHistoryCache=new Map(),dailyHistoryCache=new Map(),alertRequestSequence=0,dailyRequestSequence=0,quoteRequestSequence=0;
 const quotePoints=new Map(),quoteRevisions=new Map();
+let feedState={ready:false,summaryReady:false,message:'正在连接'};
 
 /* PAGE_HELPERS_START */
-function marketPresentation(item,nowMs=Date.now()){
+function nextFeedState(current,event,message=''){
+  const state=current||{ready:false,summaryReady:false,message:''};
+  if(event==='FAIL')return {ready:false,summaryReady:false,message:message||'行情连接中断'};
+  if(event==='SUMMARY')return {...state,summaryReady:true};
+  if(event==='QUOTES')return state.ready||state.summaryReady?{ready:true,summaryReady:true,message:''}:state;
+  if(event==='POLL')return {ready:true,summaryReady:true,message:''};
+  return state;
+}
+
+function marketPresentation(item,nowMs=Date.now(),feed={ready:true,message:''}){
   const health=item.health_status||'UNKNOWN',missing=item.status==='MISSING_QUOTE'||health==='MISSING',healthKey=missing?'MISSING':health;
   const marketAt=item.timestamp?new Date(item.timestamp):null,marketMs=marketAt&&marketAt.getTime(),age=Number.isFinite(marketMs)?nowMs-marketMs:Infinity;
-  const realtime=healthKey==='REALTIME'&&item.status==='OK',stale=realtime&&(age<0||age>STALE_AFTER_MS),candidateAction=item.action==='BUY_CANDIDATE'||item.action==='SELL_CANDIDATE',candidate=realtime&&!stale&&candidateAction;
+  const realtime=healthKey==='REALTIME'&&item.status==='OK',stale=realtime&&(age<0||age>STALE_AFTER_MS),candidateAction=item.action==='BUY_CANDIDATE'||item.action==='SELL_CANDIDATE',candidate=Boolean(feed.ready)&&realtime&&!stale&&candidateAction;
   const states={
     REALTIME:{statusText:'实时监控中',dotClass:'live'},
     DELAYED:{statusText:'行情延迟',dotClass:'delayed'},
@@ -37,8 +47,8 @@ function marketPresentation(item,nowMs=Date.now()){
     MISSING:{statusText:'行情缺失',dotClass:'missing'},
     UNKNOWN:{statusText:'行情状态未知',dotClass:'unknown'},
   };
-  const state=stale?{statusText:'当前行情已过期',dotClass:'stale'}:(states[healthKey]||states.UNKNOWN);
-  const unsafe=!realtime||stale;
+  const state=!feed.ready?{statusText:feed.message||'行情连接中断',dotClass:'outage'}:stale?{statusText:'当前行情已过期',dotClass:'stale'}:(states[healthKey]||states.UNKNOWN);
+  const unsafe=!feed.ready||!realtime||stale;
   return {...state,health,healthKey,realtime,stale,candidateAction,candidate,displayLabel:candidate?'做T候选':candidateAction||item.action==='DEVIATION_OBSERVE'?'偏离观察':item.label,marketAt,unsafe,warning:unsafe?state.statusText+'，候选提醒已撤销':''};
 }
 
@@ -58,7 +68,7 @@ async function loadQuoteUpdates(symbol,since,sequence){
   if(payload.symbol!==symbol)throw new Error('分钟行情标的不匹配');
   if(sequence!==quoteRequestSequence||symbol!==selectedSymbol)return null;
   if(!Number.isInteger(revision)||revision<0)throw new Error('分钟行情版本无效');
-  if(revision<Number(quoteRevisions.get(symbol)||0))return null;
+  if(!payload.reset&&revision<Number(quoteRevisions.get(symbol)||0))return null;
   quotePoints.set(symbol,staged);
   quoteRevisions.set(symbol,revision);
   return [...staged.values()].sort((left,right)=>left.timestamp.localeCompare(right.timestamp));
@@ -110,36 +120,37 @@ function replaySummary(symbol){
   return `<section class="replay"><h3>信号粗回放</h3><div class="meta"><div><span>状态</span>${esc(data.status||'OK')}</div><div><span>候选次数</span>${actions.length}</div><div><span>说明</span>仅复查信号，不评价收益</div></div></section>`;
 }
 function updateConnection(state){connectionStatus.className='status '+state.dotClass;dot.className='dot '+state.dotClass;statusNode.textContent=state.statusText;staleBanner.textContent=state.warning||'';staleBanner.classList.toggle('visible',Boolean(state.unsafe))}
-function renderNav(items){watchCount.textContent=items.length+' 项';watchList.innerHTML=items.map(item=>{const state=marketPresentation(item),opportunity=state.candidate;return `<button type="button" class="watch-item${item.symbol===selectedSymbol?' active':''}${opportunity?' opportunity':''}" data-symbol="${esc(item.symbol)}" aria-current="${item.symbol===selectedSymbol?'true':'false'}"><span class="watch-item-main"><span class="watch-item-name">${esc(item.name)}</span><span class="watch-item-symbol">${esc(item.symbol)}</span></span><i class="watch-item-state ${state.dotClass}${opportunity?' opportunity':''}"></i></button>`}).join('')||'<div class="empty">监控列表为空</div>'}
+function renderNav(items){watchCount.textContent=items.length+' 项';watchList.innerHTML=items.map(item=>{const state=marketPresentation(item,Date.now(),feedState),opportunity=state.candidate;return `<button type="button" class="watch-item${item.symbol===selectedSymbol?' active':''}${opportunity?' opportunity':''}" data-symbol="${esc(item.symbol)}" aria-current="${item.symbol===selectedSymbol?'true':'false'}"><span class="watch-item-main"><span class="watch-item-name">${esc(item.name)}</span><span class="watch-item-symbol">${esc(item.symbol)}</span></span><i class="watch-item-state ${state.dotClass}${opportunity?' opportunity':''}"></i></button>`}).join('')||'<div class="empty">监控列表为空</div>'}
 
 function render(data){
   latestData=data;const refreshedAt=new Date(),allItems=data.items||[],items=showMissing.checked?allItems:allItems.filter(item=>item.status!=='MISSING_QUOTE');errors.textContent=(data.errors||[]).join(' · ');if(!items.some(item=>item.symbol===selectedSymbol))selectedSymbol=items.length?items[0].symbol:null;renderNav(items);const item=items.find(current=>current.symbol===selectedSymbol);
   if(!item){detail.innerHTML=`<div class="card empty">${allItems.length?'无可显示行情，请开启“显示无行情”':'监控列表为空'}</div>`;updateConnection({statusText:'暂无可用行情',dotClass:'missing',warning:'暂无可用行情，候选提醒已撤销',unsafe:true});refreshTimeNode.textContent='页面刷新时间：'+refreshedAt.toLocaleString();return}
-  const state=marketPresentation(item,refreshedAt.getTime()),marketAt=state.marketAt,stale=state.stale,candidate=state.candidate,displayLabel=state.displayLabel,cls='wait',move=item.change_pct!=null&&item.change_pct>=0?'up':'down',missing=item.status==='MISSING_QUOTE',candidateAlert=candidate?'<div class="candidate-alert" role="alert"><strong>做T候选</strong><span>方向仅用于配对记账，不构成交易指令</span></div>':'';
+  const state=marketPresentation(item,refreshedAt.getTime(),feedState),marketAt=state.marketAt,stale=state.stale,candidate=state.candidate,displayLabel=state.displayLabel,cls='wait',move=item.change_pct!=null&&item.change_pct>=0?'up':'down',missing=item.status==='MISSING_QUOTE',candidateAlert=candidate?'<div class="candidate-alert" role="alert"><strong>做T候选</strong><span>方向仅用于配对记账，不构成交易指令</span></div>':'';
   const regimeClass=item.regime_state==='UPTREND'?'uptrend':item.regime_state==='DOWNTREND'?'downtrend':item.regime_state==='RANGE'?'range':'uncertain',regimeAlert=`<div class="regime-alert ${regimeClass}" role="status"><strong>${esc(item.regime_state==='UPTREND'?'上涨趋势日':item.regime_state==='DOWNTREND'?'下跌趋势日':item.regime_state==='RANGE'?'震荡日':'状态未知')}</strong><span> · ${esc(item.regime_label||'状态未确认，暂停做T')}</span></div>`;
   const health=item.health_status||'UNKNOWN',health_reason=item.health_reason||'行情状态未知',path_efficiency=item.path_efficiency,one_side_ratio=item.one_side_ratio,vwap_crossings=item.vwap_crossings,vwap_slope=item.vwap_slope,above_vwap_count=item.above_vwap_count,below_vwap_count=item.below_vwap_count,range_confirmation_count=item.range_confirmation_count,trend_confirmation_count=item.trend_confirmation_count,gross_edge_pct=item.expected_gross_edge_pct,cost_pct=item.round_trip_cost_pct,net_edge_pct=item.expected_net_edge_pct,blocked_reasons=item.blocked_reasons||[];
   detail.innerHTML=`<article class="card" data-symbol="${esc(item.symbol)}"><div class="top"><div><div class="symbol">${esc(item.symbol)}</div><div class="name">${esc(item.name)}</div></div><div><div class="price">${num(item.price)}</div><div class="pct ${move}">${pct(item.change_pct)}</div></div></div><div class="signal ${cls}">${esc(displayLabel)}</div>${regimeAlert}${candidateAlert}${missing?'<div class="empty">行情缺失，指标不可用</div>':chart(item)}<div class="meta"><div><span>行情健康</span>${esc(health)} · ${esc(health_reason)}</div><div><span>ER / 路径效率</span>${num(path_efficiency,4)}</div><div><span>单侧比例</span>${pct(one_side_ratio)}</div><div><span>VWAP 穿越</span>${num(vwap_crossings,0)}</div><div><span>VWAP 斜率</span>${pct(vwap_slope)}</div><div><span>VWAP 两侧停留</span>上 ${num(above_vwap_count,0)} · 下 ${num(below_vwap_count,0)}</div><div><span>连续确认</span>震荡 ${num(range_confirmation_count,0)} · 趋势 ${num(trend_confirmation_count,0)}</div><div><span>预期毛边际</span>${pct(gross_edge_pct)}</div><div><span>双边成本</span>${pct(cost_pct)}</div><div><span>预期净边际</span>${pct(net_edge_pct)}</div><div><span>阻断原因</span>${blocked_reasons.length?blocked_reasons.map(esc).join(' · '):'无'}</div><div><span>格宽阈值</span>三格 ${pct((item.grid_width_pct||DEFAULT_GRID_WIDTH_PCT)*3)} · 五格 ${pct((item.grid_width_pct||DEFAULT_GRID_WIDTH_PCT)*5)}</div></div><section class="alerts"><h3>按日历史行情</h3><div id="daily-history" class="alert-list">${dailyHistoryCache.get(`${historyDate.value}|${item.symbol}`)||'<div class="hint">选择日期后查看当日分钟行情</div>'}</div></section><section class="alerts"><h3>提示追溯</h3><div id="alert-list" class="alert-list">${alertHistoryCache.get(item.symbol)||'<div class="hint">正在载入提示历史</div>'}</div></section><div class="time market-time${stale?' stale':''}">行情数据时间：${marketAt&&Number.isFinite(marketAt.getTime())?marketAt.toLocaleString():'—'}</div>${backtestSummary(item.symbol)}${replaySummary(item.symbol)}</article>`;
   refreshTimeNode.textContent='页面刷新时间：'+refreshedAt.toLocaleString();updateConnection(state);loadAlerts();loadDailyHistory();attachChartTooltip(item)
 }
 
-function failed(message){updateConnection({statusText:message,dotClass:'outage',warning:message+'，候选提醒已撤销',unsafe:true})}
-async function refreshSelectedQuotes(){const symbol=selectedSymbol;if(!symbol)return;const sequence=++quoteRequestSequence;try{await loadQuoteUpdates(symbol,quoteRevisions.get(symbol)||0,sequence);if(sequence!==quoteRequestSequence||symbol!==selectedSymbol)return;if(latestData)render(latestData)}catch(error){if(sequence===quoteRequestSequence)failed(error.message)}}
+function failed(message){feedState=nextFeedState(feedState,'FAIL',message);if(latestData)render(latestData);else updateConnection({statusText:message,dotClass:'outage',warning:message+'，候选提醒已撤销',unsafe:true})}
+async function refreshSelectedQuotes(){const symbol=selectedSymbol;if(!symbol)return;const sequence=++quoteRequestSequence;try{const points=await loadQuoteUpdates(symbol,quoteRevisions.get(symbol)||0,sequence);if(points===null||sequence!==quoteRequestSequence||symbol!==selectedSymbol)return;feedState=nextFeedState(feedState,'QUOTES');if(latestData)render(latestData)}catch(error){if(sequence===quoteRequestSequence)failed(error.message)}}
 async function loadAlerts(){const symbol=selectedSymbol;if(!symbol)return;const sequence=++alertRequestSequence;try{const response=await fetch(`/api/alerts?symbol=${encodeURIComponent(symbol)}&limit=30`,{cache:'no-store'});if(!response.ok)throw new Error('提示历史不可用');const data=await response.json(),html=(data.items||[]).map(item=>`<div class="alert-row"><strong>${esc(item.action)} · ${esc(item.symbol)}</strong><span>${esc(item.timestamp||item.recorded_at||'—')} · ${esc(item.label||'')}</span><span>策略 ${esc(item.strategy_version||'T_V1')} · 偏离 ${item.deviation_pct==null?'—':pct(item.deviation_pct)} · 状态 ${esc(item.regime_state||item.trend_state||'—')}</span></div>`).join('')||'<div class="hint">当前标的暂无历史提示</div>';if(sequence!==alertRequestSequence||symbol!==selectedSymbol)return;alertHistoryCache.set(symbol,html);const node=document.querySelector('#alert-list');if(node)node.innerHTML=html}catch(error){if(sequence!==alertRequestSequence||symbol!==selectedSymbol)return;const html=`<div class="hint">${esc(error.message)}</div>`;alertHistoryCache.set(symbol,html);const node=document.querySelector('#alert-list');if(node)node.innerHTML=html}}
 async function loadHistoryDates(){try{const selected=historyDate.value,response=await fetch('/api/history/dates',{cache:'no-store'}),data=await response.json();historyDate.innerHTML='<option value="">实时行情</option>'+data.dates.map(date=>`<option value="${esc(date)}">${esc(date)}</option>`).join('');if((data.dates||[]).includes(selected))historyDate.value=selected;loadDailyHistory()}catch(error){failed(error.message)}}
 async function loadDailyHistory(){const node=document.querySelector('#daily-history');if(!node||!historyDate.value||!selectedSymbol){if(node)node.innerHTML='<div class="hint">选择日期后查看当日分钟行情</div>';return}try{const response=await fetch(`/api/history/quotes?date=${encodeURIComponent(historyDate.value)}&symbol=${encodeURIComponent(selectedSymbol)}`,{cache:'no-store'}),data=await response.json();if(!response.ok)throw new Error(data.error||'历史行情不可用');const records=data.records||[],first=records[0],last=records[records.length-1];node.innerHTML=records.length?`<div class="alert-row"><strong>${esc(data.date)} · ${esc(selectedSymbol)}</strong><span>共 ${records.length} 个分钟点</span><span>${esc(first.timestamp)} → ${esc(last.timestamp)}</span><span>开 ${num(first.open||first.price)} · 收 ${num(last.price)} · 最高 ${num(Math.max(...records.map(x=>Number(x.high||x.price))))} · 最低 ${num(Math.min(...records.map(x=>Number(x.low||x.price))))}</span></div>`:'<div class="hint">该日期没有此标的行情</div>'}catch(error){node.innerHTML=`<div class="hint">${esc(error.message)}</div>`}}
-async function poll(){try{const response=await fetch('/api/snapshot',{cache:'no-store'});if(!response.ok)throw new Error('行情不可用');applySummary(await response.json(),true)}catch(error){failed(error.message)}}
+async function poll(){try{const response=await fetch('/api/snapshot',{cache:'no-store'});if(!response.ok)throw new Error('行情不可用');const data=await response.json();feedState=nextFeedState(feedState,'POLL');applySummary(data,true)}catch(error){failed(error.message)}}
 async function loadBacktests(){try{const [backtestResponse,replayResponse]=await Promise.all([fetch('/api/t-backtest',{cache:'no-store'}),fetch('/api/signal-replay',{cache:'no-store'})]);if(!backtestResponse.ok||!replayResponse.ok)throw new Error('回放不可用');const backtestData=await backtestResponse.json(),replayData=await replayResponse.json();backtests=new Map((backtestData.items||[]).map(item=>[item.symbol,item]));replays=new Map((replayData.items||[]).map(item=>[item.symbol,item]));if(latestData)render(latestData)}catch(error){failed(error.message)}}
 function applySummary(data,authoritative=false){
+  feedState=nextFeedState(feedState,'SUMMARY');
   if(authoritative||!latestData)latestData=data;
   else{const removed=new Set(data.removed_symbols||[]),changed=new Map((data.items||[]).map(item=>[item.symbol,item])),current=(latestData.items||[]).filter(item=>!removed.has(item.symbol)).map(item=>changed.get(item.symbol)||item),known=new Set(current.map(item=>item.symbol));for(const item of changed.values())if(!known.has(item.symbol))current.push(item);latestData={...latestData,...data,items:current}}
   render(latestData);refreshSelectedQuotes();
 }
-function applyReset(data){quoteRequestSequence+=1;quotePoints.clear();quoteRevisions.clear();applySummary(data,true)}
+function applyReset(data){quoteRequestSequence+=1;quotePoints.clear();quoteRevisions.clear();feedState=nextFeedState(feedState,'FAIL','正在同步行情');applySummary(data,true)}
 watchList.addEventListener('click',event=>{const button=event.target.closest('[data-symbol]');if(!button)return;selectedSymbol=button.dataset.symbol;render(latestData);refreshSelectedQuotes()});
 historyDate.addEventListener('change',loadDailyHistory);
 showMissing.addEventListener('change',()=>{if(latestData)render(latestData)});
 watchForm.addEventListener('submit',async event=>{event.preventDefault();formError.textContent='';watchSubmit.disabled=true;try{const response=await fetch('/api/watchlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:watchSymbol.value,name:watchName.value,grid_width_pct:DEFAULT_GRID_WIDTH_PCT})}),payload=await response.json();if(!response.ok)throw new Error(payload.message||payload.error||'添加失败');watchForm.reset();await poll();await loadBacktests()}catch(error){formError.textContent=error.message}finally{watchSubmit.disabled=false}});
-let timer;function fallback(){if(timer)return;failed('轮询模式');poll();timer=setInterval(poll,5000)}
+let timer;function fallback(){failed('轮询模式');if(timer)return;poll();timer=setInterval(poll,5000)}
 loadHistoryDates();loadBacktests();if(window.EventSource){const source=new EventSource('/api/events');source.addEventListener('summary',event=>applySummary(JSON.parse(event.data),true));source.addEventListener('snapshot',event=>applySummary(JSON.parse(event.data),true));source.addEventListener('delta',event=>applySummary(JSON.parse(event.data)));source.addEventListener('reset',event=>applyReset(JSON.parse(event.data)));source.addEventListener('monitor-error',event=>failed(JSON.parse(event.data).error));source.onerror=fallback}else fallback();
 </script></body></html>"""
 

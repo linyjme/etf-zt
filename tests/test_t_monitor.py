@@ -880,6 +880,60 @@ global.fetch=url=>new Promise(resolve=>pending.push({url,resolve}));
         self.assertEqual(state["timestamps"], ["new"])
         self.assertTrue(state["mismatchRejected"])
 
+    def test_page_authoritative_quote_reset_accepts_lower_server_revision(self) -> None:
+        state = run_page_helpers(r"""
+let selectedSymbol='510300',quoteRequestSequence=1;
+const quotePoints=new Map([['510300',new Map([['old',{timestamp:'old',price:100}]])]]),quoteRevisions=new Map([['510300',100]]);
+global.fetch=async()=>({ok:true,json:async()=>({symbol:'510300',revision:1,reset:true,upserts:[{timestamp:'new',price:1}]})});
+(async()=>{
+  await loadQuoteUpdates('510300',100,1);
+  console.log(JSON.stringify({revision:quoteRevisions.get('510300'),timestamps:[...quotePoints.get('510300').keys()]}));
+})().catch(error=>{console.error(error);process.exitCode=1});
+""")
+        self.assertEqual(state["revision"], 1)
+        self.assertEqual(state["timestamps"], ["new"])
+
+    def test_page_feed_failure_revokes_all_candidate_decorations_until_recovery(self) -> None:
+        states = run_page_helpers(r"""
+const item={health_status:'REALTIME',status:'OK',action:'BUY_CANDIDATE',timestamp:'2026-08-28T10:00:00+08:00'};
+const now=Date.parse('2026-08-28T10:00:30+08:00');
+const decorate=state=>({navOpportunity:state.candidate,signalLabel:state.displayLabel,candidateAlert:state.candidate?'candidate-alert':''});
+console.log(JSON.stringify([
+  decorate(marketPresentation(item,now,{ready:true,message:''})),
+  decorate(marketPresentation(item,now,{ready:false,message:'行情连接中断'})),
+  decorate(marketPresentation(item,now,{ready:true,message:''})),
+]));
+""")
+        self.assertEqual(states[0], {
+            "navOpportunity": True, "signalLabel": "做T候选",
+            "candidateAlert": "candidate-alert",
+        })
+        self.assertEqual(states[1], {
+            "navOpportunity": False, "signalLabel": "偏离观察",
+            "candidateAlert": "",
+        })
+        self.assertEqual(states[2], states[0])
+        self.assertIn("marketPresentation(item,Date.now(),feedState)", PAGE)
+        self.assertIn("marketPresentation(item,refreshedAt.getTime(),feedState)", PAGE)
+
+    def test_page_feed_recovery_requires_summary_and_quotes_or_successful_poll(self) -> None:
+        transitions = run_page_helpers(r"""
+const initial={ready:true,summaryReady:true,message:''};
+const failedState=nextFeedState(initial,'FAIL','连接失败');
+const quotesOnly=nextFeedState(failedState,'QUOTES');
+const summarized=nextFeedState(failedState,'SUMMARY');
+const sseRecovered=nextFeedState(summarized,'QUOTES');
+const pollRecovered=nextFeedState(failedState,'POLL');
+console.log(JSON.stringify({failedState,quotesOnly,summarized,sseRecovered,pollRecovered}));
+""")
+        self.assertFalse(transitions["failedState"]["ready"])
+        self.assertFalse(transitions["failedState"]["summaryReady"])
+        self.assertFalse(transitions["quotesOnly"]["ready"])
+        self.assertTrue(transitions["summarized"]["summaryReady"])
+        self.assertFalse(transitions["summarized"]["ready"])
+        self.assertTrue(transitions["sseRecovered"]["ready"])
+        self.assertTrue(transitions["pollRecovered"]["ready"])
+
     def test_page_is_extracted_and_uses_candidate_language_with_evidence(self) -> None:
         self.assertIsNotNone(importlib.util.find_spec("etf_rotation.t_page"))
         self.assertNotIn("黄金窗口", PAGE)
@@ -960,7 +1014,7 @@ global.fetch=url=>new Promise(resolve=>pending.push({url,resolve}));
     def test_page_highlights_fresh_candidates_with_neutral_language_only(self) -> None:
         self.assertIn("item.action==='BUY_CANDIDATE'||item.action==='SELL_CANDIDATE'", PAGE)
         self.assertIn("healthKey==='REALTIME'", PAGE)
-        self.assertIn("candidate=realtime&&!stale&&candidateAction", PAGE)
+        self.assertIn("candidate=Boolean(feed.ready)&&realtime&&!stale&&candidateAction", PAGE)
         self.assertIn("candidateAction=item.action==='BUY_CANDIDATE'||item.action==='SELL_CANDIDATE'", PAGE)
         self.assertIn("displayLabel:candidate?'做T候选':candidateAction||item.action==='DEVIATION_OBSERVE'?'偏离观察'", PAGE)
         self.assertIn("做T候选", PAGE)
