@@ -303,11 +303,21 @@ class TMonitorEngineTests(unittest.TestCase):
         item = self.evaluate(quote(10.1))
         self.assertEqual(item["regime_state"], "UNCERTAIN")
         self.assertEqual(item["regime_label"], "样本不足，暂停做T")
+        self.assertIsNone(item["regime_score"])
+        self.assertEqual(item["regime_sample_count"], 1)
         self.assertIsNone(item["path_efficiency"])
+        self.assertIsNone(item["one_side_ratio"])
+        self.assertIsNone(item["vwap_crossings"])
+        self.assertIsNone(item["vwap_slope"])
+        self.assertEqual(item["above_vwap_count"], 0)
+        self.assertEqual(item["below_vwap_count"], 0)
+        self.assertEqual(item["range_confirmation_count"], 0)
+        self.assertEqual(item["trend_confirmation_count"], 0)
+        self.assertEqual(item["regime_reasons"], ["INSUFFICIENT_SAMPLES"])
 
     def test_uptrend_blocks_countertrend_sell_reminder(self) -> None:
         points = []
-        for index in range(20):
+        for index in range(21):
             price = 10.0 + index * 0.08
             average = 10.0 + index * 0.03
             points.append({
@@ -315,11 +325,13 @@ class TMonitorEngineTests(unittest.TestCase):
                 "price": price,
                 "average_price": average,
             })
-        raw = quote(11.52, 10.57, 10.0)
+        raw = quote(11.6, 10.6, 10.0)
         raw["timestamp"] = points[-1]["timestamp"]
         raw["points"] = points
         item = self.evaluate(raw)
         self.assertEqual(item["regime_state"], "UPTREND")
+        self.assertEqual(item["trend_confirmation_count"], 2)
+        self.assertEqual(item["regime_reasons"], ["UPTREND_CONFIRMED"])
         self.assertEqual(item["action"], "OBSERVE")
         self.assertIn("上涨趋势日", item["label"])
 

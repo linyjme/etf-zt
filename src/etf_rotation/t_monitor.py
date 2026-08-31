@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from .constants import DEFAULT_GRID_WIDTH_PCT
+from .regime import RegimeDetector
 
 
 class QuoteHistoryStore:
@@ -202,6 +203,13 @@ class MonitorSignal:
     path_efficiency: float | None = None
     one_side_ratio: float | None = None
     vwap_crossings: int | None = None
+    vwap_slope: float | None = None
+    above_vwap_count: int = 0
+    below_vwap_count: int = 0
+    range_confirmation_count: int = 0
+    trend_confirmation_count: int = 0
+    regime_sample_count: int = 0
+    regime_reasons: tuple[str, ...] = ()
     trade_markers: tuple[dict[str, Any], ...] = ()
     signal_level: str = "NONE"
     blocked_reasons: tuple[str, ...] = ()
@@ -425,8 +433,9 @@ class TMonitorEngine:
             white_yellow_deviation_grids = round(abs(quote.price - quote.average_price) / grid_size, 6)
             previous_close_distance_grids = round(abs(quote.price - quote.previous_close) / grid_size, 6)
             fast_rise_grids = self._fast_rise_grids(quote, grid_size)
-            regime = self._regime(quote)
-            regime_state, regime_label, regime_score, path_efficiency, one_side_ratio, vwap_crossings = regime
+            regime = RegimeDetector().evaluate(quote.points)
+            regime_state = regime.state
+            regime_label = regime.label
             if fast_rise_grids + 1e-9 >= 5:
                 action, label = "OBSERVE", f"快速上冲 {fast_rise_grids:.2f} 格，优先观望"
             elif white_yellow_deviation_grids + 1e-9 >= 3 and previous_close_distance_grids + 1e-9 >= 5:
@@ -456,10 +465,16 @@ class TMonitorEngine:
                 volume_ratio=self._volume_ratio(quote),
                 regime_state=regime_state,
                 regime_label=regime_label,
-                regime_score=regime_score,
-                path_efficiency=path_efficiency,
-                one_side_ratio=one_side_ratio,
-                vwap_crossings=vwap_crossings,
+                path_efficiency=regime.path_efficiency,
+                one_side_ratio=regime.one_side_ratio,
+                vwap_crossings=regime.vwap_crossings,
+                vwap_slope=regime.vwap_slope,
+                above_vwap_count=regime.above_vwap_count,
+                below_vwap_count=regime.below_vwap_count,
+                range_confirmation_count=regime.range_confirmation_count,
+                trend_confirmation_count=regime.trend_confirmation_count,
+                regime_sample_count=regime.sample_count,
+                regime_reasons=regime.reasons,
                 trade_markers=self._trade_markers(quote, regime_state),
                 signal_level="GOLDEN" if action in {"BUY_REMINDER", "SELL_REMINDER"} else "NONE",
             ))
@@ -493,83 +508,6 @@ class TMonitorEngine:
         if strength <= -0.001:
             return "DOWNTREND"
         return "RANGE"
-
-    def _regime(self, quote: Quote) -> tuple[str, str, float | None, float | None, float | None, int | None]:
-        points = quote.points[-20:]
-        if len(points) < 20:
-            return "UNCERTAIN", "样本不足，暂停做T", None, None, None, None
-        prices = [point.price for point in points]
-        averages = [point.average_price for point in points]
-        returns = [abs(current - previous) for previous, current in zip(prices, prices[1:])]
-        path = sum(returns)
-        efficiency = abs(prices[-1] - prices[0]) / path if path > 0 else 0.0
-        baseline = sum(averages) / len(averages)
-        slope = (averages[-1] - averages[0]) / baseline if baseline > 0 else 0.0
-        upper = sum(price > average * 1.0002 for price, average in zip(prices, averages)) / len(points)
-        lower = sum(price < average * 0.9998 for price, average in zip(prices, averages)) / len(points)
-        one_side = max(upper, lower)
-        crossings = sum(
-            (prices[index - 1] - averages[index - 1]) * (prices[index] - averages[index]) < 0
-            and abs(prices[index] - averages[index]) / averages[index] > 0.0002
-            for index in range(1, len(points))
-        )
-        midpoint = len(points) // 2
-        first_prices = prices[:midpoint]
-        second_prices = prices[midpoint:]
-        high_progress = max(second_prices) > max(first_prices) * 1.0003
-        low_progress = min(second_prices) > min(first_prices) * 1.0003
-        up_progress = high_progress and low_progress
-        high_regression = max(second_prices) < max(first_prices) * 0.9997
-        low_regression = min(second_prices) < min(first_prices) * 0.9997
-        down_progress = high_regression and low_regression
-        overlap_values = []
-        for previous, current in zip(points, points[1:]):
-            previous_low = previous.low if previous.low is not None else previous.price
-            previous_high = previous.high if previous.high is not None else previous.price
-            current_low = current.low if current.low is not None else current.price
-            current_high = current.high if current.high is not None else current.price
-            intersection = max(0.0, min(previous_high, current_high) - max(previous_low, current_low))
-            union = max(previous_high, current_high) - min(previous_low, current_low)
-            overlap_values.append(intersection / union if union > 0 else 1.0)
-        candle_overlap = sum(value >= 0.5 for value in overlap_values) / len(overlap_values)
-        range_high = max(prices[:10])
-        range_low = min(prices[:10])
-        failed_breakout = any(
-            price > range_high * 1.0005 or price < range_low * 0.9995
-            for price in prices[10:-1]
-        ) and range_low * 0.9995 <= prices[-1] <= range_high * 1.0005
-        volumes = [point.volume for point in points]
-        first_volume = sum(volumes[:midpoint]) / midpoint
-        second_volume = sum(volumes[midpoint:]) / midpoint
-        volume_stall = (
-            first_volume > 0
-            and second_volume >= first_volume * 1.2
-            and abs(prices[-1] - prices[midpoint]) / baseline < 0.001
-        )
-        direction = 1 if prices[-1] >= prices[0] else -1
-        trend_score = sum((
-            one_side >= 0.8,
-            slope * direction >= 0.001,
-            efficiency >= 0.55,
-            up_progress if direction > 0 else down_progress,
-        ))
-        range_score = sum((
-            abs(slope) < 0.001,
-            crossings >= 2,
-            candle_overlap >= 0.5 and not (up_progress or down_progress),
-            failed_breakout,
-            volume_stall,
-            efficiency <= 0.30,
-        ))
-        if trend_score >= 3 and one_side >= 0.8:
-            state = "UPTREND" if direction > 0 else "DOWNTREND"
-            label = "上涨趋势日，禁止逆势高抛" if state == "UPTREND" else "下跌趋势日，禁止逆势低吸"
-            score = trend_score / 4
-        elif range_score >= 3:
-            state, label, score = "RANGE", "震荡日，可等待反转确认后做T", range_score / 6
-        else:
-            state, label, score = "UNCERTAIN", "状态未确认，暂停做T", max(trend_score / 4, range_score / 6)
-        return state, label, round(score, 4), round(efficiency, 4), round(one_side, 4), crossings
 
     def _trade_markers(self, quote: Quote, regime_state: str) -> tuple[dict[str, Any], ...]:
         if regime_state != "RANGE" or len(quote.points) < 3:
@@ -641,6 +579,13 @@ def snapshot_to_dict(snapshot: MonitorSnapshot) -> dict[str, Any]:
                 "path_efficiency": signal.path_efficiency,
                 "one_side_ratio": signal.one_side_ratio,
                 "vwap_crossings": signal.vwap_crossings,
+                "vwap_slope": signal.vwap_slope,
+                "above_vwap_count": signal.above_vwap_count,
+                "below_vwap_count": signal.below_vwap_count,
+                "range_confirmation_count": signal.range_confirmation_count,
+                "trend_confirmation_count": signal.trend_confirmation_count,
+                "regime_sample_count": signal.regime_sample_count,
+                "regime_reasons": list(signal.regime_reasons),
                 "trade_markers": list(signal.trade_markers),
                 "signal_level": signal.signal_level,
                 "blocked_reasons": list(signal.blocked_reasons),
