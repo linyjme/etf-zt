@@ -166,9 +166,9 @@ class ScriptedEventApplication:
         self._stop_event = threading.Event()
         self.waits: list[int] = []
         self.script: list[dict[str, object] | None | str] = [
-            {"revision": 8, "items": []},
+            {"event": "delta", "revision": 8, "items": [], "upserts": {}},
             None,
-            {"revision": 9, "items": []},
+            {"event": "delta", "revision": 9, "items": [], "upserts": {}},
             "stop",
         ]
 
@@ -616,6 +616,62 @@ class RuntimeTests(unittest.TestCase):
             app.stop_refresh()
             self.assertIsNone(waiting.result(timeout=0.5))
 
+    def test_snapshot_is_lightweight_and_quote_cursor_returns_revised_minutes(self) -> None:
+        collector = StaticCollector(valid_completed_quote_payload())
+        app = self.make_runtime_fixture(collector)
+        self.assertTrue(app.refresh_once())
+
+        summary = app.snapshot()
+        self.assertNotIn("points", summary["items"][0])
+        initial = app.quotes("510300", since=0)
+        self.assertEqual(initial["symbol"], "510300")
+        self.assertEqual(initial["revision"], 1)
+        self.assertEqual(
+            len(initial["upserts"]),
+            len(valid_completed_quote_payload()["quotes"][0]["points"]),
+        )
+
+        revised = valid_completed_quote_payload()
+        latest = revised["quotes"][0]["points"][-1]
+        latest["price"] = 9.931
+        latest["open"] = 9.931
+        latest["amount"] = 993_100.0
+        revised["quotes"][0]["price"] = 9.931
+        collector.payload = revised
+        self.assertTrue(app.refresh_once())
+
+        delta = app.quotes("510300", since=1)
+        self.assertEqual(delta["revision"], 2)
+        self.assertEqual(len(delta["upserts"]), 1)
+        self.assertEqual(delta["upserts"][0]["timestamp"], latest["timestamp"])
+        self.assertEqual(delta["upserts"][0]["price"], 9.931)
+
+    def test_quote_cursor_falls_back_to_current_day_after_delta_eviction(self) -> None:
+        app = self.make_runtime_fixture(revision_event_limit=2)
+        self.assertTrue(app.refresh_once())
+        app.collector = FailingCollector("断流")
+        self.assertFalse(app.refresh_once())
+        app.collector = StaticCollector(valid_completed_quote_payload())
+        self.assertTrue(app.refresh_once())
+
+        result = app.quotes("510300", since=0)
+        self.assertEqual(result["revision"], 3)
+        self.assertTrue(result["reset"])
+        self.assertTrue(result["upserts"])
+        self.assertEqual(
+            {point["timestamp"][:10] for point in result["upserts"]},
+            {"2026-08-28"},
+        )
+
+    def test_quote_cursor_rejects_disabled_unicode_or_invalid_arguments(self) -> None:
+        app = self.make_runtime_fixture()
+        with self.assertRaisesRegex(ValueError, "启用"):
+            app.quotes("159915", since=0)
+        with self.assertRaisesRegex(ValueError, "6位"):
+            app.quotes("５１０３００", since=0)
+        with self.assertRaisesRegex(ValueError, "非负整数"):
+            app.quotes("510300", since=-1)
+
     def test_revision_cursor_outside_retained_range_returns_current_snapshot(self) -> None:
         app = self.make_runtime_fixture(revision_event_limit=2)
         self.assertTrue(app.refresh_once())
@@ -644,6 +700,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(stream.count("id: 7\n"), 1)
         self.assertEqual(stream.count("id: 8\n"), 1)
         self.assertEqual(stream.count("id: 9\n"), 1)
+        self.assertEqual(stream.count("event: snapshot\n"), 1)
+        self.assertEqual(stream.count("event: delta\n"), 2)
         self.assertIn(": heartbeat\n\n", stream)
 
     def test_sse_restart_cursor_ahead_of_current_gets_full_snapshot(self) -> None:

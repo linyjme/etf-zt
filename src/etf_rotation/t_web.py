@@ -98,7 +98,52 @@ class MonitorApplication:
     def snapshot(self) -> dict[str, Any]:
         with self.refresh_lock:
             published = self._published
-        return copy.deepcopy(published)
+        return self._summary_snapshot(published)
+
+    def quotes(self, symbol: str, since: int) -> dict[str, Any]:
+        if not isinstance(symbol, str) or re.fullmatch(r"[0-9]{6}", symbol) is None:
+            raise ValueError("ETF代码必须是ASCII 6位数字")
+        if isinstance(since, bool) or not isinstance(since, int) or since < 0:
+            raise ValueError("since必须是非负整数")
+        enabled = {
+            item.symbol for item in load_watchlist(self.watchlist_path) if item.enabled
+        }
+        if symbol not in enabled:
+            raise ValueError(f"标的未启用: {symbol}")
+
+        with self._publish_condition:
+            revision = self._revision
+            published = copy.deepcopy(self._published)
+            events = copy.deepcopy(tuple(self._revision_events))
+        all_points = self._current_day_points(published, symbol)
+        too_old = (
+            since > revision
+            or (since < revision and not events)
+            or (
+                bool(events)
+                and since < int(events[0]["revision"]) - 1
+            )
+        )
+        if too_old:
+            upserts = all_points
+        else:
+            by_timestamp: dict[str, dict[str, Any]] = {}
+            current_date = self._points_trading_date(all_points)
+            for event in events:
+                if int(event["revision"]) <= since:
+                    continue
+                for point in event.get("upserts", {}).get(symbol, []):
+                    timestamp = str(point.get("timestamp", ""))
+                    if current_date is None or timestamp.startswith(current_date):
+                        by_timestamp[timestamp] = copy.deepcopy(point)
+            upserts = [by_timestamp[key] for key in sorted(by_timestamp)]
+        return {
+            "symbol": symbol,
+            "revision": revision,
+            "upserts": upserts,
+            "reset": too_old,
+            "read_only": True,
+        }
 
     def health(self) -> dict[str, Any]:
         snapshot = self.snapshot()
@@ -355,6 +400,89 @@ class MonitorApplication:
             "last_refresh_at": None,
         }
 
+    @staticmethod
+    def _summary_snapshot(published: Mapping[str, Any]) -> dict[str, Any]:
+        result = copy.deepcopy(dict(published))
+        for item in result.get("items", []):
+            item.pop("points", None)
+        return result
+
+    @staticmethod
+    def _points_trading_date(points: list[dict[str, Any]]) -> str | None:
+        if not points:
+            return None
+        timestamp = points[-1].get("timestamp")
+        return str(timestamp)[:10] if timestamp else None
+
+    @classmethod
+    def _current_day_points(
+        cls, published: Mapping[str, Any], symbol: str,
+    ) -> list[dict[str, Any]]:
+        for item in published.get("items", []):
+            if item.get("symbol") != symbol:
+                continue
+            points = copy.deepcopy(list(item.get("points") or []))
+            trading_date = cls._points_trading_date(points)
+            if trading_date is None:
+                return []
+            return [
+                point for point in points
+                if str(point.get("timestamp", "")).startswith(trading_date)
+            ]
+        return []
+
+    @classmethod
+    def _revision_delta(
+        cls,
+        previous: Mapping[str, Any],
+        current: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        previous_summary = cls._summary_snapshot(previous)
+        current_summary = cls._summary_snapshot(current)
+        previous_items = {
+            str(item.get("symbol")): item
+            for item in previous_summary.get("items", [])
+        }
+        current_items = {
+            str(item.get("symbol")): item
+            for item in current_summary.get("items", [])
+        }
+        changed_items = [
+            copy.deepcopy(item)
+            for symbol, item in current_items.items()
+            if item != previous_items.get(symbol)
+        ]
+        removed_symbols = sorted(set(previous_items) - set(current_items))
+
+        upserts: dict[str, list[dict[str, Any]]] = {}
+        symbols = set(previous_items) | set(current_items)
+        for symbol in symbols:
+            old_points = {
+                str(point.get("timestamp")): point
+                for point in cls._current_day_points(previous, symbol)
+            }
+            new_points = cls._current_day_points(current, symbol)
+            changed = [
+                copy.deepcopy(point)
+                for point in new_points
+                if point != old_points.get(str(point.get("timestamp")))
+            ]
+            if changed:
+                upserts[symbol] = changed
+
+        event = {
+            key: copy.deepcopy(value)
+            for key, value in current_summary.items()
+            if key != "items"
+        }
+        event.update({
+            "event": "delta",
+            "items": changed_items,
+            "removed_symbols": removed_symbols,
+            "upserts": upserts,
+        })
+        return event
+
     def _publish(
         self,
         published: Mapping[str, Any],
@@ -367,6 +495,7 @@ class MonitorApplication:
         with self._publish_condition:
             if increment_revision:
                 self._revision += 1
+            previous = self._published
             result = copy.deepcopy(dict(published))
             result["revision"] = self._revision
             result["source"] = copy.deepcopy(payload.get("source"))
@@ -380,12 +509,13 @@ class MonitorApplication:
             self.refresh_error = error
             self.last_refresh_at = result["last_refresh_at"]
             self._published = result
-            self._revision_events.append(result)
+            self._revision_events.append(self._revision_delta(previous, result))
             self._publish_condition.notify_all()
 
     def _publish_outage(self, message: str) -> None:
         with self._publish_condition:
             self._revision += 1
+            previous = self._published
             result = copy.deepcopy(self._published)
             result["revision"] = self._revision
             result["generated_at"] = self.clock().isoformat()
@@ -404,7 +534,7 @@ class MonitorApplication:
                 item["blocked_reasons"] = reasons
             self.refresh_error = message
             self._published = result
-            self._revision_events.append(result)
+            self._revision_events.append(self._revision_delta(previous, result))
             self._publish_condition.notify_all()
 
     def t_backtest(self) -> dict[str, Any]:
@@ -620,8 +750,14 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, PAGE.encode("utf-8"), "text/html; charset=utf-8")
         elif path == "/api/snapshot":
             self._snapshot()
+        elif path == "/api/quotes":
+            self._quotes()
         elif path == "/api/events":
             self._events()
+        elif path == "/api/t-backtest":
+            self._t_backtest()
+        elif path == "/api/signal-replay":
+            self._signal_replay()
         elif path == "/api/backtest":
             self._backtest()
         elif path == "/api/alerts":
@@ -673,9 +809,50 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         except (ValueError, OSError) as error:
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
 
+    def _quotes(self) -> None:
+        query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+        symbols = query.get("symbol", [])
+        cursors = query.get("since", [])
+        if (
+            len(symbols) != 1
+            or len(cursors) != 1
+            or re.fullmatch(r"[0-9]{6}", symbols[0]) is None
+            or re.fullmatch(r"[0-9]+", cursors[0]) is None
+        ):
+            self._json(HTTPStatus.BAD_REQUEST, {
+                "error": "invalid_query",
+                "message": "symbol必须是启用的ASCII 6位代码，since必须是非负整数",
+            })
+            return
+        try:
+            payload = self.server.application.quotes(symbols[0], int(cursors[0]))
+        except ValueError as error:
+            self._json(HTTPStatus.BAD_REQUEST, {
+                "error": "invalid_query", "message": str(error),
+            })
+            return
+        except OSError as error:
+            self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
+            return
+        self._json(HTTPStatus.OK, payload)
+
+    def _t_backtest(self) -> None:
+        try:
+            self._json(HTTPStatus.OK, self.server.application.t_backtest())
+        except (ValueError, OSError) as error:
+            self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
+
+    def _signal_replay(self) -> None:
+        try:
+            self._json(HTTPStatus.OK, self.server.application.signal_replay())
+        except (ValueError, OSError) as error:
+            self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
+
     def _backtest(self) -> None:
         try:
-            self._json(HTTPStatus.OK, self.server.application.backtest())
+            payload = self.server.application.t_backtest()
+            payload["deprecated_alias"] = True
+            self._json(HTTPStatus.OK, payload)
         except (ValueError, OSError) as error:
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
 
@@ -760,8 +937,9 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
     def _write_snapshot_event(self, payload: Mapping[str, Any]) -> None:
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         revision = int(payload["revision"])
+        event_name = "delta" if payload.get("event") == "delta" else "snapshot"
         self.wfile.write(
-            f"id: {revision}\nevent: snapshot\ndata: {content}\n\n".encode("utf-8"),
+            f"id: {revision}\nevent: {event_name}\ndata: {content}\n\n".encode("utf-8"),
         )
         self.wfile.flush()
 

@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
@@ -762,7 +762,10 @@ class MonitorWebTests(unittest.TestCase):
             "name": "沪深300ETF",
             "grid_width_pct": 0.02,
         }], ensure_ascii=False), encoding="utf-8")
-        self.server = create_server("127.0.0.1", 0, self.quotes, self.watchlist)
+        self.server = create_server(
+            "127.0.0.1", 0, self.quotes, self.watchlist,
+            clock=lambda: datetime.fromisoformat("2026-08-28T10:10:00+08:00"),
+        )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://127.0.0.1:{self.server.server_port}"
@@ -879,6 +882,82 @@ class MonitorWebTests(unittest.TestCase):
             self.server.application.backtest(),
             self.server.application.t_backtest(),
         )
+
+    def test_snapshot_is_lightweight_and_quotes_endpoint_returns_upserts(self) -> None:
+        with urlopen(self.base + "/api/snapshot", timeout=2) as response:
+            snapshot = json.loads(response.read())
+        self.assertNotIn("points", snapshot["items"][0])
+
+        with urlopen(
+            self.base + "/api/quotes?" + urlencode({"symbol": "510300", "since": 0}),
+            timeout=2,
+        ) as response:
+            quotes = json.loads(response.read())
+        self.assertEqual(quotes["symbol"], "510300")
+        self.assertEqual(quotes["revision"], snapshot["revision"])
+        self.assertEqual(len(quotes["upserts"]), 2)
+
+    def test_quotes_endpoint_strictly_validates_symbol_and_cursor(self) -> None:
+        invalid_queries = (
+            {"symbol": "５１０３００", "since": "0"},
+            {"symbol": "159915", "since": "0"},
+            {"symbol": "510300", "since": "-1"},
+            {"symbol": "510300", "since": "1.0"},
+        )
+        for query in invalid_queries:
+            with self.subTest(query=query):
+                try:
+                    urlopen(
+                        self.base + "/api/quotes?" + urlencode(query), timeout=2,
+                    )
+                except HTTPError as error:
+                    try:
+                        self.assertEqual(error.code, 400)
+                    finally:
+                        error.close()
+                else:
+                    self.fail(f"accepted invalid query: {query}")
+
+    def test_backtest_replay_and_compatibility_endpoints_are_distinct(self) -> None:
+        with urlopen(self.base + "/api/t-backtest", timeout=2) as response:
+            true_backtest = json.loads(response.read())
+        with urlopen(self.base + "/api/signal-replay", timeout=2) as response:
+            replay = json.loads(response.read())
+        with urlopen(self.base + "/api/backtest", timeout=2) as response:
+            alias = json.loads(response.read())
+        self.assertEqual(true_backtest["mode"], "T_BACKTEST")
+        self.assertEqual(replay["mode"], "SIGNAL_ROUGH_REPLAY")
+        self.assertEqual(alias["mode"], "T_BACKTEST")
+        self.assertTrue(alias["deprecated_alias"])
+
+    def test_serialized_summary_is_under_ten_percent_of_full_day_fixture(self) -> None:
+        start = datetime.fromisoformat("2026-08-28T09:30:00+08:00")
+        points = []
+        for index in range(240):
+            timestamp = start + timedelta(minutes=index)
+            price = 10.001 if index % 2 else 9.999
+            points.append([
+                timestamp.isoformat(), price, 10.0, price,
+                max(price, 10.0), min(price, 10.0), 1_000, price * 100_000,
+            ])
+        self.quotes.write_text(json.dumps([{
+            "schema_version": 2,
+            "symbol": "510300",
+            "name": "沪深300ETF",
+            "price": points[-1][1],
+            "average_price": 10.0,
+            "previous_close": 10.0,
+            "timestamp": points[-1][0],
+            "observed_at": (start + timedelta(minutes=241)).isoformat(),
+            "source": "FULL_DAY_FIXTURE",
+            "points": points,
+        }], ensure_ascii=False), encoding="utf-8")
+        application = MonitorApplication(self.quotes, self.watchlist)
+
+        summary_size = len(json.dumps(application.snapshot(), separators=(",", ":")))
+        full_size = len(json.dumps(application._published, separators=(",", ":")))
+
+        self.assertLess(summary_size, full_size * 0.10)
 
     def test_backtest_replay_recognizes_new_candidate_actions(self) -> None:
         source = inspect.getsource(MonitorApplication.signal_replay)
