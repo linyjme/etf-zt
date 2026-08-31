@@ -31,10 +31,13 @@ class MarketHealth:
 def finalized_points(
     points: Sequence[QuotePoint], observed_at: datetime,
 ) -> tuple[QuotePoint, ...]:
-    return tuple(
-        item for item in points
-        if observed_at >= item.timestamp + timedelta(minutes=1)
-    )
+    observed = _aware_time(observed_at, "观测时间")
+    result: list[QuotePoint] = []
+    for item in points:
+        timestamp = _aware_time(item.timestamp, "分钟时间")
+        if observed >= timestamp + timedelta(minutes=1):
+            result.append(item)
+    return tuple(result)
 
 
 class MarketHealthClassifier:
@@ -58,8 +61,10 @@ class MarketHealthClassifier:
             return MarketHealth("CLOSED", None, "非连续交易时段")
         if _MORNING_END < local_time < _AFTERNOON_START:
             return MarketHealth("LUNCH_BREAK", None, "午间休市")
-        if error or last_quote_at is None:
-            return MarketHealth("OUTAGE", None, error or "缺少当日行情")
+        if error is not None:
+            return MarketHealth("OUTAGE", None, error or "行情采集失败")
+        if last_quote_at is None:
+            return MarketHealth("OUTAGE", None, "缺少当日行情")
         quote_time = _aware_time(last_quote_at, "行情时间").astimezone(SHANGHAI)
         age = max(0.0, (local - quote_time).total_seconds())
         if age <= REALTIME_MAX_AGE_SECONDS:

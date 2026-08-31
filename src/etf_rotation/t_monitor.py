@@ -332,6 +332,9 @@ class MonitorSnapshot:
 
 
 class JsonQuoteAdapter:
+    def __init__(self, allow_fixture_defaults: bool = False):
+        self.allow_fixture_defaults = allow_fixture_defaults
+
     def load(self, path: Path) -> Mapping[str, Quote]:
         try:
             raw = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -379,18 +382,16 @@ class JsonQuoteAdapter:
             f"{symbol}.previous_close",
         )
         timestamp = self._time(raw.get("timestamp"), f"{symbol}.timestamp")
-        schema_version = raw.get("schema_version")
-        fixture_record = schema_version is None
         observed_value = raw.get("observed_at", raw.get("collected_at"))
         if observed_value is None:
-            if not fixture_record:
+            if not self.allow_fixture_defaults:
                 raise MarketDataError(f"{symbol}.observed_at或collected_at不能为空")
             observed_at = timestamp + timedelta(minutes=1)
         else:
             observed_at = self._time(observed_value, f"{symbol}.observed_at")
         source_value = raw.get("source")
         if not isinstance(source_value, str) or not source_value.strip():
-            if not fixture_record:
+            if not self.allow_fixture_defaults:
                 raise MarketDataError(f"{symbol}.source必须是非空字符串")
             source = "TEST_FIXTURE"
         else:

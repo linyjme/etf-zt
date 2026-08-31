@@ -121,16 +121,22 @@ class Trends2QuoteCollector:
         symbols = [item.symbol for item in enabled]
         if len(set(symbols)) != len(symbols):
             raise MarketDataError("监控列表存在重复证券代码")
-        observed_at = self.now()
-        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
-            raise MarketDataError("采集时间必须带时区")
         records = []
         urls = []
         for item in enabled:
             url = self._url(item.symbol)
             urls.append(url)
-            records.append(self._fetch(item, url, observed_at))
+            records.append(self._fetch(item, url))
+        observed_at = self.now()
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise MarketDataError("采集时间必须带时区")
+        for record in records:
+            record["observed_at"] = observed_at.isoformat()
+            record["collected_at"] = observed_at.isoformat()
         quotes = JsonQuoteAdapter().parse({"quotes": records})
+        for quote in quotes.values():
+            if any(point.timestamp > quote.observed_at for point in quote.points):
+                raise MarketDataError(f"{quote.symbol}分钟时间晚于观测时间")
         missing = [symbol for symbol in symbols if symbol not in quotes]
         if missing or len(quotes) != len(enabled):
             raise MarketDataError("行情完整性校验失败: " + ",".join(missing))
@@ -161,7 +167,7 @@ class Trends2QuoteCollector:
         })
         return f"{TRENDS2_ENDPOINT}?{query}"
 
-    def _fetch(self, item: WatchItem, url: str, observed_at: datetime) -> dict[str, Any]:
+    def _fetch(self, item: WatchItem, url: str) -> dict[str, Any]:
         request = Request(url, headers={
             "Accept": "application/json",
             "User-Agent": "Mozilla/5.0",
@@ -197,12 +203,9 @@ class Trends2QuoteCollector:
             "previous_close": previous_close,
             "timestamp": points[-1]["timestamp"],
             "points": points,
-            "observed_at": observed_at.isoformat(),
-            "collected_at": observed_at.isoformat(),
             "source": SOURCE_NAME,
             "schema_version": 2,
         }
-        JsonQuoteAdapter().parse([record])
         return record
 
     def _point(self, symbol: str, value: Any) -> list[Any]:

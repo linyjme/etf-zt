@@ -30,12 +30,15 @@ def quote(
     if prior_price is None:
         prior_price = price
     return {
+        "schema_version": 2,
         "symbol": "510300",
         "name": "沪深300ETF",
         "price": price,
         "average_price": average_price,
         "previous_close": previous_close,
         "timestamp": NOW,
+        "observed_at": "2026-08-28T10:00:05+08:00",
+        "source": "TEST_FIXTURE",
         "points": [
             [prior_time, prior_price, average_price],
             {"time": NOW, "price": price, "average_price": average_price},

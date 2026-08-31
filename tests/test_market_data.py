@@ -91,6 +91,18 @@ class FinalizedPointTests(unittest.TestCase):
         self.assertIsInstance(result, tuple)
         self.assertEqual([item.timestamp.minute for item in result], [30, 31])
 
+    def test_requires_aware_observation_and_point_timestamps(self) -> None:
+        aware_observed = datetime.fromisoformat("2026-08-28T09:32:00+08:00")
+        naive_point = QuotePoint(
+            datetime.fromisoformat("2026-08-28T09:30:00"),
+            10.0, 10.0, 10.0, 10.0, 10.0, 100.0, 100_000.0,
+        )
+
+        with self.assertRaisesRegex(MarketDataError, "观测时间.*时区"):
+            finalized_points((point("09:30"),), datetime.fromisoformat("2026-08-28T09:32:00"))
+        with self.assertRaisesRegex(MarketDataError, "分钟时间.*时区"):
+            finalized_points((point("09:29"), naive_point), aware_observed)
+
 
 class MarketHealthTests(unittest.TestCase):
     def test_distinguishes_realtime_delay_outage_lunch_and_close(self) -> None:
@@ -113,6 +125,10 @@ class MarketHealthTests(unittest.TestCase):
 
         self.assertEqual(classifier.classify(now, now, "upstream failed").status, "OUTAGE")
         self.assertEqual(classifier.classify(now, None, None).status, "OUTAGE")
+
+        empty_error = classifier.classify(now, now, "")
+        self.assertEqual(empty_error.status, "OUTAGE")
+        self.assertEqual(empty_error.reason, "行情采集失败")
 
 
 class CalendarTests(unittest.TestCase):
@@ -214,8 +230,12 @@ class QuoteObservationTests(unittest.TestCase):
         self.assertEqual(observed.source, "TEST SOURCE")
 
     def test_only_schema_less_fixture_defaults_observation_metadata(self) -> None:
-        fixture_quote = JsonQuoteAdapter().parse([quote_record()])["510300"]
+        with self.assertRaisesRegex(MarketDataError, "observed_at|collected_at"):
+            JsonQuoteAdapter().parse([quote_record()])
+
+        fixture_quote = JsonQuoteAdapter(allow_fixture_defaults=True).parse([quote_record()])["510300"]
         self.assertEqual(fixture_quote.observed_at, fixture_quote.timestamp + timedelta(minutes=1))
+        self.assertEqual(fixture_quote.source, "TEST_FIXTURE")
 
         with self.assertRaisesRegex(MarketDataError, "observed_at|collected_at"):
             JsonQuoteAdapter().parse([quote_record(schema_version=2, source="TEST SOURCE")])
@@ -258,6 +278,67 @@ class QuoteObservationTests(unittest.TestCase):
             self.assertEqual(record["observed_at"], payload["observed_at"])
             self.assertEqual(record["collected_at"], payload["observed_at"])
             self.assertEqual(record["source"], SOURCE_NAME)
+
+    def test_collector_observes_batch_after_cross_minute_requests(self) -> None:
+        clock = {"now": datetime.fromisoformat("2026-08-28T10:00:30+08:00")}
+        request_count = 0
+
+        def transport(request: Request, timeout: float) -> bytes:
+            nonlocal request_count
+            request_count += 1
+            symbol = "510300" if "1.510300" in request.full_url else "159915"
+            market = 1 if symbol == "510300" else 0
+            minute = "2026-08-28 10:00"
+            if request_count == 2:
+                minute = "2026-08-28 10:01"
+                clock["now"] = datetime.fromisoformat("2026-08-28T10:01:05+08:00")
+            return json.dumps({
+                "rc": 0,
+                "data": {
+                    "code": symbol,
+                    "market": market,
+                    "name": symbol,
+                    "preClose": 10.0,
+                    "trends": [f"{minute},10.0,10.0,10.0,10.0,100,100000,10.0"],
+                },
+            }).encode("utf-8")
+
+        payload = Trends2QuoteCollector(
+            transport=transport,
+            now=lambda: clock["now"],
+        ).collect((
+            WatchItem("510300", "沪深300ETF", 0.002),
+            WatchItem("159915", "创业板ETF", 0.002),
+        ))
+
+        observed_at = datetime.fromisoformat(payload["observed_at"])
+        self.assertEqual(observed_at, datetime.fromisoformat("2026-08-28T10:01:05+08:00"))
+        self.assertEqual({record["observed_at"] for record in payload["quotes"]}, {payload["observed_at"]})
+        self.assertTrue(all(
+            datetime.fromisoformat(point_value["timestamp"]) <= observed_at
+            for record in payload["quotes"]
+            for point_value in record["points"]
+        ))
+
+    def test_collector_rejects_a_minute_later_than_batch_observation(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            return json.dumps({
+                "rc": 0,
+                "data": {
+                    "code": "510300",
+                    "market": 1,
+                    "name": "510300",
+                    "preClose": 10.0,
+                    "trends": ["2026-08-28 10:01,10.0,10.0,10.0,10.0,100,100000,10.0"],
+                },
+            }).encode("utf-8")
+
+        collector = Trends2QuoteCollector(
+            transport=transport,
+            now=lambda: datetime.fromisoformat("2026-08-28T10:00:30+08:00"),
+        )
+        with self.assertRaisesRegex(MarketDataError, "晚于观测时间"):
+            collector.collect((WatchItem("510300", "沪深300ETF", 0.002),))
 
 
 if __name__ == "__main__":
