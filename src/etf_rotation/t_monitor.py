@@ -16,143 +16,30 @@ from .constants import DEFAULT_GRID_WIDTH_PCT
 class QuoteHistoryStore:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self._lock = threading.Lock()
+        # market_data imports the public Quote models from this module, so the
+        # compatibility facade resolves the concrete store only after import.
+        from .market_data import MinuteHistoryStore
+
+        self._store = MinuteHistoryStore(self.path)
 
     @property
     def daily_root(self) -> Path:
-        return self.path.parent / "history"
+        return self._store.daily_root
 
     def append(self, quotes: Mapping[str, Quote]) -> None:
-        with self._lock:
-            existing = self._read()
-            self._write_daily(existing)
-            records = {(item["symbol"], item["timestamp"]) for item in existing}
-            pending = []
-            for quote in quotes.values():
-                for point in quote.points:
-                    key = (quote.symbol, point.timestamp.isoformat())
-                    if key not in records:
-                        pending.append({
-                            "schema_version": 2,
-                            "symbol": quote.symbol,
-                            "name": quote.name,
-                            "previous_close": quote.previous_close,
-                            "trading_date": point.timestamp.date().isoformat(),
-                            "timestamp": point.timestamp.isoformat(),
-                            "price": point.price,
-                            "average_price": point.average_price,
-                            "open": point.open,
-                            "high": point.high,
-                            "low": point.low,
-                            "volume": point.volume,
-                            "amount": point.amount,
-                        })
-                        records.add(key)
-            if not pending:
-                return
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8", newline="") as handle:
-                for record in pending:
-                    handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            self._write_daily(pending)
+        self._store.append_legacy(quotes)
+
+    def upsert(self, quotes: Mapping[str, Quote], metadata: Mapping[str, Any]) -> int:
+        return self._store.upsert(quotes, metadata)
 
     def available_dates(self) -> list[str]:
-        dates = {self._trading_date(item) for item in self._read()}
-        if self.daily_root.exists():
-            dates.update(path.parent.name for path in self.daily_root.glob("*/quotes.jsonl"))
-        return sorted((date for date in dates if date), reverse=True)
+        return self._store.available_dates()
 
     def query(self, trading_date: str, symbol: str | None = None) -> list[dict[str, Any]]:
-        path = self.daily_root / trading_date / "quotes.jsonl"
-        records = self._read_path(path) if path.exists() else [
-            item for item in self._read() if self._trading_date(item) == trading_date
-        ]
-        return [item for item in records if symbol is None or item.get("symbol") == symbol]
-
-    def _write_daily(self, records: Sequence[Mapping[str, Any]]) -> None:
-        grouped: dict[str, list[Mapping[str, Any]]] = {}
-        for record in records:
-            trading_date = self._trading_date(record)
-            if trading_date:
-                grouped.setdefault(trading_date, []).append(record)
-        for trading_date, daily_records in grouped.items():
-            path = self.daily_root / trading_date / "quotes.jsonl"
-            existing = self._read_path(path)
-            keys = {(item.get("symbol"), item.get("timestamp")) for item in existing}
-            pending = [item for item in daily_records if (item.get("symbol"), item.get("timestamp")) not in keys]
-            if not pending:
-                continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8", newline="") as handle:
-                for item in pending:
-                    handle.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-
-    def _trading_date(self, record: Mapping[str, Any]) -> str:
-        return str(record.get("trading_date") or record.get("timestamp", ""))[:10]
+        return self._store.query(trading_date, symbol)
 
     def merge(self, quotes: Mapping[str, Quote]) -> Mapping[str, Quote]:
-        history = self._records_by_symbol()
-        result = {}
-        for symbol, quote in quotes.items():
-            points = {point.timestamp: point for point in quote.points}
-            for record in history.get(symbol, ()):
-                try:
-                    point = QuotePoint(
-                        datetime.fromisoformat(record["timestamp"]),
-                        float(record["price"]), float(record["average_price"]),
-                        self._optional_price(record.get("open")),
-                        self._optional_price(record.get("high")),
-                        self._optional_price(record.get("low")),
-                        float(record.get("volume", 0.0)),
-                        float(record.get("amount", 0.0)),
-                    )
-                except (KeyError, TypeError, ValueError) as error:
-                    raise MarketDataError(f"历史行情记录无效: {error}") from error
-                points.setdefault(point.timestamp, point)
-            ordered = tuple(points[key] for key in sorted(points))
-            result[symbol] = Quote(
-                quote.symbol, quote.name, quote.price, quote.average_price,
-                quote.previous_close, quote.timestamp, ordered,
-                quote.observed_at, quote.source,
-            )
-        return MappingProxyType(result)
-
-    def _optional_price(self, value: Any) -> float | None:
-        if value is None:
-            return None
-        number = float(value)
-        return number if math.isfinite(number) and number > 0 else None
-
-    def _records(self) -> set[tuple[str, str]]:
-        return {(item["symbol"], item["timestamp"]) for item in self._read()}
-
-    def _records_by_symbol(self) -> dict[str, list[dict[str, Any]]]:
-        result: dict[str, list[dict[str, Any]]] = {}
-        for item in self._read():
-            result.setdefault(item["symbol"], []).append(item)
-        return result
-
-    def _read(self) -> list[dict[str, Any]]:
-        return self._read_path(self.path)
-
-    def _read_path(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        records = []
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    value = json.loads(line)
-                    if not isinstance(value, dict):
-                        raise ValueError("历史行情每行必须是对象")
-                    records.append(value)
-        except (OSError, json.JSONDecodeError, ValueError) as error:
-            raise MarketDataError(f"历史行情读取失败: {error}") from error
-        return records
+        return self._store.merge(quotes)
 
 
 class MarketDataError(ValueError):

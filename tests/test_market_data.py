@@ -2,18 +2,20 @@ from datetime import date, datetime, timedelta
 import json
 import math
 from pathlib import Path
+import tempfile
 import unittest
 from urllib.request import Request
 
-from etf_rotation.etf_metadata import TradingMetadata
+from etf_rotation.etf_metadata import EtfMetadata, IndexMetadata, TradingMetadata
 from etf_rotation.market_data import (
     MarketDataValidator,
     MarketHealthClassifier,
+    MinuteHistoryStore,
     finalized_points,
     load_closed_dates,
 )
 from etf_rotation.quote_collector import SOURCE_NAME, Trends2QuoteCollector
-from etf_rotation.t_monitor import JsonQuoteAdapter, MarketDataError, QuotePoint, WatchItem
+from etf_rotation.t_monitor import JsonQuoteAdapter, MarketDataError, Quote, QuotePoint, WatchItem
 
 
 CALENDAR_PATH = Path(__file__).resolve().parents[1] / "data" / "monitor" / "market_calendar.json"
@@ -79,6 +81,68 @@ def quote_record(**overrides: object) -> dict[str, object]:
     }
     record.update(overrides)
     return record
+
+
+def metadata_for_test() -> dict[str, EtfMetadata]:
+    trading = TradingMetadata("SSE", "DOMESTIC_EQUITY_ETF", False, 1, 100, 0.001, 0.10, 100)
+    metadata = EtfMetadata("510300", "沪深300ETF", IndexMetadata("000300", "沪深300", "中证指数"), trading)
+    return {"510300": metadata}
+
+
+def history_quote(price: float, previous_close: float, observed_at: str) -> Quote:
+    timestamp = datetime.fromisoformat("2026-08-28T09:30:00+08:00")
+    item = QuotePoint(
+        timestamp=timestamp,
+        price=price,
+        average_price=price,
+        open=price,
+        high=price,
+        low=price,
+        volume=100.0,
+        amount=price * 100.0 * 100.0,
+    )
+    return Quote(
+        symbol="510300",
+        name="沪深300ETF",
+        price=price,
+        average_price=price,
+        previous_close=previous_close,
+        timestamp=timestamp,
+        points=(item,),
+        observed_at=datetime.fromisoformat(observed_at),
+        source="TEST",
+    )
+
+
+class MarketDataTests(unittest.TestCase):
+    def test_history_upserts_later_final_observation_and_writes_schema_v3(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            early = history_quote(4.095, 4.095, "2026-08-28T09:31:01+08:00")
+            final = history_quote(4.684, 4.691, "2026-08-28T17:56:09+08:00")
+
+            store.upsert({"510300": early}, metadata_for_test())
+            store.upsert({"510300": final}, metadata_for_test())
+
+            records = store.query("2026-08-28", "510300")
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["price"], 4.684)
+            self.assertEqual(records[0]["previous_close"], 4.691)
+            self.assertEqual(records[0]["schema_version"], 3)
+            self.assertEqual(records[0]["trading_date"], "2026-08-28")
+            self.assertEqual(records[0]["observed_at"], "2026-08-28T17:56:09+08:00")
+            self.assertTrue(records[0]["is_complete"])
+
+    def test_history_does_not_persist_current_minute(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            current = history_quote(4.684, 4.691, "2026-08-28T09:30:30+08:00")
+
+            store.upsert({"510300": current}, metadata_for_test())
+
+            self.assertEqual(store.query("2026-08-28", "510300"), [])
 
 
 class FinalizedPointTests(unittest.TestCase):
