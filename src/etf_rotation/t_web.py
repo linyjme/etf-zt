@@ -117,6 +117,7 @@ class MonitorApplication:
                     quote.symbol, quote.name, quote.points[index - 1].price,
                     quote.points[index - 1].average_price, quote.previous_close,
                     quote.points[index - 1].timestamp, quote.points[:index],
+                    quote.observed_at, quote.source,
                 )
                 signal = TMonitorEngine().evaluate((item,), {quote.symbol: decision_quote}).signals[0]
                 if signal.action == "BUY_REMINDER" and position is None:

@@ -121,26 +121,28 @@ class Trends2QuoteCollector:
         symbols = [item.symbol for item in enabled]
         if len(set(symbols)) != len(symbols):
             raise MarketDataError("监控列表存在重复证券代码")
+        observed_at = self.now()
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise MarketDataError("采集时间必须带时区")
         records = []
         urls = []
         for item in enabled:
             url = self._url(item.symbol)
             urls.append(url)
-            records.append(self._fetch(item, url))
+            records.append(self._fetch(item, url, observed_at))
         quotes = JsonQuoteAdapter().parse({"quotes": records})
         missing = [symbol for symbol in symbols if symbol not in quotes]
         if missing or len(quotes) != len(enabled):
             raise MarketDataError("行情完整性校验失败: " + ",".join(missing))
-        collected_at = self.now()
-        if collected_at.tzinfo is None or collected_at.utcoffset() is None:
-            raise MarketDataError("采集时间必须带时区")
         return {
+            "schema_version": 2,
             "source": {
                 "name": SOURCE_NAME,
                 "endpoint": TRENDS2_ENDPOINT,
                 "urls": urls,
             },
-            "collected_at": collected_at.isoformat(),
+            "observed_at": observed_at.isoformat(),
+            "collected_at": observed_at.isoformat(),
             "quotes": records,
         }
 
@@ -159,7 +161,7 @@ class Trends2QuoteCollector:
         })
         return f"{TRENDS2_ENDPOINT}?{query}"
 
-    def _fetch(self, item: WatchItem, url: str) -> dict[str, Any]:
+    def _fetch(self, item: WatchItem, url: str, observed_at: datetime) -> dict[str, Any]:
         request = Request(url, headers={
             "Accept": "application/json",
             "User-Agent": "Mozilla/5.0",
@@ -195,7 +197,8 @@ class Trends2QuoteCollector:
             "previous_close": previous_close,
             "timestamp": points[-1]["timestamp"],
             "points": points,
-            "collected_at": self.now().isoformat(),
+            "observed_at": observed_at.isoformat(),
+            "collected_at": observed_at.isoformat(),
             "source": SOURCE_NAME,
             "schema_version": 2,
         }

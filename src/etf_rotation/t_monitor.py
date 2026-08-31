@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import math
 import os
@@ -117,6 +117,7 @@ class QuoteHistoryStore:
             result[symbol] = Quote(
                 quote.symbol, quote.name, quote.price, quote.average_price,
                 quote.previous_close, quote.timestamp, ordered,
+                quote.observed_at, quote.source,
             )
         return MappingProxyType(result)
 
@@ -270,6 +271,8 @@ class Quote:
     previous_close: float
     timestamp: datetime
     points: tuple[QuotePoint, ...]
+    observed_at: datetime
+    source: str
 
 
 @dataclass(frozen=True)
@@ -376,6 +379,22 @@ class JsonQuoteAdapter:
             f"{symbol}.previous_close",
         )
         timestamp = self._time(raw.get("timestamp"), f"{symbol}.timestamp")
+        schema_version = raw.get("schema_version")
+        fixture_record = schema_version is None
+        observed_value = raw.get("observed_at", raw.get("collected_at"))
+        if observed_value is None:
+            if not fixture_record:
+                raise MarketDataError(f"{symbol}.observed_at或collected_at不能为空")
+            observed_at = timestamp + timedelta(minutes=1)
+        else:
+            observed_at = self._time(observed_value, f"{symbol}.observed_at")
+        source_value = raw.get("source")
+        if not isinstance(source_value, str) or not source_value.strip():
+            if not fixture_record:
+                raise MarketDataError(f"{symbol}.source必须是非空字符串")
+            source = "TEST_FIXTURE"
+        else:
+            source = source_value.strip()
         points_raw = raw.get("points", raw.get("timeline", []))
         if not isinstance(points_raw, list):
             raise MarketDataError(f"{symbol}.points 必须是数组")
@@ -392,6 +411,7 @@ class JsonQuoteAdapter:
             raise MarketDataError(f"{symbol}.points 最新值必须匹配行情时间、实时价和均价")
         return Quote(
             symbol, name, price, average_price, previous_close, timestamp, points,
+            observed_at, source,
         )
 
     def _point(self, symbol: str, raw: Any) -> QuotePoint:
