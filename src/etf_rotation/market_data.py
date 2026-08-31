@@ -11,6 +11,7 @@ import tempfile
 import threading
 from types import MappingProxyType
 from typing import Any, Mapping
+import uuid
 from zoneinfo import ZoneInfo
 
 from .constants import DELAYED_MAX_AGE_SECONDS, REALTIME_MAX_AGE_SECONDS
@@ -23,6 +24,18 @@ _MORNING_START = time(9, 30)
 _MORNING_END = time(11, 30)
 _AFTERNOON_START = time(13, 0)
 _AFTERNOON_END = time(15, 0)
+_HISTORY_LOCKS_GUARD = threading.Lock()
+_HISTORY_LOCKS: dict[str, Any] = {}
+
+
+def _history_lock(path: Path) -> Any:
+    key = os.path.normcase(str(path.resolve(strict=False)))
+    with _HISTORY_LOCKS_GUARD:
+        lock = _HISTORY_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _HISTORY_LOCKS[key] = lock
+        return lock
 
 
 @dataclass(frozen=True)
@@ -141,8 +154,8 @@ class MarketDataValidator:
 
 
 def minute_record(quote: Quote, point: QuotePoint) -> dict[str, Any]:
-    timestamp = _aware_time(point.timestamp, "分钟时间")
-    observed_at = _aware_time(quote.observed_at, "观测时间")
+    timestamp = _aware_time(point.timestamp, "分钟时间").astimezone(SHANGHAI)
+    observed_at = _aware_time(quote.observed_at, "观测时间").astimezone(SHANGHAI)
     return {
         "schema_version": 3,
         "symbol": quote.symbol,
@@ -166,7 +179,7 @@ def minute_record(quote: Quote, point: QuotePoint) -> dict[str, Any]:
 class MinuteHistoryStore:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self._lock = threading.Lock()
+        self._lock = _history_lock(self.path)
 
     @property
     def daily_root(self) -> Path:
@@ -178,7 +191,7 @@ class MinuteHistoryStore:
         metadata: Mapping[str, EtfMetadata],
     ) -> int:
         with self._lock:
-            indexed = self._indexed(self._read_path(self.path))
+            indexed = self._indexed(self._read_path(self.path, strict=True))
             changed = 0
             for symbol, quote in quotes.items():
                 if quote.symbol != symbol:
@@ -197,20 +210,17 @@ class MinuteHistoryStore:
                         changed += 1
 
             ordered = [indexed[key] for key in sorted(indexed)]
+            self._validate_records(ordered, metadata)
             self._validate_previous_closes(ordered, metadata)
-            self._atomic_write(self.path, ordered)
-            self._rewrite_daily(ordered)
+            self._replace_history(ordered)
             return changed
 
     def available_dates(self) -> list[str]:
         dates = {str(item["trading_date"]) for item in self._read_path(self.path)}
-        if self.daily_root.exists():
-            dates.update(path.parent.name for path in self.daily_root.glob("*/quotes.jsonl"))
         return sorted((value for value in dates if value), reverse=True)
 
     def query(self, trading_date: str, symbol: str | None = None) -> list[dict[str, Any]]:
-        daily_path = self.daily_root / trading_date / "quotes.jsonl"
-        records = self._read_path(daily_path) if daily_path.exists() else [
+        records = [
             item for item in self._read_path(self.path)
             if item["trading_date"] == trading_date
         ]
@@ -258,72 +268,91 @@ class MinuteHistoryStore:
     def append_legacy(self, quotes: Mapping[str, Quote]) -> None:
         """Preserve the pre-upsert producer API until its metadata wiring is migrated."""
         with self._lock:
-            existing = self._read_path(self.path)
-            records = {(item["symbol"], item["timestamp"]) for item in existing}
-            pending: list[dict[str, Any]] = []
+            indexed = self._indexed(self._read_path(self.path, strict=True))
             for quote in quotes.values():
-                for point in quote.points:
-                    key = (quote.symbol, point.timestamp.isoformat())
-                    if key in records:
-                        continue
-                    pending.append({
-                        "schema_version": 2,
-                        "symbol": quote.symbol,
-                        "name": quote.name,
-                        "previous_close": quote.previous_close,
-                        "trading_date": point.timestamp.date().isoformat(),
-                        "timestamp": point.timestamp.isoformat(),
-                        "price": point.price,
-                        "average_price": point.average_price,
-                        "open": point.open,
-                        "high": point.high,
-                        "low": point.low,
-                        "volume": point.volume,
-                        "amount": point.amount,
-                    })
-                    records.add(key)
-            if not pending:
-                return
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8", newline="") as handle:
-                for record in pending:
-                    handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            self._append_daily_legacy(pending)
+                for point in finalized_points(quote.points, quote.observed_at):
+                    record = self._normalize_record(
+                        minute_record(quote, point), strict=True,
+                    )
+                    if record is None:
+                        raise MarketDataError("兼容历史记录不能是未完成分钟")
+                    key = (record["symbol"], record["timestamp"])
+                    old = indexed.get(key)
+                    if old is None or self._observation(record) > self._observation(old):
+                        indexed[key] = record
+            ordered = [indexed[key] for key in sorted(indexed)]
+            self._validate_previous_closes(ordered, {})
+            self._replace_history(ordered)
 
-    def _append_daily_legacy(self, records: Sequence[Mapping[str, Any]]) -> None:
-        grouped: dict[str, list[Mapping[str, Any]]] = {}
-        for record in records:
-            trading_date = str(record.get("trading_date") or record.get("timestamp", ""))[:10]
-            if trading_date:
-                grouped.setdefault(trading_date, []).append(record)
-        for trading_date, daily_records in grouped.items():
-            path = self.daily_root / trading_date / "quotes.jsonl"
-            existing = self._read_path(path)
-            keys = {(item["symbol"], item["timestamp"]) for item in existing}
-            pending = [
-                item for item in daily_records
-                if (item.get("symbol"), item.get("timestamp")) not in keys
-            ]
-            if not pending:
-                continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8", newline="") as handle:
-                for item in pending:
-                    handle.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-
-    def _rewrite_daily(self, records: Sequence[Mapping[str, Any]]) -> None:
+    def _replace_history(self, records: Sequence[Mapping[str, Any]]) -> None:
         grouped: dict[str, list[Mapping[str, Any]]] = {}
         for record in records:
             grouped.setdefault(str(record["trading_date"]), []).append(record)
+        targets: list[tuple[Path, Sequence[Mapping[str, Any]] | None]] = [
+            (self.path, records),
+        ]
         for trading_date in sorted(grouped):
             path = self.daily_root / trading_date / "quotes.jsonl"
-            self._atomic_write(path, grouped[trading_date])
+            targets.append((path, grouped[trading_date]))
+        expected_daily = {path for path, _ in targets[1:]}
+        if self.daily_root.exists():
+            for path in sorted(self.daily_root.glob("*/quotes.jsonl")):
+                if path not in expected_daily:
+                    targets.append((path, None))
+        self._replace_many(targets)
 
-    def _atomic_write(self, path: Path, records: Sequence[Mapping[str, Any]]) -> None:
+    def _replace_many(
+        self,
+        targets: Sequence[tuple[Path, Sequence[Mapping[str, Any]] | None]],
+    ) -> None:
+        staged: dict[Path, Path] = {}
+        backups: dict[Path, Path] = {}
+        processed: list[tuple[Path, bool]] = []
+        committed = False
+        try:
+            for path, records in targets:
+                if records is not None:
+                    staged[path] = self._stage_records(path, records)
+            for path, records in targets:
+                existed = path.exists()
+                processed.append((path, existed))
+                if existed:
+                    backup = path.parent / f".{path.name}.{uuid.uuid4().hex}.bak"
+                    backups[path] = backup
+                    os.replace(path, backup)
+                if records is not None:
+                    os.replace(staged[path], path)
+                    staged.pop(path, None)
+        except BaseException:
+            self._rollback_replacements(processed, backups)
+            raise
+        else:
+            committed = True
+        finally:
+            for path in staged.values():
+                self._safe_unlink(path)
+            if committed:
+                for path in backups.values():
+                    self._safe_unlink(path)
+
+    def _rollback_replacements(
+        self,
+        processed: Sequence[tuple[Path, bool]],
+        backups: Mapping[Path, Path],
+    ) -> None:
+        for path, existed in reversed(processed):
+            backup = backups.get(path)
+            if existed and backup is not None and backup.exists():
+                try:
+                    os.replace(backup, path)
+                except OSError:
+                    pass
+            elif not existed:
+                self._safe_unlink(path)
+
+    def _stage_records(
+        self, path: Path, records: Sequence[Mapping[str, Any]],
+    ) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path: Path | None = None
         try:
@@ -341,16 +370,24 @@ class MinuteHistoryStore:
                     handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary_path, path)
+            result = temporary_path
             temporary_path = None
-        finally:
+            return result
+        except BaseException:
             if temporary_path is not None:
-                try:
-                    temporary_path.unlink()
-                except FileNotFoundError:
-                    pass
+                self._safe_unlink(temporary_path)
+            raise
 
-    def _read_path(self, path: Path) -> list[dict[str, Any]]:
+    @staticmethod
+    def _safe_unlink(path: Path) -> None:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+    def _read_path(
+        self, path: Path, *, strict: bool = False,
+    ) -> list[dict[str, Any]]:
         if not path.exists():
             return []
         records: list[dict[str, Any]] = []
@@ -361,7 +398,7 @@ class MinuteHistoryStore:
                 value = json.loads(line)
                 if not isinstance(value, dict):
                     raise ValueError("历史行情每行必须是对象")
-                normalized = self._normalize_record(value)
+                normalized = self._normalize_record(value, strict=strict)
                 if normalized is not None:
                     records.append(normalized)
         except MarketDataError:
@@ -370,7 +407,20 @@ class MinuteHistoryStore:
             raise MarketDataError(f"历史行情读取失败: {error}") from error
         return records
 
-    def _normalize_record(self, record: Mapping[str, Any]) -> dict[str, Any] | None:
+    def _normalize_record(
+        self, record: Mapping[str, Any], *, strict: bool,
+    ) -> dict[str, Any] | None:
+        if strict:
+            required = {
+                "schema_version", "symbol", "name", "trading_date", "timestamp",
+                "observed_at", "is_complete", "source", "previous_close", "open",
+                "high", "low", "price", "average_price", "volume", "amount",
+            }
+            missing = sorted(required - set(record))
+            if missing:
+                raise MarketDataError("历史行情缺少字段: " + ",".join(missing))
+            if type(record.get("schema_version")) is not int or record.get("schema_version") not in {2, 3}:
+                raise MarketDataError("历史行情schema_version无效")
         symbol = record.get("symbol")
         if not isinstance(symbol, str) or not symbol.strip():
             raise MarketDataError("历史行情记录缺少symbol")
@@ -379,24 +429,34 @@ class MinuteHistoryStore:
         supplied_date = record.get("trading_date")
         if supplied_date is not None and supplied_date != trading_date:
             raise MarketDataError(f"{symbol}历史行情trading_date与timestamp不一致")
-        is_complete = record.get("is_complete", True)
+        if "observed_at" not in record or "is_complete" not in record:
+            if strict:
+                raise MarketDataError(f"{symbol}历史行情缺少observed_at或is_complete")
+            return None
+        is_complete = record.get("is_complete")
         if type(is_complete) is not bool:
             raise MarketDataError(f"{symbol}历史行情is_complete无效")
         if not is_complete:
+            if strict:
+                raise MarketDataError(f"{symbol}历史行情包含未完成分钟")
             return None
-        observed_value = record.get("observed_at")
-        observed_at = (
-            timestamp + timedelta(minutes=1)
-            if observed_value is None
-            else self._timestamp(observed_value, "观测时间")
-        )
+        observed_at = self._timestamp(record.get("observed_at"), "观测时间")
         if observed_at < timestamp + timedelta(minutes=1):
             raise MarketDataError(f"{symbol}历史行情包含未完成分钟")
         price = self._number(record.get("price"), "收盘价", positive=True)
-        average_price = self._number(record.get("average_price", price), "均价", positive=True)
-        open_price = self._number(record.get("open", price) if record.get("open") is not None else price, "开盘价", positive=True)
-        high = self._number(record.get("high", price) if record.get("high") is not None else price, "最高价", positive=True)
-        low = self._number(record.get("low", price) if record.get("low") is not None else price, "最低价", positive=True)
+        average_price = self._number(
+            record.get("average_price", price), "均价", positive=True,
+        )
+        open_value = record.get("open")
+        high_value = record.get("high")
+        low_value = record.get("low")
+        if not strict:
+            open_value = price if open_value is None else open_value
+            high_value = price if high_value is None else high_value
+            low_value = price if low_value is None else low_value
+        open_price = self._number(open_value, "开盘价", positive=True)
+        high = self._number(high_value, "最高价", positive=True)
+        low = self._number(low_value, "最低价", positive=True)
         previous_close = self._number(record.get("previous_close"), "昨收", positive=True)
         volume = self._number(record.get("volume", 0.0), "成交量", positive=False)
         amount = self._number(record.get("amount", 0.0), "成交额", positive=False)
@@ -424,6 +484,30 @@ class MinuteHistoryStore:
             "volume": volume,
             "amount": amount,
         }
+
+    def _validate_records(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        metadata: Mapping[str, EtfMetadata],
+    ) -> None:
+        for record in records:
+            symbol = str(record["symbol"])
+            item_metadata = metadata.get(symbol)
+            if item_metadata is None:
+                raise MarketDataError(f"缺少交易元数据: {symbol}")
+            point = QuotePoint(
+                self._timestamp(record.get("timestamp"), "分钟时间"),
+                float(record["price"]),
+                float(record["average_price"]),
+                float(record["open"]),
+                float(record["high"]),
+                float(record["low"]),
+                float(record["volume"]),
+                float(record["amount"]),
+            )
+            MarketDataValidator(item_metadata.trading).validate_point(
+                point, float(record["previous_close"]),
+            )
 
     def _validate_previous_closes(
         self,
@@ -463,7 +547,7 @@ class MinuteHistoryStore:
             parsed = datetime.fromisoformat(value)
         except ValueError as error:
             raise MarketDataError(f"历史行情{label}无效: {value}") from error
-        return _aware_time(parsed, label)
+        return _aware_time(parsed, label).astimezone(SHANGHAI)
 
     @staticmethod
     def _number(value: object, label: str, *, positive: bool) -> float:

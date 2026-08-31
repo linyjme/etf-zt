@@ -1,9 +1,13 @@
 from datetime import date, datetime, timedelta
 import json
 import math
+import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
+from unittest.mock import patch
 from urllib.request import Request
 
 from etf_rotation.etf_metadata import EtfMetadata, IndexMetadata, TradingMetadata
@@ -89,10 +93,16 @@ def metadata_for_test() -> dict[str, EtfMetadata]:
     return {"510300": metadata}
 
 
-def history_quote(price: float, previous_close: float, observed_at: str) -> Quote:
-    timestamp = datetime.fromisoformat("2026-08-28T09:30:00+08:00")
+def history_quote(
+    price: float,
+    previous_close: float,
+    observed_at: str,
+    *,
+    timestamp: str = "2026-08-28T09:30:00+08:00",
+) -> Quote:
+    point_timestamp = datetime.fromisoformat(timestamp)
     item = QuotePoint(
-        timestamp=timestamp,
+        timestamp=point_timestamp,
         price=price,
         average_price=price,
         open=price,
@@ -107,7 +117,7 @@ def history_quote(price: float, previous_close: float, observed_at: str) -> Quot
         price=price,
         average_price=price,
         previous_close=previous_close,
-        timestamp=timestamp,
+        timestamp=point_timestamp,
         points=(item,),
         observed_at=datetime.fromisoformat(observed_at),
         source="TEST",
@@ -143,6 +153,232 @@ class MarketDataTests(unittest.TestCase):
             store.upsert({"510300": current}, metadata_for_test())
 
             self.assertEqual(store.query("2026-08-28", "510300"), [])
+
+    def test_history_transaction_rolls_back_canonical_and_daily_on_replace_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:31:01+08:00",
+            )}, metadata_for_test())
+            daily = store.daily_root / "2026-08-28" / "quotes.jsonl"
+            original_canonical = path.read_bytes()
+            original_daily = daily.read_bytes()
+            real_replace = os.replace
+            injected = False
+
+            def fail_daily_replace(source: object, destination: object) -> None:
+                nonlocal injected
+                if (
+                    not injected
+                    and Path(source).suffix == ".tmp"
+                    and Path(destination) == daily
+                ):
+                    injected = True
+                    raise OSError("injected daily replace failure")
+                real_replace(source, destination)
+
+            later = history_quote(
+                4.685,
+                4.691,
+                "2026-08-28T09:32:01+08:00",
+                timestamp="2026-08-28T09:31:00+08:00",
+            )
+            with patch("etf_rotation.market_data.os.replace", side_effect=fail_daily_replace):
+                with self.assertRaisesRegex(OSError, "injected daily replace failure"):
+                    store.upsert({"510300": later}, metadata_for_test())
+
+            self.assertTrue(injected)
+            self.assertEqual(path.read_bytes(), original_canonical)
+            self.assertEqual(daily.read_bytes(), original_daily)
+            leftovers = [
+                item for item in Path(temporary).rglob("*")
+                if item.is_file() and item.suffix in {".tmp", ".bak"}
+            ]
+            self.assertEqual(leftovers, [])
+
+    def test_cleanup_failure_does_not_mask_the_original_replace_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            quote = history_quote(4.684, 4.691, "2026-08-28T09:31:01+08:00")
+
+            with (
+                patch("etf_rotation.market_data.os.replace", side_effect=OSError("replace failed")),
+                patch.object(Path, "unlink", side_effect=OSError("cleanup failed")),
+            ):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    store.upsert({"510300": quote}, metadata_for_test())
+
+    def test_incomplete_legacy_record_is_filtered_and_cannot_be_upgraded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            daily = Path(temporary) / "history" / "2026-08-28" / "quotes.jsonl"
+            daily.parent.mkdir(parents=True)
+            legacy = {
+                "schema_version": 2,
+                "symbol": "510300",
+                "name": "沪深300ETF",
+                "trading_date": "2026-08-28",
+                "timestamp": "2026-08-28T09:30:00+08:00",
+                "previous_close": 4.691,
+                "open": 4.684,
+                "high": 4.684,
+                "low": 4.684,
+                "price": 4.684,
+                "average_price": 4.684,
+                "volume": 100.0,
+                "amount": 46840.0,
+            }
+            original = (json.dumps(legacy, ensure_ascii=False) + "\n").encode("utf-8")
+            path.write_bytes(original)
+            daily.write_bytes(original)
+            store = MinuteHistoryStore(path)
+
+            self.assertEqual(store.query("2026-08-28", "510300"), [])
+            with self.assertRaisesRegex(MarketDataError, "observed_at|is_complete"):
+                store.upsert({}, metadata_for_test())
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(daily.read_bytes(), original)
+
+    def test_append_compatibility_rejects_missing_ohlc_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            valid = history_quote(4.684, 4.691, "2026-08-28T09:31:01+08:00")
+            incomplete_point = QuotePoint(
+                valid.points[0].timestamp,
+                valid.points[0].price,
+                valid.points[0].average_price,
+                volume=valid.points[0].volume,
+                amount=valid.points[0].amount,
+            )
+            incomplete = Quote(
+                valid.symbol,
+                valid.name,
+                valid.price,
+                valid.average_price,
+                valid.previous_close,
+                valid.timestamp,
+                (incomplete_point,),
+                valid.observed_at,
+                valid.source,
+            )
+
+            with self.assertRaisesRegex(MarketDataError, "开盘价|OHLC"):
+                MinuteHistoryStore(path).append_legacy({"510300": incomplete})
+            self.assertFalse(path.exists())
+
+    def test_canonical_is_authoritative_and_orphan_daily_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:31:01+08:00",
+            )}, metadata_for_test())
+            orphan = store.daily_root / "2026-08-27" / "quotes.jsonl"
+            orphan.parent.mkdir(parents=True)
+            orphan.write_bytes(path.read_bytes())
+
+            self.assertEqual(store.query("2026-08-27", "510300"), [])
+            self.assertEqual(store.available_dates(), ["2026-08-28"])
+            store.upsert({}, metadata_for_test())
+            self.assertFalse(orphan.exists())
+
+    def test_two_store_instances_do_not_lose_concurrent_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            stores = (MinuteHistoryStore(path), MinuteHistoryStore(path))
+            quotes = (
+                history_quote(4.684, 4.691, "2026-08-28T09:31:01+08:00"),
+                history_quote(
+                    4.685,
+                    4.691,
+                    "2026-08-28T09:32:01+08:00",
+                    timestamp="2026-08-28T09:31:00+08:00",
+                ),
+            )
+            start = threading.Barrier(3)
+            errors: list[BaseException] = []
+            original_read = MinuteHistoryStore._read_path
+
+            def slow_canonical_read(instance: MinuteHistoryStore, read_path: Path, *args: object, **kwargs: object) -> object:
+                records = original_read(instance, read_path, *args, **kwargs)
+                if Path(read_path) == instance.path:
+                    time.sleep(0.05)
+                return records
+
+            def write(index: int) -> None:
+                try:
+                    start.wait()
+                    stores[index].upsert({"510300": quotes[index]}, metadata_for_test())
+                except BaseException as error:
+                    errors.append(error)
+
+            threads = [threading.Thread(target=write, args=(index,)) for index in range(2)]
+            with patch.object(MinuteHistoryStore, "_read_path", new=slow_canonical_read):
+                for thread in threads:
+                    thread.start()
+                start.wait()
+                for thread in threads:
+                    thread.join(timeout=2)
+
+            self.assertEqual(errors, [])
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            records = MinuteHistoryStore(path).query("2026-08-28", "510300")
+            self.assertEqual([item["timestamp"] for item in records], [
+                "2026-08-28T09:30:00+08:00",
+                "2026-08-28T09:31:00+08:00",
+            ])
+
+    def test_upsert_requires_metadata_and_revalidates_existing_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:31:01+08:00",
+            )}, metadata_for_test())
+            daily = store.daily_root / "2026-08-28" / "quotes.jsonl"
+            record = json.loads(path.read_text(encoding="utf-8"))
+            for field in ("open", "high", "low", "price", "average_price"):
+                record[field] = 40.0
+            record["amount"] = 400000.0
+            invalid = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+            path.write_bytes(invalid)
+            original_daily = daily.read_bytes()
+
+            with self.assertRaisesRegex(MarketDataError, "交易元数据"):
+                store.upsert({}, {})
+            self.assertEqual(path.read_bytes(), invalid)
+            self.assertEqual(daily.read_bytes(), original_daily)
+            with self.assertRaisesRegex(MarketDataError, "涨跌幅"):
+                store.upsert({}, metadata_for_test())
+            self.assertEqual(path.read_bytes(), invalid)
+            self.assertEqual(daily.read_bytes(), original_daily)
+
+    def test_equivalent_offsets_share_one_shanghai_primary_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            utc = history_quote(
+                4.684,
+                4.691,
+                "2026-08-28T01:31:01+00:00",
+                timestamp="2026-08-28T01:30:00+00:00",
+            )
+            shanghai = history_quote(
+                4.685,
+                4.691,
+                "2026-08-28T09:31:02+08:00",
+            )
+
+            store.upsert({"510300": utc}, metadata_for_test())
+            store.upsert({"510300": shanghai}, metadata_for_test())
+
+            records = store.query("2026-08-28", "510300")
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["timestamp"], "2026-08-28T09:30:00+08:00")
+            self.assertEqual(records[0]["observed_at"], "2026-08-28T09:31:02+08:00")
+            self.assertEqual(records[0]["price"], 4.685)
 
 
 class FinalizedPointTests(unittest.TestCase):

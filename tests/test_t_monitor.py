@@ -178,14 +178,46 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
 
 
 class QuoteHistoryStoreTests(unittest.TestCase):
-    def test_appends_unique_timestamps_and_restores_after_restart(self) -> None:
+    def test_append_compatibility_persists_only_finalized_schema_v3_points(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "quotes.jsonl"
-            quotes = JsonQuoteAdapter().parse([quote()])
+            raw = quote()
+            raw["points"] = [
+                {
+                    "timestamp": "2026-08-28T09:30:00+08:00",
+                    "price": 10.3,
+                    "average_price": 10.0,
+                    "open": 10.3,
+                    "high": 10.3,
+                    "low": 10.3,
+                    "volume": 100.0,
+                    "amount": 103000.0,
+                },
+                {
+                    "timestamp": NOW,
+                    "price": 10.3,
+                    "average_price": 10.0,
+                    "open": 10.3,
+                    "high": 10.3,
+                    "low": 10.3,
+                    "volume": 100.0,
+                    "amount": 103000.0,
+                },
+            ]
+            quotes = JsonQuoteAdapter().parse([raw])
             QuoteHistoryStore(path).append(quotes)
             QuoteHistoryStore(path).append(quotes)
-            restored = QuoteHistoryStore(path).merge(JsonQuoteAdapter().parse([quote()]))
-            self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()), 2)
+            restored = QuoteHistoryStore(path).merge(quotes)
+            records = [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["schema_version"], 3)
+            self.assertEqual(records[0]["timestamp"], "2026-08-28T09:30:00+08:00")
+            self.assertEqual(records[0]["observed_at"], "2026-08-28T10:00:05+08:00")
+            self.assertTrue(records[0]["is_complete"])
+            self.assertEqual(records[0]["source"], "TEST_FIXTURE")
             self.assertEqual(len(restored["510300"].points), 2)
 
 
