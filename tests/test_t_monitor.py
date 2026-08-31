@@ -863,6 +863,8 @@ class MonitorWebTests(unittest.TestCase):
     def test_page_highlights_fresh_candidates_with_neutral_language_only(self) -> None:
         self.assertIn("item.action==='BUY_CANDIDATE'||item.action==='SELL_CANDIDATE'", PAGE)
         self.assertIn("candidate=!stale", PAGE)
+        self.assertIn("candidateAction=item.action==='BUY_CANDIDATE'||item.action==='SELL_CANDIDATE'", PAGE)
+        self.assertIn("displayLabel=candidate?'做T候选':candidateAction||item.action==='DEVIATION_OBSERVE'?'偏离观察'", PAGE)
         self.assertIn("做T候选", PAGE)
         self.assertIn("偏离观察", PAGE)
         self.assertNotIn("做T黄金窗口", PAGE)
