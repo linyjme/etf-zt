@@ -8,6 +8,7 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
+from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
 from etf_rotation.quote_collector import SOURCE_NAME, Trends2QuoteCollector, market_for_symbol
 from etf_rotation.t_monitor import (
     JsonQuoteAdapter, MarketDataError, QuoteHistoryStore, TMonitorEngine, WatchItem,
@@ -357,6 +358,102 @@ class MonitorRefreshTests(unittest.TestCase):
             self.assertEqual(payload["source"]["name"], SOURCE_NAME)
             self.assertEqual(payload["refresh_error"], "远端明确失败")
             self.assertEqual(payload["errors"], [])
+
+
+class EtfMetadataTests(unittest.TestCase):
+    @staticmethod
+    def metadata_payload() -> dict[str, object]:
+        return {
+            "schema_version": 2,
+            "items": [{
+                "symbol": "510300",
+                "name": "沪深300ETF",
+                "index": {"code": "000300", "name": "沪深300", "provider": "中证指数"},
+                "trading": {
+                    "exchange": "SSE",
+                    "asset_type": "DOMESTIC_EQUITY_ETF",
+                    "intraday_turnaround": False,
+                    "sellable_delay_days": 1,
+                    "lot_size": 100,
+                    "price_tick": 0.001,
+                    "price_limit_pct": 0.10,
+                    "volume_unit_shares": 100,
+                },
+            }],
+        }
+
+    def load_payload(self, payload: dict[str, object]) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "etf_metadata.json"
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            return EtfMetadataStore(path).load()
+
+    def test_initial_mapping_contains_six_etfs(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "etf_metadata.json"
+        metadata = EtfMetadataStore(path).load()
+        self.assertEqual(metadata["510300"].index.code, "000300")
+        self.assertEqual(metadata["159915"].index.code, "399006")
+        self.assertEqual(len(metadata), 6)
+
+    def test_initial_mapping_contains_exact_trading_attributes(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "etf_metadata.json"
+        items = EtfMetadataStore(path).load()
+        expected = {
+            "510300": ("SSE", 0.10),
+            "510500": ("SSE", 0.10),
+            "563360": ("SSE", 0.10),
+            "512100": ("SSE", 0.10),
+            "159915": ("SZSE", 0.20),
+            "588000": ("SSE", 0.20),
+        }
+        self.assertEqual(set(items), set(expected))
+        for symbol, (exchange, price_limit_pct) in expected.items():
+            trading = {
+                "exchange": exchange,
+                "asset_type": "DOMESTIC_EQUITY_ETF",
+                "intraday_turnaround": False,
+                "sellable_delay_days": 1,
+                "lot_size": 100,
+                "price_tick": 0.001,
+                "price_limit_pct": price_limit_pct,
+                "volume_unit_shares": 100,
+            }
+            self.assertEqual(items[symbol].trading.to_dict(), trading)
+            self.assertEqual(items[symbol].to_dict()["trading"], trading)
+
+    def test_requires_schema_version_two_and_trading_object(self) -> None:
+        payload = self.metadata_payload()
+        payload["schema_version"] = 1
+        with self.assertRaisesRegex(MetadataError, "schema_version"):
+            self.load_payload(payload)
+
+        payload = self.metadata_payload()
+        del payload["items"][0]["trading"]
+        with self.assertRaisesRegex(MetadataError, "交易元数据"):
+            self.load_payload(payload)
+
+    def test_rejects_invalid_trading_attributes(self) -> None:
+        cases = (
+            ("exchange", "OTHER", "交易所"),
+            ("asset_type", " ", "资产类型"),
+            ("intraday_turnaround", 0, "日内回转"),
+            ("sellable_delay_days", -1, "可卖延迟"),
+            ("sellable_delay_days", False, "可卖延迟"),
+            ("lot_size", 0, "每手股数"),
+            ("lot_size", True, "每手股数"),
+            ("price_tick", 0, "最小价位"),
+            ("price_tick", True, "最小价位"),
+            ("price_limit_pct", 0, "涨跌幅限制"),
+            ("price_limit_pct", False, "涨跌幅限制"),
+            ("volume_unit_shares", 0, "成交量单位"),
+            ("volume_unit_shares", True, "成交量单位"),
+        )
+        for field, value, message in cases:
+            with self.subTest(field=field, value=value):
+                payload = self.metadata_payload()
+                payload["items"][0]["trading"][field] = value
+                with self.assertRaisesRegex(MetadataError, message):
+                    self.load_payload(payload)
 
 
 class MonitorWebTests(unittest.TestCase):
