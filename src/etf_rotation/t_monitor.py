@@ -193,6 +193,8 @@ class WatchItem:
     enabled: bool = True
     base_shares: int | None = None
     t_capacity_shares: int | None = None
+    base_notional_cny: float | None = None
+    t_capacity_ratio: float | None = None
 
 
 @dataclass(frozen=True)
@@ -433,11 +435,25 @@ def load_watchlist(path: Path) -> tuple[WatchItem, ...]:
         share_overrides: dict[str, int | None] = {}
         for field in ("base_shares", "t_capacity_shares"):
             value = raw_item.get(field)
-            if value is not None and (
-                type(value) is not int or value < 0 or value % 100 != 0
-            ):
-                raise MarketDataError(f"{symbol}.{field} 必须是非负整手")
+            if value is not None and (type(value) is not int or value < 0):
+                raise MarketDataError(f"{symbol}.{field} 必须是非负整数")
             share_overrides[field] = value
+        base_notional = raw_item.get("base_notional_cny")
+        if base_notional is not None and (
+            isinstance(base_notional, bool)
+            or not isinstance(base_notional, (int, float))
+            or not math.isfinite(base_notional)
+            or base_notional <= 0
+        ):
+            raise MarketDataError(f"{symbol}.base_notional_cny 必须是有限正数")
+        capacity_ratio = raw_item.get("t_capacity_ratio")
+        if capacity_ratio is not None and (
+            isinstance(capacity_ratio, bool)
+            or not isinstance(capacity_ratio, (int, float))
+            or not math.isfinite(capacity_ratio)
+            or not 0 < capacity_ratio <= 1
+        ):
+            raise MarketDataError(f"{symbol}.t_capacity_ratio 必须在(0,1]范围内")
         result.append(WatchItem(
             symbol,
             name,
@@ -445,6 +461,8 @@ def load_watchlist(path: Path) -> tuple[WatchItem, ...]:
             enabled,
             share_overrides["base_shares"],
             share_overrides["t_capacity_shares"],
+            float(base_notional) if base_notional is not None else None,
+            float(capacity_ratio) if capacity_ratio is not None else None,
         ))
         symbols.add(symbol)
     return tuple(result)

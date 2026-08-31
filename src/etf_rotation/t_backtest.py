@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import date
 import math
 from typing import Any, Callable
 
@@ -237,6 +238,7 @@ class TAccount:
         self.completed_pairs: list[TradePair] = []
         self.rejections: list[RejectedFill] = []
         self.fills: list[Fill] = []
+        self.trading_date: date | None = None
 
     @classmethod
     def create(
@@ -305,6 +307,20 @@ class TAccount:
     @property
     def total_slippage_cny(self) -> float:
         return sum(item.slippage_cny for item in self.fills)
+
+    def rollover(self, trading_date: date) -> None:
+        if not isinstance(trading_date, date):
+            raise ValueError("trading_date必须是日期")
+        if self.trading_date is None:
+            self.trading_date = trading_date
+            return
+        if trading_date < self.trading_date:
+            raise ValueError("trading_date不能倒退")
+        if trading_date == self.trading_date:
+            return
+        self.overnight_sellable_shares = self.total_shares
+        self.today_bought_shares = 0
+        self.trading_date = trading_date
 
     def executable_shares(self, bar: FillBar, requested_shares: int) -> int:
         if bar.volume_lots <= 0 or type(requested_shares) is not int:
@@ -568,6 +584,8 @@ class TBacktester:
         *,
         base_shares: int | None = None,
         t_capacity_shares: int | None = None,
+        base_notional_cny: float | None = None,
+        t_capacity_ratio: float | None = None,
         reserve_cash: float | None = None,
     ) -> BacktestResult:
         completed = finalized_points(quote.points, quote.observed_at)
@@ -575,22 +593,52 @@ class TBacktester:
             raise ValueError("没有已完成分钟")
         first_price = _finite_positive(completed[0].price, "first_price")
         last_price = _finite_positive(completed[-1].price, "last_price")
-        configured_base = (
+        explicit_base = (
             base_shares if base_shares is not None
             else getattr(watch_item, "base_shares", None)
         )
-        if configured_base is None:
+        if explicit_base is not None:
+            self._validate_explicit_shares(
+                explicit_base, trading.lot_size, "base_shares",
+            )
+            configured_base = explicit_base
+        else:
+            configured_notional = (
+                base_notional_cny if base_notional_cny is not None
+                else getattr(watch_item, "base_notional_cny", None)
+            )
+            if configured_notional is None:
+                configured_notional = constants.DEFAULT_BASE_NOTIONAL_CNY
+            configured_notional = _finite_positive(
+                configured_notional, "base_notional_cny",
+            )
             configured_base = floor_to_lot(
-                int(constants.DEFAULT_BASE_NOTIONAL_CNY / first_price),
+                int(configured_notional / first_price),
                 trading.lot_size,
             )
-        configured_capacity = (
+        explicit_capacity = (
             t_capacity_shares if t_capacity_shares is not None
             else getattr(watch_item, "t_capacity_shares", None)
         )
-        if configured_capacity is None:
+        if explicit_capacity is not None:
+            self._validate_explicit_shares(
+                explicit_capacity, trading.lot_size, "t_capacity_shares",
+            )
+            configured_capacity = explicit_capacity
+        else:
+            configured_ratio = (
+                t_capacity_ratio if t_capacity_ratio is not None
+                else getattr(watch_item, "t_capacity_ratio", None)
+            )
+            if configured_ratio is None:
+                configured_ratio = constants.DEFAULT_T_CAPACITY_RATIO
+            configured_ratio = _finite_positive(
+                configured_ratio, "t_capacity_ratio",
+            )
+            if configured_ratio > 1:
+                raise ValueError("t_capacity_ratio必须在(0,1]范围内")
             configured_capacity = floor_to_lot(
-                int(configured_base * constants.DEFAULT_T_CAPACITY_RATIO),
+                int(configured_base * configured_ratio),
                 trading.lot_size,
             )
         account = TAccount.create(
@@ -606,6 +654,12 @@ class TBacktester:
         for index in range(1, len(completed)):
             execution_point = completed[index]
             decision_point = completed[index - 1]
+            account.rollover(execution_point.timestamp.date())
+            if decision_point.timestamp.date() != execution_point.timestamp.date():
+                curve.append(
+                    account.cash + account.total_shares * execution_point.price,
+                )
+                continue
             decision_quote = Quote(
                 quote.symbol,
                 quote.name,
@@ -636,6 +690,11 @@ class TBacktester:
             last_price=last_price,
             maximum_drawdown=maximum_drawdown,
         )
+
+    @staticmethod
+    def _validate_explicit_shares(shares: object, lot_size: int, field: str) -> None:
+        if type(shares) is not int or shares < 0 or shares % lot_size != 0:
+            raise ValueError(f"{field}配置必须是{lot_size}股整数倍的非负整数")
 
     def _action(
         self, decision_quote: Quote, watch_item: WatchItem, execution_point: QuotePoint,

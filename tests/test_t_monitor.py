@@ -841,7 +841,10 @@ class MonitorWebTests(unittest.TestCase):
 
     def test_backtest_endpoint_returns_independent_summary_per_enabled_item(self) -> None:
         self.watchlist.write_text(json.dumps([
-            {"symbol": "510300", "name": "沪深300ETF", "grid_width_pct": 0.02},
+            {
+                "symbol": "510300", "name": "沪深300ETF", "grid_width_pct": 0.02,
+                "base_notional_cny": 11_000.0, "t_capacity_ratio": 0.10,
+            },
             {"symbol": "159915", "name": "创业板ETF", "grid_width_pct": 0.02},
             {"symbol": "disabled", "name": "已禁用", "grid_width_pct": 0.02, "enabled": False},
         ], ensure_ascii=False), encoding="utf-8")
@@ -862,6 +865,8 @@ class MonitorWebTests(unittest.TestCase):
         self.assertEqual(completed["execution_mode"], "NEXT_COMPLETED_BAR")
         self.assertEqual(completed["completed_pair_count"], 0)
         self.assertEqual(completed["open_leg_count"], 0)
+        self.assertEqual(completed["base_shares"], 1_000)
+        self.assertEqual(completed["t_capacity_shares"], 100)
         self.assertEqual(completed["t_net_gain_cny"], 0.0)
         self.assertIsNone(completed["outperformed_baseline"])
         self.assertEqual(payload["items"][1]["status"], "MISSING_QUOTE")
@@ -986,6 +991,15 @@ class MonitorWebTests(unittest.TestCase):
                 error.close()
 
     def test_watchlist_post_persists_valid_item(self) -> None:
+        self.watchlist.write_text(json.dumps([{
+            "symbol": "510300",
+            "name": "沪深300ETF",
+            "grid_width_pct": 0.02,
+            "base_notional_cny": 11_000.0,
+            "base_shares": 1_000,
+            "t_capacity_ratio": 0.10,
+            "t_capacity_shares": 100,
+        }], ensure_ascii=False), encoding="utf-8")
         status, payload = self.post("/api/watchlist", {
             "symbol": "159915",
             "name": "创业板ETF",
@@ -999,6 +1013,10 @@ class MonitorWebTests(unittest.TestCase):
         self.assertEqual(stored["watchlist"][1]["name"], "创业板ETF")
         self.assertEqual(stored["watchlist"][1]["grid_width_pct"], 0.002)
         self.assertTrue(stored["watchlist"][1]["enabled"])
+        self.assertEqual(stored["watchlist"][0]["base_notional_cny"], 11_000.0)
+        self.assertEqual(stored["watchlist"][0]["base_shares"], 1_000)
+        self.assertEqual(stored["watchlist"][0]["t_capacity_ratio"], 0.10)
+        self.assertEqual(stored["watchlist"][0]["t_capacity_shares"], 100)
         self.assertEqual(list(self.watchlist.parent.glob(".*.tmp")), [])
 
     def test_watchlist_post_rejects_invalid_symbol_without_changing_file(self) -> None:

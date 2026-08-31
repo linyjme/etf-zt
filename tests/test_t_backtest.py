@@ -10,26 +10,47 @@ from etf_rotation.t_monitor import MarketDataError, Quote, QuotePoint, WatchItem
 
 
 class WatchItemBacktestConfigTests(unittest.TestCase):
-    def test_optional_share_overrides_are_whole_lots_or_none(self) -> None:
+    def test_optional_backtest_overrides_are_validated_without_hardcoded_lot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "watchlist.json"
             path.write_text(json.dumps([
                 {"symbol": "510300"},
-                {"symbol": "510500", "base_shares": 1_000, "t_capacity_shares": 200},
+                {
+                    "symbol": "510500",
+                    "base_notional_cny": 12_345.0,
+                    "base_shares": 150,
+                    "t_capacity_ratio": 0.25,
+                    "t_capacity_shares": 50,
+                },
             ]), encoding="utf-8")
             items = load_watchlist(path)
             self.assertIsNone(items[0].base_shares)
             self.assertIsNone(items[0].t_capacity_shares)
-            self.assertEqual(items[1].base_shares, 1_000)
-            self.assertEqual(items[1].t_capacity_shares, 200)
+            self.assertIsNone(items[0].base_notional_cny)
+            self.assertIsNone(items[0].t_capacity_ratio)
+            self.assertEqual(items[1].base_shares, 150)
+            self.assertEqual(items[1].t_capacity_shares, 50)
+            self.assertEqual(items[1].base_notional_cny, 12_345.0)
+            self.assertEqual(items[1].t_capacity_ratio, 0.25)
 
             for field, value in (
                 ("base_shares", True),
                 ("base_shares", -100),
-                ("base_shares", 150),
+                ("base_shares", 100.0),
                 ("t_capacity_shares", False),
                 ("t_capacity_shares", -100),
-                ("t_capacity_shares", 150),
+                ("t_capacity_shares", float("inf")),
+                ("base_notional_cny", True),
+                ("base_notional_cny", 0),
+                ("base_notional_cny", -1),
+                ("base_notional_cny", float("nan")),
+                ("base_notional_cny", float("inf")),
+                ("t_capacity_ratio", True),
+                ("t_capacity_ratio", 0),
+                ("t_capacity_ratio", -0.1),
+                ("t_capacity_ratio", 1.01),
+                ("t_capacity_ratio", float("nan")),
+                ("t_capacity_ratio", float("inf")),
             ):
                 with self.subTest(field=field, value=value):
                     path.write_text(json.dumps([{
@@ -139,6 +160,96 @@ class TBacktesterRunTests(unittest.TestCase):
         self.assertEqual(result.baseline_ending_equity_cny, 11_000.0)
         self.assertEqual(result.t_net_gain_cny, 0.0)
         self.assertIsNone(result.outperformed_baseline)
+
+    def test_run_resolves_all_overrides_by_priority_for_non_hundred_lot(self) -> None:
+        trading = TradingMetadata(
+            "SSE", "TEST_ETF", False, 1, 50, 0.001, 0.10, 10,
+        )
+        market_quote = self.market_quote((10.0,), (10_000,), complete_count=1)
+        explicit = TBacktester(signal_callback=lambda *_: "WAIT").run(
+            market_quote,
+            WatchItem(
+                "510300", "ETF", 0.002,
+                base_shares=150,
+                t_capacity_shares=50,
+                base_notional_cny=9_999.0,
+                t_capacity_ratio=0.90,
+            ),
+            trading,
+        )
+        self.assertEqual(explicit.base_shares, 150)
+        self.assertEqual(explicit.t_capacity_shares, 50)
+
+        derived = TBacktester(signal_callback=lambda *_: "WAIT").run(
+            market_quote,
+            WatchItem(
+                "510300", "ETF", 0.002,
+                base_notional_cny=1_234.0,
+                t_capacity_ratio=0.60,
+            ),
+            trading,
+        )
+        self.assertEqual(derived.base_shares, 100)
+        self.assertEqual(derived.t_capacity_shares, 50)
+
+        defaults = TBacktester(signal_callback=lambda *_: "WAIT").run(
+            market_quote, WatchItem("510300", "ETF", 0.002), trading,
+        )
+        self.assertEqual(defaults.base_shares, 1_500)
+        self.assertEqual(defaults.t_capacity_shares, 300)
+
+    def test_explicit_shares_must_match_metadata_lot_size(self) -> None:
+        market_quote = self.market_quote((10.0,), (10_000,), complete_count=1)
+        with self.assertRaisesRegex(ValueError, "base_shares.*100"):
+            TBacktester().run(
+                market_quote,
+                WatchItem("510300", "ETF", 0.002, base_shares=150),
+                self.trading,
+            )
+        with self.assertRaisesRegex(ValueError, "t_capacity_shares.*100"):
+            TBacktester().run(
+                market_quote,
+                WatchItem(
+                    "510300", "ETF", 0.002,
+                    base_shares=200,
+                    t_capacity_shares=50,
+                ),
+                self.trading,
+            )
+
+    def test_run_rolls_today_buys_to_overnight_and_skips_cross_day_signal(self) -> None:
+        day_one = datetime.fromisoformat("2026-08-28T10:00:00+08:00")
+        day_two = datetime.fromisoformat("2026-08-31T10:00:00+08:00")
+        points = (
+            QuotePoint(day_one, 10.0, 10.0, volume=10_000),
+            QuotePoint(day_one + timedelta(minutes=1), 9.8, 10.0, volume=10_000),
+            QuotePoint(day_two, 9.9, 9.9, volume=10_000),
+            QuotePoint(day_two + timedelta(minutes=1), 10.1, 9.9, volume=10_000),
+        )
+        market_quote = Quote(
+            "510300", "ETF", 10.1, 9.9, 10.0, points[-1].timestamp,
+            points, points[-1].timestamp + timedelta(minutes=1), "TEST_FIXTURE",
+        )
+        seen: list[str] = []
+
+        def signal(decision_quote: Quote, _item: WatchItem, _bar: QuotePoint) -> str:
+            seen.append(decision_quote.timestamp.isoformat())
+            return "BUY_CANDIDATE" if decision_quote.timestamp.date() == day_one.date() else "SELL_CANDIDATE"
+
+        result = TBacktester(signal_callback=signal).run(
+            market_quote,
+            WatchItem(
+                "510300", "ETF", 0.002,
+                base_shares=1_000,
+                t_capacity_shares=100,
+            ),
+            self.trading,
+        )
+        self.assertEqual(seen, [day_one.isoformat(), day_two.isoformat()])
+        self.assertEqual(result.completed_pair_count, 1)
+        self.assertEqual(result.open_leg_count, 0)
+        self.assertEqual(result.today_bought_shares, 0)
+        self.assertEqual(result.overnight_sellable_shares, 1_000)
 
     def test_records_and_backtest_result_are_json_serializable(self) -> None:
         account = TAccount.create(

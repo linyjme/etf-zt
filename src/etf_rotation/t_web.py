@@ -569,6 +569,10 @@ class MonitorApplication:
                 "name": item.name,
                 "grid_width_pct": item.grid_width_pct,
                 "enabled": item.enabled,
+                **({"base_notional_cny": item.base_notional_cny} if item.base_notional_cny is not None else {}),
+                **({"base_shares": item.base_shares} if item.base_shares is not None else {}),
+                **({"t_capacity_ratio": item.t_capacity_ratio} if item.t_capacity_ratio is not None else {}),
+                **({"t_capacity_shares": item.t_capacity_shares} if item.t_capacity_shares is not None else {}),
             } if not isinstance(item, dict) else item
             for item in records
         ]
