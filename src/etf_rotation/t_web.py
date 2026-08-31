@@ -22,6 +22,7 @@ from .market_data import (
     MarketDataValidator,
     MarketHealthClassifier,
     MinuteHistoryStore,
+    SHANGHAI,
     finalized_points,
     load_closed_dates,
 )
@@ -116,15 +117,22 @@ class MonitorApplication:
             published = copy.deepcopy(self._published)
             events = copy.deepcopy(tuple(self._revision_events))
         all_points = self._current_day_points(published, symbol)
-        too_old = (
-            since > revision
+        reset = (
+            since == 0
+            or since > revision
             or (since < revision and not events)
             or (
                 bool(events)
                 and since < int(events[0]["revision"]) - 1
             )
         )
-        if too_old:
+        if not reset:
+            reset = any(
+                int(event["revision"]) > since
+                and symbol in event.get("resets", [])
+                for event in events
+            )
+        if reset:
             upserts = all_points
         else:
             by_timestamp: dict[str, dict[str, Any]] = {}
@@ -141,7 +149,7 @@ class MonitorApplication:
             "symbol": symbol,
             "revision": revision,
             "upserts": upserts,
-            "reset": too_old,
+            "reset": reset,
             "read_only": True,
         }
 
@@ -203,7 +211,7 @@ class MonitorApplication:
                 current_revision = int(current.get("revision", 0))
                 events = tuple(self._revision_events)
                 if after_revision > current_revision:
-                    selected = current
+                    selected = self._reset_summary(current)
                 elif (
                     after_revision < current_revision
                     and (
@@ -211,7 +219,7 @@ class MonitorApplication:
                         or after_revision < int(events[0]["revision"]) - 1
                     )
                 ):
-                    selected = current
+                    selected = self._reset_summary(current)
                 else:
                     selected = next((
                     event for event in self._revision_events
@@ -407,6 +415,22 @@ class MonitorApplication:
             item.pop("points", None)
         return result
 
+    @classmethod
+    def _reset_summary(cls, published: Mapping[str, Any]) -> dict[str, Any]:
+        result = cls._summary_snapshot(published)
+        result["event"] = "reset"
+        result["reset"] = True
+        return result
+
+    @staticmethod
+    def _normalize_point(point: Mapping[str, Any]) -> dict[str, Any]:
+        result = copy.deepcopy(dict(point))
+        timestamp = datetime.fromisoformat(str(result.get("timestamp", "")))
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise ValueError("分钟时间必须带时区")
+        result["timestamp"] = timestamp.astimezone(SHANGHAI).isoformat()
+        return result
+
     @staticmethod
     def _points_trading_date(points: list[dict[str, Any]]) -> str | None:
         if not points:
@@ -421,7 +445,11 @@ class MonitorApplication:
         for item in published.get("items", []):
             if item.get("symbol") != symbol:
                 continue
-            points = copy.deepcopy(list(item.get("points") or []))
+            points = [
+                cls._normalize_point(point)
+                for point in item.get("points") or []
+            ]
+            points.sort(key=lambda point: point["timestamp"])
             trading_date = cls._points_trading_date(points)
             if trading_date is None:
                 return []
@@ -447,6 +475,10 @@ class MonitorApplication:
             str(item.get("symbol")): item
             for item in current_summary.get("items", [])
         }
+        current_full_items = {
+            str(item.get("symbol")): item
+            for item in current.get("items", [])
+        }
         changed_items = [
             copy.deepcopy(item)
             for symbol, item in current_items.items()
@@ -455,19 +487,38 @@ class MonitorApplication:
         removed_symbols = sorted(set(previous_items) - set(current_items))
 
         upserts: dict[str, list[dict[str, Any]]] = {}
+        resets: set[str] = set(removed_symbols)
         symbols = set(previous_items) | set(current_items)
         for symbol in symbols:
-            old_points = {
-                str(point.get("timestamp")): point
-                for point in cls._current_day_points(previous, symbol)
-            }
+            old_point_list = cls._current_day_points(previous, symbol)
             new_points = cls._current_day_points(current, symbol)
+            old_points = {
+                str(point.get("timestamp")): point for point in old_point_list
+            }
+            new_point_keys = {
+                str(point.get("timestamp")) for point in new_points
+            }
+            current_item = current_full_items.get(symbol)
+            current_missing = (
+                current_item is None
+                or current_item.get("status") == "MISSING_QUOTE"
+                or "points" not in current_item
+            )
+            day_changed = (
+                bool(old_point_list)
+                and bool(new_points)
+                and cls._points_trading_date(old_point_list)
+                != cls._points_trading_date(new_points)
+            )
+            point_removed = bool(set(old_points) - new_point_keys)
+            if current_missing or day_changed or point_removed:
+                resets.add(symbol)
             changed = [
                 copy.deepcopy(point)
                 for point in new_points
                 if point != old_points.get(str(point.get("timestamp")))
             ]
-            if changed:
+            if changed and symbol not in resets:
                 upserts[symbol] = changed
 
         event = {
@@ -479,6 +530,7 @@ class MonitorApplication:
             "event": "delta",
             "items": changed_items,
             "removed_symbols": removed_symbols,
+            "resets": sorted(resets),
             "upserts": upserts,
         })
         return event
@@ -937,7 +989,11 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
     def _write_snapshot_event(self, payload: Mapping[str, Any]) -> None:
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         revision = int(payload["revision"])
-        event_name = "delta" if payload.get("event") == "delta" else "snapshot"
+        event_name = (
+            str(payload["event"])
+            if payload.get("event") in {"delta", "reset"}
+            else "snapshot"
+        )
         self.wfile.write(
             f"id: {revision}\nevent: {event_name}\ndata: {content}\n\n".encode("utf-8"),
         )

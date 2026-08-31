@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import copy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 import io
 import json
@@ -202,7 +202,11 @@ class RestartCursorApplication:
     ) -> dict[str, object] | None:
         self.waits.append(after_revision)
         self._stop_event.set()
-        return self.snapshot()
+        return {
+            **self.snapshot(),
+            "event": "reset",
+            "reset": True,
+        }
 
     def is_stopping(self) -> bool:
         return self._stop_event.is_set()
@@ -646,6 +650,113 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(delta["upserts"][0]["timestamp"], latest["timestamp"])
         self.assertEqual(delta["upserts"][0]["price"], 9.931)
 
+    def test_since_zero_is_an_initializing_full_reset_at_revision_zero_and_later(self) -> None:
+        payload = valid_completed_quote_payload()
+        self.paths.quotes.write_text(json.dumps(payload), encoding="utf-8")
+        collector = StaticCollector(payload)
+        app = self.make_runtime_fixture(collector)
+
+        at_bootstrap = app.quotes("510300", since=0)
+        self.assertEqual(at_bootstrap["revision"], 0)
+        self.assertTrue(at_bootstrap["reset"])
+        self.assertEqual(len(at_bootstrap["upserts"]), len(payload["quotes"][0]["points"]))
+
+        self.assertTrue(app.refresh_once())
+        after_identical_refresh = app.quotes("510300", since=0)
+        self.assertEqual(after_identical_refresh["revision"], 1)
+        self.assertTrue(after_identical_refresh["reset"])
+        self.assertEqual(
+            len(after_identical_refresh["upserts"]),
+            len(payload["quotes"][0]["points"]),
+        )
+
+    def test_quote_shrink_and_missing_quote_force_authoritative_resets(self) -> None:
+        collector = StaticCollector(valid_completed_quote_payload())
+        app = self.make_runtime_fixture(collector)
+        self.assertTrue(app.refresh_once())
+
+        shortened = valid_completed_quote_payload()
+        shortened_points = shortened["quotes"][0]["points"][:-1]
+        shortened["quotes"][0]["points"] = shortened_points
+        shortened["quotes"][0]["timestamp"] = shortened_points[-1]["timestamp"]
+        shortened["quotes"][0]["price"] = shortened_points[-1]["price"]
+        shortened["quotes"][0]["average_price"] = shortened_points[-1]["average_price"]
+        collector.payload = shortened
+        self.assertTrue(app.refresh_once())
+
+        shrink = app.quotes("510300", since=1)
+        self.assertTrue(shrink["reset"])
+        self.assertEqual(len(shrink["upserts"]), len(shortened_points))
+        self.assertNotIn(valid_completed_quote_payload()["quotes"][0]["points"][-1], shrink["upserts"])
+
+        collector.payload = {
+            "collected_at": shortened["collected_at"],
+            "source": {"name": "EMPTY"},
+            "quotes": [],
+        }
+        self.assertTrue(app.refresh_once())
+        missing = app.quotes("510300", since=2)
+        self.assertTrue(missing["reset"])
+        self.assertEqual(missing["upserts"], [])
+
+    def test_trading_day_change_resets_without_mixing_days(self) -> None:
+        collector = StaticCollector(valid_completed_quote_payload())
+        app = self.make_runtime_fixture(collector)
+        self.assertTrue(app.refresh_once())
+
+        next_day = valid_completed_quote_payload()
+        for point in next_day["quotes"][0]["points"]:
+            point["timestamp"] = (
+                datetime.fromisoformat(point["timestamp"]) + timedelta(days=3)
+            ).isoformat()
+        quote = next_day["quotes"][0]
+        quote["timestamp"] = next_day["quotes"][0]["points"][-1]["timestamp"]
+        quote["observed_at"] = (
+            datetime.fromisoformat(quote["observed_at"]) + timedelta(days=3)
+        ).isoformat()
+        next_day["collected_at"] = (
+            datetime.fromisoformat(next_day["collected_at"]) + timedelta(days=3)
+        ).isoformat()
+        collector.payload = next_day
+        self.assertTrue(app.refresh_once())
+
+        result = app.quotes("510300", since=1)
+        self.assertTrue(result["reset"])
+        self.assertEqual(
+            {point["timestamp"][:10] for point in result["upserts"]},
+            {"2026-08-31"},
+        )
+
+    def test_equivalent_offsets_use_one_shanghai_minute_primary_key(self) -> None:
+        collector = StaticCollector(valid_completed_quote_payload())
+        app = self.make_runtime_fixture(collector)
+        self.assertTrue(app.refresh_once())
+
+        equivalent = valid_completed_quote_payload()
+        quote = equivalent["quotes"][0]
+        for point in quote["points"]:
+            point["timestamp"] = datetime.fromisoformat(
+                point["timestamp"],
+            ).astimezone(timezone.utc).isoformat()
+        quote["timestamp"] = datetime.fromisoformat(
+            quote["timestamp"],
+        ).astimezone(timezone.utc).isoformat()
+        quote["observed_at"] = datetime.fromisoformat(
+            quote["observed_at"],
+        ).astimezone(timezone.utc).isoformat()
+        equivalent["collected_at"] = datetime.fromisoformat(
+            equivalent["collected_at"],
+        ).astimezone(timezone.utc).isoformat()
+        collector.payload = equivalent
+        self.assertTrue(app.refresh_once())
+
+        delta = app.quotes("510300", since=1)
+        self.assertFalse(delta["reset"])
+        self.assertEqual(delta["upserts"], [])
+        initial = app.quotes("510300", since=0)
+        self.assertTrue(initial["reset"])
+        self.assertTrue(all(point["timestamp"].endswith("+08:00") for point in initial["upserts"]))
+
     def test_quote_cursor_falls_back_to_current_day_after_delta_eviction(self) -> None:
         app = self.make_runtime_fixture(revision_event_limit=2)
         self.assertTrue(app.refresh_once())
@@ -675,12 +786,20 @@ class RuntimeTests(unittest.TestCase):
     def test_revision_cursor_outside_retained_range_returns_current_snapshot(self) -> None:
         app = self.make_runtime_fixture(revision_event_limit=2)
         self.assertTrue(app.refresh_once())
-        self.assertEqual(app.wait_for_revision(999, timeout=0.01)["revision"], 1)
+        ahead = app.wait_for_revision(999, timeout=0.01)
+        self.assertEqual(ahead["revision"], 1)
+        self.assertEqual(ahead["event"], "reset")
+        self.assertTrue(ahead["reset"])
+        self.assertNotIn("points", ahead["items"][0])
         app.collector = FailingCollector("断流")
         self.assertFalse(app.refresh_once())
         app.collector = StaticCollector(valid_completed_quote_payload())
         self.assertTrue(app.refresh_once())
-        self.assertEqual(app.wait_for_revision(0, timeout=0.01)["revision"], 3)
+        old = app.wait_for_revision(0, timeout=0.01)
+        self.assertEqual(old["revision"], 3)
+        self.assertEqual(old["event"], "reset")
+        self.assertTrue(old["reset"])
+        self.assertNotIn("points", old["items"][0])
 
     def test_sse_uses_revision_ids_cursor_and_heartbeat_without_sleeping(self) -> None:
         application = ScriptedEventApplication()
@@ -717,6 +836,8 @@ class RuntimeTests(unittest.TestCase):
         stream = handler.wfile.getvalue().decode("utf-8")
         self.assertEqual(application.waits, [999])
         self.assertIn("id: 1\n", stream)
+        self.assertIn("event: reset\n", stream)
+        self.assertNotIn('"points"', stream)
         self.assertNotIn(": heartbeat", stream)
 
     def test_health_summary_tracks_latest_outage_revision(self) -> None:
