@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import datetime, timedelta
 import inspect
+import importlib.util
 import json
 from pathlib import Path
 import tempfile
@@ -783,6 +784,49 @@ class MonitorWebTests(unittest.TestCase):
         self.assertIn("白线实时价，黄线均价", PAGE)
         self.assertIn("item.previous_close", PAGE)
 
+    def test_page_is_extracted_and_uses_candidate_language_with_evidence(self) -> None:
+        self.assertIsNotNone(importlib.util.find_spec("etf_rotation.t_page"))
+        self.assertNotIn("黄金窗口", PAGE)
+        self.assertNotIn("回补提醒", PAGE)
+        self.assertNotIn("减仓提醒", PAGE)
+        self.assertIn("做T候选", PAGE)
+        self.assertIn("偏离观察", PAGE)
+        for field in (
+            "health", "health_reason", "path_efficiency", "one_side_ratio",
+            "vwap_crossings", "vwap_slope", "above_vwap_count",
+            "below_vwap_count", "range_confirmation_count",
+            "trend_confirmation_count", "gross_edge_pct", "cost_pct",
+            "net_edge_pct", "blocked_reasons",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, PAGE)
+
+    def test_page_has_axes_thresholds_tooltip_and_incremental_quotes(self) -> None:
+        self.assertIn('class="x-axis"', PAGE)
+        self.assertIn('class="y-axis"', PAGE)
+        self.assertIn('id="chart-tooltip"', PAGE)
+        self.assertIn("three_grid", PAGE)
+        self.assertIn("five_grid", PAGE)
+        self.assertIn("five labeled y ticks", PAGE)
+        self.assertIn("sessionAwareTicks", PAGE)
+        self.assertIn("/api/quotes?symbol=", PAGE)
+        self.assertIn("loadQuoteUpdates", PAGE)
+        self.assertIn("point.timestamp", PAGE)
+        self.assertIn("payload.reset", PAGE)
+        self.assertIn("quotePoints.delete(symbol)", PAGE)
+        self.assertIn("source.addEventListener('summary'", PAGE)
+        self.assertIn("source.addEventListener('delta'", PAGE)
+        self.assertIn("source.addEventListener('reset'", PAGE)
+        self.assertIn("三格 0.60%", PAGE)
+        self.assertIn("五格 1.00%", PAGE)
+
+    def test_page_uses_explicit_backtest_and_replay_panel_names(self) -> None:
+        self.assertIn("<h3>做T回测</h3>", PAGE)
+        self.assertIn("<h3>信号粗回放</h3>", PAGE)
+        self.assertIn("/api/t-backtest", PAGE)
+        self.assertIn("/api/signal-replay", PAGE)
+        self.assertNotIn("<h3>独立回测</h3>", PAGE)
+
     def test_page_has_left_watchlist_navigation_and_compact_add_form(self) -> None:
         self.assertIn('class="layout"', PAGE)
         self.assertLess(PAGE.index('<aside class="sidebar">'), PAGE.index('<section id="detail"'))
@@ -796,7 +840,7 @@ class MonitorWebTests(unittest.TestCase):
         self.assertIn("fetch('/api/watchlist'", PAGE)
 
     def test_page_renders_only_selected_item_and_keeps_selection_on_updates(self) -> None:
-        self.assertIn("let latestData=null,backtests=new Map(),selectedSymbol=null", PAGE)
+        self.assertIn("let latestData=null,backtests=new Map(),replays=new Map(),selectedSymbol=null", PAGE)
         self.assertIn("item.symbol===selectedSymbol", PAGE)
         self.assertIn("selectedSymbol=button.dataset.symbol", PAGE)
         self.assertIn("if(!items.some(item=>item.symbol===selectedSymbol))", PAGE)
@@ -804,7 +848,8 @@ class MonitorWebTests(unittest.TestCase):
         self.assertIn("const item=items.find(current=>current.symbol===selectedSymbol)", PAGE)
         self.assertIn("detail.innerHTML=`<article class=\"card\"", PAGE)
         self.assertIn("backtestSummary(item.symbol)", PAGE)
-        self.assertIn("<h3>独立回测</h3>", PAGE)
+        self.assertIn("replaySummary(item.symbol)", PAGE)
+        self.assertIn("<h3>做T回测</h3>", PAGE)
 
     def test_page_reloads_daily_history_after_every_detail_render(self) -> None:
         self.assertIn("dot.classList.toggle('stale',stale);loadAlerts();loadDailyHistory()", PAGE)
@@ -1102,15 +1147,15 @@ class MonitorWebTests(unittest.TestCase):
             "next_completed_timestamp": execution_point.timestamp.isoformat(),
         }, replay_item["actions"])
 
-    def test_page_marks_each_stale_market_time_and_shows_independent_backtest(self) -> None:
+    def test_page_marks_each_stale_market_time_and_shows_t_backtest(self) -> None:
         self.assertIn("const STALE_AFTER_MS=60000", PAGE)
         self.assertIn("refreshedAt.getTime()-marketAt.getTime()>STALE_AFTER_MS", PAGE)
         self.assertIn("--stale:#ff3b30", PAGE)
         self.assertIn("当前行情数据已过期，请勿按对应价格操作", PAGE)
         self.assertIn("staleBanner.classList.toggle('visible',stale)", PAGE)
         self.assertIn("statusNode.textContent=stale?'当前行情已过期':'实时监控中'", PAGE)
-        self.assertIn("/api/backtest", PAGE)
-        self.assertIn("<h3>独立回测</h3>", PAGE)
+        self.assertIn("/api/t-backtest", PAGE)
+        self.assertIn("<h3>做T回测</h3>", PAGE)
         self.assertIn("backtestSummary(item.symbol)", PAGE)
 
     def test_page_health_and_polling_snapshot(self) -> None:
