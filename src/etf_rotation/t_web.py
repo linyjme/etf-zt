@@ -13,14 +13,8 @@ import time
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from .constants import DEFAULT_GRID_WIDTH_PCT
+from . import constants
 from .t_monitor import AlertHistoryStore, JsonQuoteAdapter, QuoteHistoryStore, TMonitorEngine, load_watchlist, snapshot_to_dict
-
-
-BUY_COMMISSION_RATE = 0.00012
-SELL_COMMISSION_RATE = 0.00012
-MINIMUM_COMMISSION_CNY = 0.0
-SLIPPAGE_RATE = 0.001
 
 
 @dataclass
@@ -112,7 +106,7 @@ class MonitorApplication:
                     "trade_count": None, "trades": [],
                 })
                 continue
-            initial = 15000.0
+            initial = constants.DEFAULT_BASE_NOTIONAL_CNY
             cash = initial
             position: tuple[int, float] | None = None
             trades: list[dict[str, Any]] = []
@@ -126,17 +120,17 @@ class MonitorApplication:
                 )
                 signal = TMonitorEngine().evaluate((item,), {quote.symbol: decision_quote}).signals[0]
                 if signal.action == "BUY_REMINDER" and position is None:
-                    shares = int(cash / (point.price * (1 + SLIPPAGE_RATE) * (1 + BUY_COMMISSION_RATE)) / 100) * 100
+                    shares = int(cash / (point.price * (1 + constants.SLIPPAGE_RATE) * (1 + constants.BUY_COMMISSION_RATE)) / 100) * 100
                     if shares:
-                        fill = point.price * (1 + SLIPPAGE_RATE)
-                        fee = max(shares * fill * BUY_COMMISSION_RATE, MINIMUM_COMMISSION_CNY)
+                        fill = point.price * (1 + constants.SLIPPAGE_RATE)
+                        fee = max(shares * fill * constants.BUY_COMMISSION_RATE, constants.MINIMUM_COMMISSION_CNY)
                         cash -= shares * fill + fee
                         position = (shares, shares * fill + fee)
                         trades.append({"timestamp": point.timestamp.isoformat(), "action": "BUY", "symbol": quote.symbol, "shares": shares, "price": fill, "fee": fee})
                 elif signal.action == "SELL_REMINDER" and position is not None:
                     shares, basis = position
-                    fill = point.price * (1 - SLIPPAGE_RATE)
-                    fee = max(shares * fill * SELL_COMMISSION_RATE, MINIMUM_COMMISSION_CNY)
+                    fill = point.price * (1 - constants.SLIPPAGE_RATE)
+                    fee = max(shares * fill * constants.SELL_COMMISSION_RATE, constants.MINIMUM_COMMISSION_CNY)
                     proceeds = shares * fill - fee
                     cash += proceeds
                     position = None
@@ -168,12 +162,12 @@ class MonitorApplication:
             })
         return {
             "items": items,
-            "commission_rate": BUY_COMMISSION_RATE,
-            "buy_commission_rate": BUY_COMMISSION_RATE,
-            "sell_commission_rate": SELL_COMMISSION_RATE,
-            "minimum_commission_cny": MINIMUM_COMMISSION_CNY,
+            "commission_rate": constants.BUY_COMMISSION_RATE,
+            "buy_commission_rate": constants.BUY_COMMISSION_RATE,
+            "sell_commission_rate": constants.SELL_COMMISSION_RATE,
+            "minimum_commission_cny": constants.MINIMUM_COMMISSION_CNY,
             "commission_minimum_waived": True,
-            "slippage_rate": SLIPPAGE_RATE,
+            "slippage_rate": constants.SLIPPAGE_RATE,
             "execution": "NEXT_POINT",
             "read_only": True,
         }
@@ -190,7 +184,7 @@ class MonitorApplication:
         item = {
             "symbol": normalized_symbol,
             "name": normalized_name or normalized_symbol,
-            "grid_width_pct": DEFAULT_GRID_WIDTH_PCT,
+            "grid_width_pct": constants.DEFAULT_GRID_WIDTH_PCT,
             "enabled": True,
         }
         with self.watchlist_lock:
