@@ -922,7 +922,10 @@ class MonitorWebTests(unittest.TestCase):
         self.assertFalse(payload["auto_trade"])
         with urlopen(self.base + "/health", timeout=2) as response:
             health = json.loads(response.read())
-        self.assertEqual(health, {"status": "ok", "mode": "MONITOR_ONLY"})
+        self.assertEqual(health["mode"], "MONITOR_ONLY")
+        self.assertEqual(health["revision"], 1)
+        self.assertFalse(health["ok"])
+        self.assertIn("OUTAGE", health["health_statuses"])
 
     def post(self, path: str, payload: object) -> tuple[int, dict[str, object]]:
         request = Request(

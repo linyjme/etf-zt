@@ -469,9 +469,14 @@ class TMonitorEngine:
                 continue
 
             completed = finalized_points(quote.points, quote.observed_at)
-            item_health = health or self.health_classifier.classify(
-                current, completed[-1].timestamp if completed else None, None,
-            )
+            if isinstance(health, Mapping):
+                item_health = health.get(item.symbol)
+            else:
+                item_health = health
+            if item_health is None:
+                item_health = self.health_classifier.classify(
+                    current, completed[-1].timestamp if completed else None, None,
+                )
             regime = RegimeDetector().evaluate(completed)
             decision_quote = self._decision_quote(quote, completed)
             strategy_quote = decision_quote or Quote(

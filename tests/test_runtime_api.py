@@ -1,23 +1,28 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+import copy
+from datetime import datetime, timedelta
+from http import HTTPStatus
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from etf_rotation.t_monitor import MarketDataError
-from etf_rotation.t_web import MonitorApplication
+from etf_rotation.t_web import MonitorApplication, MonitorRequestHandler
 from tests.regime_fixtures import confirmed_range_quote
 
 
-def test_metadata_document() -> dict[str, object]:
+def test_metadata_document(*symbols: str) -> dict[str, object]:
+    symbols = symbols or ("510300",)
     return {
         "schema_version": 2,
         "items": [{
-            "symbol": "510300",
-            "name": "沪深300ETF",
+            "symbol": symbol,
+            "name": f"ETF-{symbol}",
             "index": {"code": "000300", "name": "沪深300", "provider": "中证指数"},
             "trading": {
                 "exchange": "SSE",
@@ -29,7 +34,7 @@ def test_metadata_document() -> dict[str, object]:
                 "price_limit_pct": 0.10,
                 "volume_unit_shares": 100,
             },
-        }],
+        } for symbol in symbols],
     }
 
 
@@ -59,6 +64,27 @@ def valid_completed_quote_payload() -> dict[str, object]:
             } for point in quote.points],
         }],
     }
+
+
+def mixed_health_quote_payload() -> dict[str, object]:
+    payload = valid_completed_quote_payload()
+    stale = copy.deepcopy(payload["quotes"][0])
+    stale["symbol"] = "510500"
+    stale["name"] = "中证500ETF"
+    fresh = payload["quotes"][0]
+    fresh["timestamp"] = (
+        datetime.fromisoformat(fresh["timestamp"]) + timedelta(minutes=8)
+    ).isoformat()
+    fresh["observed_at"] = (
+        datetime.fromisoformat(fresh["observed_at"]) + timedelta(minutes=8)
+    ).isoformat()
+    for point in fresh["points"]:
+        point["timestamp"] = (
+            datetime.fromisoformat(point["timestamp"]) + timedelta(minutes=8)
+        ).isoformat()
+    payload["collected_at"] = fresh["observed_at"]
+    payload["quotes"].append(stale)
+    return payload
 
 
 class StaticCollector:
@@ -96,6 +122,19 @@ class BlockingCollector(StaticCollector):
                 self._active -= 1
 
 
+class LifecycleCollector(StaticCollector):
+    def __init__(self, payload: dict[str, object]):
+        super().__init__(payload)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def collect_to_file(self, watchlist: object, path: Path) -> dict[str, object]:
+        self.entered.set()
+        if not self.release.wait(8):
+            raise TimeoutError("test did not release collector")
+        return super().collect_to_file(watchlist, path)
+
+
 class FailingCollector:
     def __init__(self, message: str):
         self.message = message
@@ -117,6 +156,34 @@ class FailingStore:
     def append_candidates(self, payload: object) -> None:
         if self.method == "append_candidates":
             raise OSError(self.message)
+
+
+class ScriptedEventApplication:
+    def __init__(self) -> None:
+        self._stop_event = threading.Event()
+        self.waits: list[int] = []
+        self.script: list[dict[str, object] | None | str] = [
+            {"revision": 8, "items": []},
+            None,
+            {"revision": 9, "items": []},
+            "stop",
+        ]
+
+    def snapshot(self) -> dict[str, object]:
+        return {"revision": 7, "items": []}
+
+    def wait_for_revision(
+        self, after_revision: int, timeout: float,
+    ) -> dict[str, object] | None:
+        self.waits.append(after_revision)
+        item = self.script.pop(0)
+        if item == "stop":
+            self._stop_event.set()
+            return None
+        return item
+
+    def is_stopping(self) -> bool:
+        return self._stop_event.is_set()
 
 
 _DEFAULT_COLLECTOR = object()
@@ -196,6 +263,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len({(item["symbol"], item["timestamp"]) for item in history}), len(history))
         self.assertEqual(len(alerts), 1)
 
+    def test_refresh_classifies_health_per_symbol_and_blocks_only_stale_quote(self) -> None:
+        self.paths.metadata.write_text(
+            json.dumps(test_metadata_document("510300", "510500")), encoding="utf-8",
+        )
+        self.paths.watchlist.write_text(json.dumps({"watchlist": [
+            {"symbol": "510300", "name": "fresh", "grid_width_pct": 0.002},
+            {"symbol": "510500", "name": "stale", "grid_width_pct": 0.002},
+        ]}), encoding="utf-8")
+        app = self.make_runtime_fixture(StaticCollector(mixed_health_quote_payload()))
+        app.clock = lambda: datetime.fromisoformat("2026-08-28T10:10:00+08:00")
+        self.assertTrue(app.refresh_once(), app.snapshot())
+        items = {item["symbol"]: item for item in app.snapshot()["items"]}
+        self.assertEqual(items["510300"]["health_status"], "REALTIME")
+        self.assertEqual(items["510300"]["action"], "BUY_CANDIDATE")
+        self.assertEqual(items["510500"]["health_status"], "OUTAGE")
+        self.assertNotIn(items["510500"]["action"], {"BUY_CANDIDATE", "SELL_CANDIDATE"})
+
     def test_snapshot_returns_previous_revision_during_concurrent_refresh(self) -> None:
         collector = BlockingCollector(valid_completed_quote_payload())
         app = self.make_runtime_fixture(collector)
@@ -246,6 +330,24 @@ class RuntimeTests(unittest.TestCase):
             app.stop_refresh()
         self.assertEqual(collector.calls, 1)
 
+    def test_timed_out_stop_keeps_thread_owned_and_restart_does_not_spawn(self) -> None:
+        collector = LifecycleCollector(valid_completed_quote_payload())
+        app = self.make_runtime_fixture(collector)
+        app.refresh_interval = 0.01
+        app.start_refresh()
+        self.assertTrue(collector.entered.wait(1))
+        thread = app._refresh_thread
+        app.stop_refresh()
+        self.assertIs(app._refresh_thread, thread)
+        self.assertTrue(thread.is_alive())
+        app.start_refresh()
+        self.assertIs(app._refresh_thread, thread)
+        collector.release.set()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertIsNone(app._refresh_thread)
+        self.assertEqual(collector.calls, 1)
+
     def test_failed_refresh_immediately_revokes_published_candidate(self) -> None:
         app = self.make_runtime_fixture()
         self.assertTrue(app.refresh_once())
@@ -276,6 +378,43 @@ class RuntimeTests(unittest.TestCase):
                     item["action"] in {"BUY_CANDIDATE", "SELL_CANDIDATE"}
                     for item in snapshot["items"]
                 ))
+
+    def test_failed_validation_or_store_never_replaces_official_quotes(self) -> None:
+        old_payload = valid_completed_quote_payload()
+        old_bytes = json.dumps(old_payload, ensure_ascii=False).encode("utf-8")
+        rejected_payload = copy.deepcopy(old_payload)
+        rejected_payload["source"] = {"name": "REJECTED"}
+        scenarios = (
+            ("metadata", "metadata_store", None),
+            ("history", "history_store", FailingStore("history failed", "upsert")),
+            ("alert", "alert_store", FailingStore("alert failed", "append_candidates")),
+        )
+        for name, attribute, replacement in scenarios:
+            with self.subTest(name=name):
+                self.paths.quotes.write_bytes(old_bytes)
+                self.paths.metadata.write_text(
+                    json.dumps(test_metadata_document()), encoding="utf-8",
+                )
+                app = self.make_runtime_fixture(StaticCollector(rejected_payload))
+                if name == "metadata":
+                    self.paths.metadata.write_text(
+                        json.dumps({"schema_version": 2, "items": []}), encoding="utf-8",
+                    )
+                else:
+                    setattr(app, attribute, replacement)
+                self.assertFalse(app.refresh_once())
+                self.assertEqual(self.paths.quotes.read_bytes(), old_bytes)
+                self.assertEqual(list(self.paths.quotes.parent.glob("*.staging")), [])
+
+                self.paths.metadata.write_text(
+                    json.dumps(test_metadata_document()), encoding="utf-8",
+                )
+                restarted = self.make_runtime_fixture(collector=None)
+                self.assertEqual(restarted.snapshot()["revision"], 1)
+                self.assertEqual(
+                    restarted.snapshot()["items"][0]["price"],
+                    old_payload["quotes"][0]["price"],
+                )
 
     def test_invalid_calendar_fails_application_startup(self) -> None:
         self.paths.calendar.write_text("{}", encoding="utf-8")
@@ -316,6 +455,140 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.paths.quotes.read_bytes(), quotes_before)
         self.assertEqual(self.paths.history.read_bytes(), history_before)
         self.assertEqual(self.paths.alerts.read_bytes(), alerts_before)
+
+    def test_collector_free_add_rebuilds_published_watchlist_without_data_writes(self) -> None:
+        self.paths.quotes.write_text(
+            json.dumps(valid_completed_quote_payload(), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        app = self.make_runtime_fixture(collector=None)
+        before = {
+            "quotes": self.paths.quotes.read_bytes(),
+            "history": self.paths.history.read_bytes(),
+            "alerts": self.paths.alerts.read_bytes(),
+        }
+        previous_revision = app.snapshot()["revision"]
+        app.add_watch_item("159915", "创业板ETF")
+        snapshot = app.snapshot()
+        items = {item["symbol"]: item for item in snapshot["items"]}
+        self.assertEqual(snapshot["revision"], previous_revision + 1)
+        self.assertEqual(items["159915"]["status"], "MISSING_QUOTE")
+        self.assertEqual(self.paths.quotes.read_bytes(), before["quotes"])
+        self.assertEqual(self.paths.history.read_bytes(), before["history"])
+        self.assertEqual(self.paths.alerts.read_bytes(), before["alerts"])
+
+    def test_history_disabled_never_requires_or_loads_metadata(self) -> None:
+        missing_metadata = self.paths.metadata.with_name("missing-metadata.json")
+        app = MonitorApplication(
+            quotes_path=self.paths.quotes,
+            watchlist_path=self.paths.watchlist,
+            history_path=None,
+            collector=StaticCollector(valid_completed_quote_payload()),
+            alert_history_path=None,
+            metadata_path=missing_metadata,
+            calendar_path=self.paths.calendar,
+            clock=lambda: datetime.fromisoformat("2026-08-28T10:02:00+08:00"),
+        )
+        self.assertTrue(app.refresh_once())
+        self.assertEqual(app.snapshot()["items"][0]["health_status"], "REALTIME")
+
+    def test_history_enabled_bootstrap_validates_finalized_points_read_only(self) -> None:
+        payload = valid_completed_quote_payload()
+        payload["quotes"][0]["points"][0]["amount"] = 0.0
+        self.paths.quotes.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+        )
+        original = self.paths.quotes.read_bytes()
+        app = self.make_runtime_fixture(collector=None)
+        snapshot = app.snapshot()
+        self.assertEqual(snapshot["revision"], 1)
+        self.assertEqual(snapshot["items"][0]["health_status"], "OUTAGE")
+        self.assertTrue(snapshot["errors"])
+        self.assertEqual(self.paths.quotes.read_bytes(), original)
+        self.assertEqual(self.paths.history.read_bytes(), b"")
+        self.assertEqual(self.paths.alerts.read_bytes(), b"")
+
+    def test_revision_queue_preserves_fast_outage_recovery_and_wakes_on_stop(self) -> None:
+        app = self.make_runtime_fixture()
+        self.assertTrue(app.refresh_once())
+        app.collector = FailingCollector("断流")
+        self.assertFalse(app.refresh_once())
+        app.collector = StaticCollector(valid_completed_quote_payload())
+        self.assertTrue(app.refresh_once())
+
+        outage = app.wait_for_revision(1, timeout=0.01)
+        recovery = app.wait_for_revision(2, timeout=0.01)
+        self.assertEqual(outage["revision"], 2)
+        self.assertEqual(outage["refresh_error"], "断流")
+        self.assertEqual(recovery["revision"], 3)
+        self.assertIsNone(recovery["refresh_error"])
+        self.assertIsNone(app.wait_for_revision(3, timeout=0.01))
+        self.assertLessEqual(len(app._revision_events), app.revision_event_limit)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            waiting = executor.submit(app.wait_for_revision, 3, 5.0)
+            app.stop_refresh()
+            self.assertIsNone(waiting.result(timeout=0.5))
+
+    def test_sse_uses_revision_ids_cursor_and_heartbeat_without_sleeping(self) -> None:
+        application = ScriptedEventApplication()
+        handler = object.__new__(MonitorRequestHandler)
+        handler.server = SimpleNamespace(application=application)
+        handler.headers = {}
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+
+        with patch("etf_rotation.t_web.time.sleep"):
+            handler._events()
+
+        stream = handler.wfile.getvalue().decode("utf-8")
+        self.assertEqual(application.waits, [7, 8, 8, 9])
+        self.assertEqual(stream.count("id: 7\n"), 1)
+        self.assertEqual(stream.count("id: 8\n"), 1)
+        self.assertEqual(stream.count("id: 9\n"), 1)
+        self.assertIn(": heartbeat\n\n", stream)
+
+    def test_health_summary_tracks_latest_outage_revision(self) -> None:
+        app = self.make_runtime_fixture()
+        self.assertTrue(app.refresh_once())
+        self.assertTrue(app.health()["ok"])
+        app.collector = FailingCollector("断流")
+        self.assertFalse(app.refresh_once())
+        health = app.health()
+        self.assertFalse(health["ok"])
+        self.assertEqual(health["status"], "degraded")
+        self.assertEqual(health["revision"], 2)
+        self.assertEqual(health["errors"], ["断流"])
+
+    def test_history_and_alert_handlers_return_json_for_read_errors(self) -> None:
+        handler = object.__new__(MonitorRequestHandler)
+        handler.server = SimpleNamespace(application=SimpleNamespace(
+            history_path=self.paths.history,
+            alert_history_path=self.paths.alerts,
+        ))
+        handler.path = "/api/history/dates"
+        responses: list[tuple[HTTPStatus, dict[str, object]]] = []
+        handler._json = lambda status, payload: responses.append((status, payload))
+        with patch(
+            "etf_rotation.t_web.QuoteHistoryStore.available_dates",
+            side_effect=OSError("history unavailable"),
+        ):
+            handler._history_dates()
+        self.assertEqual(responses.pop(0), (
+            HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "history unavailable"},
+        ))
+
+        handler.path = "/api/alerts"
+        with patch(
+            "etf_rotation.t_web.AlertHistoryStore.query",
+            side_effect=ValueError("alerts invalid"),
+        ):
+            handler._alerts()
+        self.assertEqual(responses.pop(0), (
+            HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "alerts invalid"},
+        ))
 
 
 if __name__ == "__main__":
