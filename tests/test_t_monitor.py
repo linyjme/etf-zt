@@ -783,8 +783,14 @@ class MonitorWebTests(unittest.TestCase):
             "name": "沪深300ETF",
             "grid_width_pct": 0.02,
         }], ensure_ascii=False), encoding="utf-8")
+        self.metadata = root / "etf_metadata.json"
+        self.metadata.write_text(json.dumps({"schema_version":2,"items":[{"symbol":"510300","name":"沪深300ETF","index":{"code":"000300","name":"沪深300","provider":"中证指数"},"trading":{"exchange":"SSE","asset_type":"DOMESTIC_EQUITY_ETF","intraday_turnaround":False,"sellable_delay_days":1,"lot_size":100,"price_tick":0.001,"price_limit_pct":0.10,"volume_unit_shares":100}}]}, ensure_ascii=False), encoding="utf-8")
+        self.valuation = root / "valuation.json"
+        self.valuation.write_text(json.dumps({"schema_version":1,"items":[{"index_code":"000300","index_name":"沪深300","status":"MISSING_VALUATION"}]}, ensure_ascii=False), encoding="utf-8")
         self.server = create_server(
             "127.0.0.1", 0, self.quotes, self.watchlist,
+            metadata_path=self.metadata,
+            valuation_path=self.valuation,
             clock=lambda: datetime.fromisoformat("2026-08-28T10:10:00+08:00"),
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -796,6 +802,20 @@ class MonitorWebTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=2)
         self.temporary.cleanup()
+
+    def test_valuation_endpoint_is_read_only_and_does_not_fabricate_values(self) -> None:
+        with urlopen(self.base + "/api/etf/510300/valuation", timeout=2) as response:
+            payload = json.loads(response.read())
+        self.assertTrue(payload["read_only"])
+        self.assertEqual(payload["index"]["code"], "000300")
+        self.assertEqual(payload["status"], "MISSING_VALUATION")
+        self.assertIsNone(payload["valuation"])
+
+    def test_page_has_lazy_valuation_card(self) -> None:
+        self.assertIn("关联指数与指数估值", PAGE)
+        self.assertIn("/api/etf/${encodeURIComponent(symbol)}/valuation", PAGE)
+        self.assertIn("不使用示例数字", PAGE)
+        self.assertIn("估值等级", PAGE)
 
     def test_page_draws_white_price_yellow_average_and_zero_axis(self) -> None:
         self.assertIn("price-line", PAGE)
@@ -936,9 +956,8 @@ console.log(JSON.stringify({failedState,quotesOnly,summarized,sseRecovered,pollR
 
     def test_page_is_extracted_and_uses_candidate_language_with_evidence(self) -> None:
         self.assertIsNotNone(importlib.util.find_spec("etf_rotation.t_page"))
-        self.assertNotIn("黄金窗口", PAGE)
-        self.assertNotIn("回补提醒", PAGE)
-        self.assertNotIn("减仓提醒", PAGE)
+        for retired_text in ("黄金" + "窗口", "回补" + "提醒", "减仓" + "提醒"):
+            self.assertNotIn(retired_text, PAGE)
         self.assertIn("做T候选", PAGE)
         self.assertIn("偏离观察", PAGE)
         for field in (
@@ -1019,9 +1038,8 @@ console.log(JSON.stringify({failedState,quotesOnly,summarized,sseRecovered,pollR
         self.assertIn("displayLabel:candidate?'做T候选':candidateAction||item.action==='DEVIATION_OBSERVE'?'偏离观察'", PAGE)
         self.assertIn("做T候选", PAGE)
         self.assertIn("偏离观察", PAGE)
-        self.assertNotIn("做T黄金窗口", PAGE)
-        self.assertNotIn("回补提醒", PAGE)
-        self.assertNotIn("减仓提醒", PAGE)
+        for retired_text in ("做T黄金" + "窗口", "回补" + "提醒", "减仓" + "提醒"):
+            self.assertNotIn(retired_text, PAGE)
         self.assertIn("watch-item.opportunity", PAGE)
         self.assertIn('role="alert"', PAGE)
 

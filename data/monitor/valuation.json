@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-28T18:00:00+08:00",
+  "items": [
+    {"index_code":"000300","index_name":"沪深300","as_of":null,"pe_ttm":null,"pb":null,"dividend_yield":null,"pe_percentile_5y":null,"pe_percentile_10y":null,"pb_percentile_5y":null,"pb_percentile_10y":null,"level":"UNKNOWN","status":"MISSING_VALUATION","source":null}
+  ]
+}

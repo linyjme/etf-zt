@@ -1,7 +1,21 @@
 $ErrorActionPreference = 'Stop'
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$pidPath = Join-Path $projectRoot 'var\monitor\monitor.pid'
+$stopped = $false
+if (Test-Path -LiteralPath $pidPath) {
+    $savedProcessId = Get-Content -LiteralPath $pidPath -ErrorAction SilentlyContinue
+    if ($savedProcessId -match '^[0-9]+$') {
+        $savedProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$savedProcessId" -ErrorAction SilentlyContinue
+        if ($savedProcess -and $savedProcess.CommandLine -match 'etf_rotation\.cli monitor') {
+            Stop-Process -Id ([int]$savedProcessId) -Force -ErrorAction SilentlyContinue
+            $stopped = $true
+        }
+    }
+    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+}
 $listeners = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
 if (-not $listeners) {
-    Write-Output 'Monitor service is not running'
+    if (-not $stopped) { Write-Output 'Monitor service is not running' }
     exit 0
 }
 $processIds = $listeners.OwningProcess | Sort-Object -Unique

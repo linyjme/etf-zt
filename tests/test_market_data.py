@@ -10,7 +10,9 @@ import unittest
 from unittest.mock import patch
 from urllib.request import Request
 
+from etf_rotation.cli import PROJECT_ROOT, RUNTIME_ROOT, _parser
 from etf_rotation.etf_metadata import EtfMetadata, IndexMetadata, TradingMetadata
+from etf_rotation.history_migration import rebuild_history
 from etf_rotation.market_data import (
     MarketDataValidator,
     MarketHealthClassifier,
@@ -45,6 +47,34 @@ EXPECTED_CLOSED_DATES = {
     date(2026, 10, 7),
 }
 TRADING = TradingMetadata("SSE", "DOMESTIC_EQUITY_ETF", False, 1, 100, 0.001, 0.10, 100)
+
+
+class CliPathTests(unittest.TestCase):
+    def test_runtime_defaults_are_outside_tracked_configuration(self) -> None:
+        arguments = _parser().parse_args(["monitor", "--no-collect"])
+        self.assertEqual(arguments.quotes, RUNTIME_ROOT / "quotes.json")
+        self.assertEqual(arguments.history, RUNTIME_ROOT / "quotes.jsonl")
+        self.assertEqual(arguments.alert_history, RUNTIME_ROOT / "alerts.jsonl")
+        self.assertEqual(
+            arguments.watchlist,
+            PROJECT_ROOT / "data" / "monitor" / "watchlist.json",
+        )
+        self.assertEqual(
+            arguments.calendar,
+            PROJECT_ROOT / "data" / "monitor" / "market_calendar.json",
+        )
+
+    def test_rebuild_history_defaults_to_runtime_root(self) -> None:
+        arguments = _parser().parse_args(["rebuild-history"])
+        self.assertEqual(
+            arguments.input,
+            PROJECT_ROOT / "data" / "monitor" / "quotes.json",
+        )
+        self.assertEqual(arguments.output, RUNTIME_ROOT / "quotes.jsonl")
+        self.assertEqual(
+            arguments.metadata,
+            PROJECT_ROOT / "data" / "monitor" / "etf_metadata.json",
+        )
 
 
 def point(
@@ -125,6 +155,78 @@ def history_quote(
 
 
 class MarketDataTests(unittest.TestCase):
+    def test_closing_snapshot_rebuilds_clean_schema_v3_history(self) -> None:
+        metadata = Path(__file__).resolve().parents[1] / "data" / "monitor" / "etf_metadata.json"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "closing-snapshot.json"
+            output = root / "monitor" / "quotes.jsonl"
+            output.parent.mkdir()
+            (output.parent / "alerts.jsonl").write_text("keep-alerts\n", encoding="utf-8")
+            source.write_text(json.dumps({
+                "schema_version": 2,
+                "collected_at": "2026-08-28T17:56:09+08:00",
+                "observed_at": "2026-08-28T17:56:09+08:00",
+                "source": "TEST",
+                "quotes": [{
+                    "schema_version": 2,
+                    "symbol": "510300",
+                    "name": "沪深300ETF",
+                    "price": 4.685,
+                    "average_price": 4.6845,
+                    "previous_close": 4.691,
+                    "timestamp": "2026-08-28T09:31:00+08:00",
+                    "observed_at": "2026-08-28T17:56:09+08:00",
+                    "source": "TEST",
+                    "points": [
+                        {"timestamp": "2026-08-28T09:30:00+08:00", "price": 4.684, "average_price": 4.684, "open": 4.684, "high": 4.684, "low": 4.684, "volume": 100.0, "amount": 46840.0},
+                        {"timestamp": "2026-08-28T09:31:00+08:00", "price": 4.685, "average_price": 4.6845, "open": 4.685, "high": 4.685, "low": 4.685, "volume": 100.0, "amount": 46850.0},
+                    ],
+                }],
+            }), encoding="utf-8")
+
+            count = rebuild_history(source, output, metadata)
+
+            records = [
+                json.loads(line)
+                for line in output.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(count, 2)
+            self.assertEqual(len({(item["symbol"], item["timestamp"]) for item in records}), 2)
+            first = next(
+                item for item in records
+                if item["symbol"] == "510300" and item["timestamp"].startswith("2026-08-28T09:30")
+            )
+            self.assertEqual(first["price"], 4.684)
+            self.assertEqual(first["previous_close"], 4.691)
+            self.assertTrue(all(
+                item["schema_version"] == 3
+                and item["observed_at"]
+                and item["trading_date"]
+                and item["is_complete"]
+                for item in records
+            ))
+            self.assertTrue((output.parent / "history" / "2026-08-28" / "quotes.jsonl").exists())
+            self.assertEqual(
+                (output.parent / "alerts.jsonl").read_text(encoding="utf-8"),
+                "keep-alerts\n",
+            )
+
+    def test_failed_rebuild_does_not_replace_existing_output(self) -> None:
+        metadata = Path(__file__).resolve().parents[1] / "data" / "monitor" / "etf_metadata.json"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "bad.json"
+            output = root / "monitor" / "quotes.jsonl"
+            source.write_text('{"quotes":[{"symbol":"510300"}]}', encoding="utf-8")
+            output.parent.mkdir()
+            output.write_text("preserve\n", encoding="utf-8")
+
+            with self.assertRaises(MarketDataError):
+                rebuild_history(source, output, metadata)
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "preserve\n")
+
     def test_history_upserts_later_final_observation_and_writes_schema_v3(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "quotes.jsonl"
@@ -665,6 +767,33 @@ class MarketDataValidatorTests(unittest.TestCase):
             self.validator.validate_point(
                 point("09:31", price=10.0, open_price=10.0, high=10.1, low=9.9, amount=9.898 * 100 * 100),
                 10.0,
+            )
+
+    def test_amount_check_allows_one_truncated_volume_unit_for_odd_lots(self) -> None:
+        self.validator.validate_point(
+            point(
+                "09:31",
+                price=7.948,
+                open_price=7.943,
+                high=7.948,
+                low=7.943,
+                volume=1135.0,
+                amount=902238.0,
+            ),
+            7.95,
+        )
+        with self.assertRaisesRegex(MarketDataError, "量价"):
+            self.validator.validate_point(
+                point(
+                    "09:31",
+                    price=7.948,
+                    open_price=7.943,
+                    high=7.948,
+                    low=7.943,
+                    volume=1135.0,
+                    amount=(1136.1 * 100 * 7.949),
+                ),
+                7.95,
             )
 
 

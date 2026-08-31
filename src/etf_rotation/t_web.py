@@ -29,6 +29,7 @@ from .market_data import (
 from .t_backtest import TBacktester
 from .t_monitor import AlertHistoryStore, JsonQuoteAdapter, QuoteHistoryStore, TMonitorEngine, load_watchlist, snapshot_to_dict
 from .t_page import PAGE
+from .valuation import ValuationStore
 
 
 _DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "monitor"
@@ -45,6 +46,7 @@ class MonitorApplication:
     refresh_interval: float = 5.0
     alert_history_path: Path | None = None
     metadata_path: Path | None = None
+    valuation_path: Path | None = None
     calendar_path: Path | None = None
     clock: Callable[[], datetime] = field(default=lambda: datetime.now().astimezone(), compare=False)
     revision_event_limit: int = 128
@@ -590,6 +592,14 @@ class MonitorApplication:
             self._revision_events.append(self._revision_delta(previous, result))
             self._publish_condition.notify_all()
 
+    def valuation(self, symbol: str) -> dict[str, Any]:
+        metadata = EtfMetadataStore(self.metadata_path).get(symbol) if self.metadata_path else None
+        if metadata is None:
+            return {"symbol": symbol, "status": "MISSING_METADATA", "index": None, "valuation": None, "read_only": True}
+        snapshot = ValuationStore(self.valuation_path).get(metadata.index.code) if self.valuation_path else None
+        usable = snapshot if snapshot and snapshot.status != "MISSING_VALUATION" else None
+        return {"symbol": symbol, "status": snapshot.status if snapshot else "MISSING_VALUATION", "index": metadata.index.to_dict(), "valuation": usable.to_dict() if usable else None, "read_only": True}
+
     def t_backtest(self) -> dict[str, Any]:
         quotes = JsonQuoteAdapter().load(self.quotes_path)
         if self.history_path is not None:
@@ -813,6 +823,8 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             self._signal_replay()
         elif path == "/api/backtest":
             self._backtest()
+        elif re.fullmatch(r"/api/etf/\d{6}/valuation", path):
+            self._valuation(path.split("/")[3])
         elif path == "/api/alerts":
             self._alerts()
         elif path == "/api/history/dates":
@@ -908,6 +920,12 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, payload)
         except (ValueError, OSError) as error:
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
+
+    def _valuation(self, symbol: str) -> None:
+        try:
+            self._json(HTTPStatus.OK, self.server.application.valuation(symbol))
+        except (ValueError, OSError) as error:
+            self._json(HTTPStatus.OK, {"symbol": symbol, "status": "UNKNOWN", "index": None, "valuation": None, "error": str(error), "read_only": True})
 
     def _history_dates(self) -> None:
         path = self.server.application.history_path
@@ -1025,6 +1043,7 @@ def create_server(
     refresh_interval: float = 5.0,
     alert_history_path: Path | None = None,
     metadata_path: Path | None = None,
+    valuation_path: Path | None = None,
     calendar_path: Path | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> MonitorServer:
@@ -1036,6 +1055,7 @@ def create_server(
         refresh_interval=refresh_interval,
         alert_history_path=alert_history_path,
         metadata_path=metadata_path,
+        valuation_path=valuation_path,
         calendar_path=calendar_path,
         **({"clock": clock} if clock is not None else {}),
     )

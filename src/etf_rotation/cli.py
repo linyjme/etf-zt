@@ -7,26 +7,39 @@ from typing import Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_ROOT = PROJECT_ROOT / "var" / "monitor"
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="etf-rotation")
-    monitor = parser.add_subparsers(dest="command", required=True).add_parser("monitor")
-    monitor.add_argument("--quotes", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "quotes.json")
+    commands = parser.add_subparsers(dest="command", required=True)
+    monitor = commands.add_parser("monitor")
+    monitor.add_argument("--quotes", type=Path, default=RUNTIME_ROOT / "quotes.json")
     monitor.add_argument("--watchlist", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "watchlist.json")
-    monitor.add_argument("--history", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "quotes.jsonl")
-    monitor.add_argument("--alert-history", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "alerts.jsonl")
+    monitor.add_argument("--history", type=Path, default=RUNTIME_ROOT / "quotes.jsonl")
+    monitor.add_argument("--alert-history", type=Path, default=RUNTIME_ROOT / "alerts.jsonl")
     monitor.add_argument("--metadata", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "etf_metadata.json")
+    monitor.add_argument("--valuation", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "valuation.json")
     monitor.add_argument("--calendar", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "market_calendar.json")
     monitor.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "localhost"))
     monitor.add_argument("--port", type=int, default=8765)
     monitor.add_argument("--refresh-interval", type=float, default=5.0)
     monitor.add_argument("--no-collect", action="store_true")
+    rebuild = commands.add_parser("rebuild-history")
+    rebuild.add_argument("--input", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "quotes.json")
+    rebuild.add_argument("--output", type=Path, default=RUNTIME_ROOT / "quotes.jsonl")
+    rebuild.add_argument("--metadata", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "etf_metadata.json")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
+    if arguments.command == "rebuild-history":
+        from .history_migration import rebuild_history
+
+        count = rebuild_history(arguments.input, arguments.output, arguments.metadata)
+        print(f"{count} finalized minutes rebuilt")
+        return 0
     if not 1 <= arguments.port <= 65535:
         raise ValueError("port must be between 1 and 65535")
     if arguments.refresh_interval <= 0:
@@ -45,6 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         refresh_interval=arguments.refresh_interval,
         alert_history_path=arguments.alert_history,
         metadata_path=arguments.metadata,
+        valuation_path=arguments.valuation,
         calendar_path=arguments.calendar,
     )
     host, port = server.server_address

@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
+.mypy_cache/
+var/
+/data/monitor/quotes.json
+/data/monitor/quotes.jsonl
+/data/monitor/alerts.jsonl
+/data/monitor/history/
+*.log
+*.pid
+*.tmp
+.env
+.venv/
+.idea/
+.vscode/
