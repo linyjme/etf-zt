@@ -482,7 +482,9 @@ class MonitorApplication:
                     quote.name,
                     previous.price,
                     previous.average_price,
-                    quote.previous_close,
+                    previous.previous_close
+                    if previous.previous_close is not None
+                    else quote.previous_close,
                     previous.timestamp,
                     completed[:index],
                     point.timestamp,

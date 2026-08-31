@@ -427,7 +427,7 @@ class TAccount:
             commission,
             slippage,
             cash_delta,
-            0,
+            self._remaining_capacity_after_fill(side, executable),
         )
 
         if side == "BUY":
@@ -440,19 +440,6 @@ class TAccount:
             if self.intraday_turnaround:
                 self.today_bought_shares -= executable - from_overnight
         self._pair(fill)
-        fill = Fill(
-            fill.timestamp,
-            fill.signal_action,
-            fill.side,
-            fill.requested_shares,
-            fill.shares,
-            fill.market_price,
-            fill.price,
-            fill.commission_cny,
-            fill.slippage_cny,
-            fill.cash_delta_cny,
-            self.remaining_t_capacity_shares,
-        )
         self.fills.append(fill)
         if executable < requested_shares:
             self._reject(
@@ -463,6 +450,12 @@ class TAccount:
                 rejected_shares=requested_shares - executable,
             )
         return fill
+
+    def _remaining_capacity_after_fill(self, side: str, shares: int) -> int:
+        opposing = self.open_sell_legs if side == "BUY" else self.open_buy_legs
+        matched = min(shares, sum(item.shares for item in opposing))
+        used_after = self.used_t_capacity_shares - matched + (shares - matched)
+        return max(0, self.t_capacity_shares - used_after)
 
     def _affordable_buy_shares(self, fill_price: float) -> int:
         shares = floor_to_lot(int(self.cash / fill_price), self.lot_size)
@@ -665,7 +658,9 @@ class TBacktester:
                 quote.name,
                 decision_point.price,
                 decision_point.average_price,
-                quote.previous_close,
+                decision_point.previous_close
+                if decision_point.previous_close is not None
+                else quote.previous_close,
                 decision_point.timestamp,
                 tuple(completed[:index]),
                 execution_point.timestamp,
@@ -726,7 +721,7 @@ class TBacktester:
             outperformed: bool | None = strategy > baseline
         elif open_legs:
             status = "OPEN_LEG"
-            net_gain = 0.0
+            net_gain = strategy - baseline
             outperformed = None
         else:
             status = "NO_COMPLETED_PAIRS"

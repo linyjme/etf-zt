@@ -943,8 +943,85 @@ class MonitorWebTests(unittest.TestCase):
         self.assertEqual(item["open_leg_count"], 1)
         self.assertEqual(item["open_legs"][0]["side"], "BUY")
         self.assertEqual(item["open_legs"][0]["timestamp"], execution_point.timestamp.isoformat())
-        self.assertEqual(item["t_net_gain_cny"], 0.0)
+        self.assertAlmostEqual(
+            item["t_net_gain_cny"],
+            item["strategy_equity_cny"] - item["baseline_equity_cny"],
+        )
+        self.assertNotEqual(item["t_net_gain_cny"], 0.0)
         self.assertIsNone(item["outperformed_baseline"])
+
+    def test_multi_day_replays_use_each_schema_v3_trading_day_previous_close(self) -> None:
+        candidate = confirmed_range_quote(-0.008, -0.007)
+        execution_point = replace(
+            candidate.points[-1],
+            timestamp=candidate.points[-1].timestamp + timedelta(minutes=1),
+        )
+        history_path = self.quotes.parent / "minute_history.jsonl"
+        records = []
+        for point in (*candidate.points, execution_point):
+            records.append({
+                "schema_version": 3,
+                "symbol": candidate.symbol,
+                "name": candidate.name,
+                "trading_date": point.timestamp.date().isoformat(),
+                "timestamp": point.timestamp.isoformat(),
+                "observed_at": (point.timestamp + timedelta(minutes=1)).isoformat(),
+                "is_complete": True,
+                "source": "OLD_DAY_FIXTURE",
+                "previous_close": candidate.previous_close,
+                "open": point.open,
+                "high": point.high,
+                "low": point.low,
+                "price": point.price,
+                "average_price": point.average_price,
+                "volume": point.volume,
+                "amount": point.amount,
+            })
+        history_path.write_text(
+            "\n".join(json.dumps(record, ensure_ascii=False) for record in records) + "\n",
+            encoding="utf-8",
+        )
+        current_start = datetime.fromisoformat("2026-08-31T10:00:00+08:00")
+        current_points = (
+            [current_start.isoformat(), 9.5, 9.5, 9.5, 9.5, 9.5, 1_000, 950_000],
+            [(current_start + timedelta(minutes=1)).isoformat(), 9.5, 9.5, 9.5, 9.5, 9.5, 1_000, 950_000],
+        )
+        self.quotes.write_text(json.dumps([{
+            "schema_version": 2,
+            "symbol": candidate.symbol,
+            "name": candidate.name,
+            "price": 9.5,
+            "average_price": 9.5,
+            "previous_close": candidate.price,
+            "timestamp": current_points[-1][0],
+            "observed_at": (current_start + timedelta(minutes=2)).isoformat(),
+            "source": "CURRENT_DAY_FIXTURE",
+            "points": current_points,
+        }], ensure_ascii=False), encoding="utf-8")
+        self.watchlist.write_text(json.dumps([{
+            "symbol": candidate.symbol,
+            "name": candidate.name,
+            "grid_width_pct": 0.002,
+        }], ensure_ascii=False), encoding="utf-8")
+        application = MonitorApplication(
+            self.quotes,
+            self.watchlist,
+            history_path=history_path,
+        )
+
+        backtest_item = application.t_backtest()["items"][0]
+        replay_item = application.signal_replay()["items"][0]
+
+        self.assertEqual(backtest_item["open_leg_count"], 1)
+        self.assertEqual(
+            backtest_item["open_legs"][0]["timestamp"],
+            execution_point.timestamp.isoformat(),
+        )
+        self.assertIn({
+            "action": "BUY_CANDIDATE",
+            "signal_timestamp": candidate.points[-1].timestamp.isoformat(),
+            "next_completed_timestamp": execution_point.timestamp.isoformat(),
+        }, replay_item["actions"])
 
     def test_page_marks_each_stale_market_time_and_shows_independent_backtest(self) -> None:
         self.assertIn("const STALE_AFTER_MS=60000", PAGE)

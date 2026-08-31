@@ -87,6 +87,41 @@ class TAccountTests(unittest.TestCase):
         limited = account.execute("SELL_CANDIDATE", FillBar("2026-08-28T10:01:00+08:00", 10.2, 20), 2_000)
         self.assertEqual(limited.shares, 200)
 
+    def test_partial_open_and_close_preserve_each_fill_capacity_evidence(self) -> None:
+        account = TAccount.create(
+            base_shares=1_000,
+            t_capacity_shares=200,
+            first_price=10.0,
+            lot_size=100,
+            intraday_turnaround=False,
+        )
+        opened = account.execute(
+            "SELL_CANDIDATE",
+            FillBar("2026-08-28T10:00:00+08:00", 10.2, 10),
+            200,
+        )
+        self.assertEqual(opened.remaining_t_capacity_shares, 100)
+        self.assertEqual(
+            account.open_sell_legs[0].remaining_t_capacity_shares,
+            opened.remaining_t_capacity_shares,
+        )
+
+        closed = account.execute(
+            "BUY_CANDIDATE",
+            FillBar("2026-08-28T10:01:00+08:00", 9.9, 10),
+            200,
+        )
+        pair = account.completed_pairs[0]
+        self.assertEqual(closed.remaining_t_capacity_shares, 200)
+        self.assertEqual(
+            pair.open_fill.remaining_t_capacity_shares,
+            opened.remaining_t_capacity_shares,
+        )
+        self.assertEqual(
+            pair.close_fill.remaining_t_capacity_shares,
+            closed.remaining_t_capacity_shares,
+        )
+
     def test_no_completed_pairs_never_claims_outperformance(self) -> None:
         result = TBacktester().summarize_no_trade(base_shares=1_000, reserve_cash=2_000, first_price=10.0, last_price=9.0)
         self.assertEqual(result.status, "NO_COMPLETED_PAIRS")
@@ -314,7 +349,16 @@ class TBacktesterRunTests(unittest.TestCase):
         self.assertEqual(result.open_leg_count, 1)
         self.assertEqual(result.open_legs[0].side, "SELL")
         self.assertGreater(result.sell_fly_loss_cny, 0)
-        self.assertEqual(result.t_net_gain_cny, 0.0)
+        self.assertAlmostEqual(
+            result.t_net_gain_cny,
+            result.strategy_ending_equity_cny - result.baseline_ending_equity_cny,
+        )
+        self.assertAlmostEqual(
+            result.t_net_gain_rate,
+            result.t_net_gain_cny / result.baseline_ending_equity_cny,
+        )
+        self.assertNotEqual(result.t_net_gain_cny, 0.0)
+        self.assertIsNone(result.outperformed_baseline)
 
 
 if __name__ == "__main__":

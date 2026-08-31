@@ -170,6 +170,7 @@ class QuotePoint:
     low: float | None = None
     volume: float = 0.0
     amount: float = 0.0
+    previous_close: float | None = None
 
 
 @dataclass(frozen=True)

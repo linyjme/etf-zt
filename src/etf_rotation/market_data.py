@@ -255,6 +255,7 @@ class MinuteHistoryStore:
                             float(record["low"]),
                             float(record["volume"]),
                             float(record["amount"]),
+                            float(record["previous_close"]),
                         )
                     except (KeyError, TypeError, ValueError) as error:
                         raise MarketDataError(f"历史行情记录无效: {error}") from error
