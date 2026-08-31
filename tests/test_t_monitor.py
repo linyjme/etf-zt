@@ -1,4 +1,5 @@
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import tempfile
@@ -11,10 +12,11 @@ from urllib.request import Request, urlopen
 from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
 from etf_rotation.quote_collector import SOURCE_NAME, Trends2QuoteCollector, market_for_symbol
 from etf_rotation.t_monitor import (
-    JsonQuoteAdapter, MarketDataError, QuoteHistoryStore, TMonitorEngine, WatchItem,
-    load_watchlist, snapshot_to_dict,
+    AlertHistoryStore, JsonQuoteAdapter, MarketDataError, QuoteHistoryStore,
+    TMonitorEngine, WatchItem, load_watchlist, snapshot_to_dict,
 )
 from etf_rotation.t_web import MonitorApplication, PAGE, create_server
+from tests.regime_fixtures import confirmed_range_quote
 
 
 NOW = "2026-08-28T10:00:00+08:00"
@@ -245,6 +247,29 @@ class WatchlistTests(unittest.TestCase):
                         load_watchlist(path)
 
 
+class AlertHistoryStoreTests(unittest.TestCase):
+    def test_records_new_candidates_and_ignores_legacy_reminders(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = AlertHistoryStore(Path(temporary) / "alerts.jsonl")
+            store.append({
+                "generated_at": NOW,
+                "items": [
+                    {
+                        "symbol": "510300", "timestamp": NOW,
+                        "action": "BUY_CANDIDATE", "strategy_version": "T_V3",
+                    },
+                    {
+                        "symbol": "510500", "timestamp": NOW,
+                        "action": "SELL_REMINDER", "strategy_version": "T_V2",
+                    },
+                ],
+            })
+            self.assertEqual(
+                [item["action"] for item in store.query()],
+                ["BUY_CANDIDATE"],
+            )
+
+
 class TMonitorEngineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.adapter = JsonQuoteAdapter()
@@ -256,48 +281,118 @@ class TMonitorEngineTests(unittest.TestCase):
 
     def test_uses_average_grid_and_previous_close_zero_axis(self) -> None:
         cases = (
-            (quote(11.0, 10.0, 10.0), "SELL_REMINDER"),
-            (quote(9.0, 10.0, 10.0), "BUY_REMINDER"),
+            (quote(11.0, 10.0, 10.0), "DEVIATION_OBSERVE"),
+            (quote(9.0, 10.0, 10.0), "DEVIATION_OBSERVE"),
             (quote(10.21, 10.0, 10.1), "WAIT"),
             (quote(10.59, 10.0, 9.6), "WAIT"),
-            (quote(10.6, 10.0, 9.6), "SELL_REMINDER"),
-            (quote(9.4, 10.0, 10.4), "BUY_REMINDER"),
+            (quote(10.6, 10.0, 9.6), "DEVIATION_OBSERVE"),
+            (quote(9.4, 10.0, 10.4), "DEVIATION_OBSERVE"),
             (quote(10.1, 10.0, 10.0), "WAIT"),
         )
         for raw, expected in cases:
             with self.subTest(price=raw["price"], previous_close=raw["previous_close"]):
+                raw["observed_at"] = "2026-08-28T10:01:00+08:00"
                 self.assertEqual(self.evaluate(raw)["action"], expected)
 
     def test_grid_width_is_configurable(self) -> None:
-        raw = quote(10.8, 10.0, 10.0)
+        raw = quote(10.5, 10.0, 10.0)
+        raw["observed_at"] = "2026-08-28T10:01:00+08:00"
         narrow = (WatchItem("510300", "沪深300ETF", 0.015),)
         wide = (WatchItem("510300", "沪深300ETF", 0.02),)
         quotes = self.adapter.parse([raw])
-        self.assertEqual(TMonitorEngine().evaluate(narrow, quotes).signals[0].action, "SELL_REMINDER")
+        self.assertEqual(TMonitorEngine().evaluate(narrow, quotes).signals[0].action, "DEVIATION_OBSERVE")
         self.assertEqual(TMonitorEngine().evaluate(wide, quotes).signals[0].action, "WAIT")
 
-    def test_waits_when_either_mean_deviation_or_previous_close_distance_is_below_threshold(self) -> None:
-        item = self.evaluate(quote(10.6, 10.0, 10.0))
-        self.assertEqual(item["action"], "WAIT")
+    def test_observes_when_deviation_is_large_but_previous_close_distance_blocks(self) -> None:
+        raw = quote(10.6, 10.0, 10.0)
+        raw["observed_at"] = "2026-08-28T10:01:00+08:00"
+        item = self.evaluate(raw)
+        self.assertEqual(item["action"], "DEVIATION_OBSERVE")
         self.assertEqual(item["white_yellow_deviation_grids"], 3.0)
         self.assertEqual(item["previous_close_distance_grids"], 3.0)
+        self.assertIn("PREVIOUS_CLOSE_DISTANCE_BELOW_5_GRIDS", item["blocked_reasons"])
 
     def test_outputs_grid_distances_for_mean_reversion_and_fast_rise(self) -> None:
-        item = self.evaluate(quote(11.0, 10.0, 10.0, prior_price=10.5))
-        self.assertEqual(item["action"], "SELL_REMINDER")
+        raw = quote(11.0, 10.0, 10.0, prior_price=10.5)
+        raw["observed_at"] = "2026-08-28T10:01:00+08:00"
+        item = self.evaluate(raw)
+        self.assertEqual(item["action"], "DEVIATION_OBSERVE")
         self.assertEqual(item["white_yellow_deviation_grids"], 5.0)
         self.assertEqual(item["previous_close_distance_grids"], 5.0)
         self.assertEqual(item["fast_rise_grids"], 0.0)
 
-    def test_fast_rise_takes_priority_over_sell_reminder(self) -> None:
+    def test_fast_rise_blocks_candidate_and_keeps_neutral_observation(self) -> None:
         raw = quote(
             11.0, 10.0, 10.0, prior_price=10.0,
             prior_time="2026-08-28T09:57:00+08:00",
         )
+        raw["observed_at"] = "2026-08-28T10:01:00+08:00"
         item = self.evaluate(raw)
-        self.assertEqual(item["action"], "OBSERVE")
-        self.assertEqual(item["label"], "快速上冲 5.00 格，优先观望")
+        self.assertEqual(item["action"], "DEVIATION_OBSERVE")
+        self.assertEqual(item["label"], "偏离观察")
         self.assertEqual(item["fast_rise_grids"], 5.0)
+        self.assertIn("FAST_RISE", item["blocked_reasons"])
+
+    def test_confirmed_range_narrowing_finalized_points_produce_neutral_candidate(self) -> None:
+        market_quote = confirmed_range_quote(-0.008, -0.007)
+        watchlist = (WatchItem("510300", "沪深300ETF", 0.002),)
+        snapshot = TMonitorEngine().evaluate(watchlist, {market_quote.symbol: market_quote})
+        item = snapshot_to_dict(snapshot)["items"][0]
+        self.assertEqual(item["action"], "BUY_CANDIDATE")
+        self.assertEqual(item["label"], "做T候选")
+        self.assertEqual(item["health_status"], "REALTIME")
+        self.assertEqual(item["health_reason"], "行情实时")
+        self.assertEqual(item["regime_state"], "RANGE")
+        self.assertEqual(item["range_confirmation_count"], 3)
+        self.assertGreater(item["expected_gross_edge_pct"], item["round_trip_cost_pct"])
+        self.assertGreater(item["expected_net_edge_pct"], 0)
+        self.assertEqual(item["blocked_reasons"], [])
+        self.assertEqual(item["signal_level"], "NONE")
+
+    def test_in_progress_point_is_excluded_from_candidate_and_regime_decision(self) -> None:
+        market_quote = confirmed_range_quote(-0.008, -0.007)
+        in_progress_at = market_quote.timestamp + timedelta(minutes=1)
+        in_progress = replace(
+            market_quote.points[-1], timestamp=in_progress_at, price=11.0,
+            average_price=10.0,
+        )
+        live_quote = replace(
+            market_quote,
+            price=in_progress.price,
+            average_price=in_progress.average_price,
+            timestamp=in_progress.timestamp,
+            points=market_quote.points + (in_progress,),
+            observed_at=in_progress.timestamp + timedelta(seconds=5),
+        )
+        signal = TMonitorEngine().evaluate(
+            (WatchItem("510300", "沪深300ETF", 0.002),),
+            {live_quote.symbol: live_quote},
+        ).signals[0]
+        self.assertEqual(signal.action, "BUY_CANDIDATE")
+        self.assertEqual(signal.price, market_quote.points[-1].price)
+        self.assertEqual(signal.timestamp, market_quote.points[-1].timestamp)
+        self.assertEqual(signal.regime_state, "RANGE")
+
+    def test_generated_at_takes_priority_when_classifying_health(self) -> None:
+        market_quote = confirmed_range_quote(-0.008, -0.007)
+        generated_at = market_quote.timestamp + timedelta(minutes=5)
+        item = snapshot_to_dict(TMonitorEngine().evaluate(
+            (WatchItem("510300", "沪深300ETF", 0.002),),
+            {market_quote.symbol: market_quote}, generated_at,
+        ))["items"][0]
+        self.assertEqual(item["action"], "DEVIATION_OBSERVE")
+        self.assertEqual(item["health_status"], "OUTAGE")
+        self.assertIn("MARKET_NOT_REALTIME", item["blocked_reasons"])
+
+    def test_zero_grid_width_waits_without_dividing(self) -> None:
+        market_quote = confirmed_range_quote(-0.008, -0.007)
+        item = snapshot_to_dict(TMonitorEngine().evaluate(
+            (WatchItem("510300", "沪深300ETF", 0.0),),
+            {market_quote.symbol: market_quote},
+        ))["items"][0]
+        self.assertEqual(item["action"], "WAIT")
+        self.assertIn("INVALID_GRID_WIDTH", item["blocked_reasons"])
+        self.assertIsNone(item["white_yellow_deviation_grids"])
 
     def test_regime_fields_are_exposed_and_short_history_is_uncertain(self) -> None:
         item = self.evaluate(quote(10.1))
@@ -314,8 +409,10 @@ class TMonitorEngineTests(unittest.TestCase):
         self.assertEqual(item["range_confirmation_count"], 0)
         self.assertEqual(item["trend_confirmation_count"], 0)
         self.assertEqual(item["regime_reasons"], ["INSUFFICIENT_SAMPLES"])
+        self.assertEqual(item["action"], "WAIT")
+        self.assertIn("INSUFFICIENT_FINALIZED_POINTS", item["blocked_reasons"])
 
-    def test_uptrend_blocks_countertrend_sell_reminder(self) -> None:
+    def test_confirmed_uptrend_is_observation_only(self) -> None:
         points = []
         for index in range(21):
             price = 10.0 + index * 0.08
@@ -332,8 +429,9 @@ class TMonitorEngineTests(unittest.TestCase):
         self.assertEqual(item["regime_state"], "UPTREND")
         self.assertEqual(item["trend_confirmation_count"], 2)
         self.assertEqual(item["regime_reasons"], ["UPTREND_CONFIRMED"])
-        self.assertEqual(item["action"], "OBSERVE")
-        self.assertIn("上涨趋势日", item["label"])
+        self.assertEqual(item["action"], "DEVIATION_OBSERVE")
+        self.assertEqual(item["label"], "偏离观察")
+        self.assertIn("REGIME_NOT_RANGE", item["blocked_reasons"])
 
     def test_payload_contains_trade_markers_only_for_confirmed_range(self) -> None:
         item = self.evaluate(quote(10.1))

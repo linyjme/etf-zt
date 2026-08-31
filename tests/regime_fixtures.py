@@ -63,8 +63,10 @@ def confirmed_range_quote(
     previous_close_distance: float = 0.02,
 ) -> Quote:
     average = 10.0
-    previous = _point(_start("10:00"), average * (1 + previous_deviation), average)
-    current = _point(_start("10:01"), average * (1 + current_deviation), average)
+    points = list(alternating_points(22, start="09:40"))
+    previous = _point(points[-2].timestamp, average * (1 + previous_deviation), average)
+    current = _point(points[-1].timestamp, average * (1 + current_deviation), average)
+    points[-2:] = (previous, current)
     previous_close = current.price * (1 + previous_close_distance if current_deviation < 0 else 1 - previous_close_distance)
     return Quote(
         symbol="510300",
@@ -73,7 +75,7 @@ def confirmed_range_quote(
         average_price=current.average_price,
         previous_close=previous_close,
         timestamp=current.timestamp,
-        points=(previous, current),
+        points=tuple(points),
         observed_at=current.timestamp + timedelta(minutes=1),
         source="TEST",
     )

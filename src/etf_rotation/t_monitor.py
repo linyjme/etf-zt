@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from .constants import DEFAULT_GRID_WIDTH_PCT
 from .regime import RegimeDetector
+from .t_strategy import CandidateContext, TStrategy, fast_rise_grids
 
 
 class QuoteHistoryStore:
@@ -66,7 +67,9 @@ class AlertHistoryStore:
             keys = {(item.get("symbol"), item.get("timestamp"), item.get("action"), item.get("strategy_version")) for item in existing}
             pending = []
             for item in records:
-                if not isinstance(item, dict) or item.get("action") not in {"BUY_REMINDER", "SELL_REMINDER", "OBSERVE"}:
+                if not isinstance(item, dict) or item.get("action") not in {
+                    "BUY_CANDIDATE", "SELL_CANDIDATE", "DEVIATION_OBSERVE",
+                }:
                     continue
                 key = (item.get("symbol"), item.get("timestamp"), item.get("action"), item.get("strategy_version"))
                 if key in keys:
@@ -189,6 +192,11 @@ class MonitorSignal:
     previous_close_distance_grids: float | None
     fast_rise_grids: float | None
     timestamp: datetime | None
+    health_status: str = "UNKNOWN"
+    health_reason: str = "行情状态未知"
+    expected_gross_edge_pct: float | None = None
+    round_trip_cost_pct: float | None = None
+    expected_net_edge_pct: float | None = None
     safety: str = "MONITOR_ONLY"
     strategy_version: str = "T_V1"
     deviation_pct: float | None = None
@@ -407,12 +415,21 @@ def load_watchlist(path: Path) -> tuple[WatchItem, ...]:
 
 
 class TMonitorEngine:
+    def __init__(self, health_classifier: Any | None = None):
+        if health_classifier is None:
+            from .market_data import MarketHealthClassifier
+
+            health_classifier = MarketHealthClassifier()
+        self.health_classifier = health_classifier
+
     def evaluate(
         self,
         watchlist: Sequence[WatchItem],
         quotes: Mapping[str, Quote],
         generated_at: datetime | None = None,
     ) -> MonitorSnapshot:
+        from .market_data import finalized_points
+
         signals: list[MonitorSignal] = []
         errors: list[str] = []
         for item in watchlist:
@@ -424,47 +441,110 @@ class TMonitorEngine:
                     item.symbol, item.name, "MISSING_QUOTE", "UNAVAILABLE",
                     "缺少行情", None, None, None, None, None,
                     item.grid_width_pct, None, None, None, None, None,
+                    health_status="OUTAGE",
+                    health_reason="缺少行情",
+                    blocked_reasons=("MISSING_QUOTE",),
                 ))
                 continue
-            change = quote.price / quote.previous_close - 1
-            grid_size = quote.average_price * item.grid_width_pct
-            upper_grid_price = quote.average_price + grid_size
-            lower_grid_price = quote.average_price - grid_size
-            white_yellow_deviation_grids = round(abs(quote.price - quote.average_price) / grid_size, 6)
-            previous_close_distance_grids = round(abs(quote.price - quote.previous_close) / grid_size, 6)
-            fast_rise_grids = self._fast_rise_grids(quote, grid_size)
-            regime = RegimeDetector().evaluate(quote.points)
-            regime_state = regime.state
-            regime_label = regime.label
-            if fast_rise_grids + 1e-9 >= 5:
-                action, label = "OBSERVE", f"快速上冲 {fast_rise_grids:.2f} 格，优先观望"
-            elif white_yellow_deviation_grids + 1e-9 >= 3 and previous_close_distance_grids + 1e-9 >= 5:
-                if quote.price > quote.average_price:
-                    action, label = "SELL_REMINDER", f"白黄偏离 {white_yellow_deviation_grids:.2f} 格，离昨收 {previous_close_distance_grids:.2f} 格，均值回归减仓提醒"
-                elif quote.price < quote.average_price:
-                    action, label = "BUY_REMINDER", f"白黄偏离 {white_yellow_deviation_grids:.2f} 格，离昨收 {previous_close_distance_grids:.2f} 格，均值回归回补提醒"
-                else:
-                    action, label = "WAIT", f"白黄偏离 {white_yellow_deviation_grids:.2f} 格，等待"
-            else:
-                action, label = "WAIT", f"白黄偏离 {white_yellow_deviation_grids:.2f} 格，等待"
-            if regime_state == "UPTREND" and action == "SELL_REMINDER":
-                action, label = "OBSERVE", f"上涨趋势日，屏蔽逆势高抛；{regime_label}"
-            elif regime_state == "DOWNTREND" and action == "BUY_REMINDER":
-                action, label = "OBSERVE", f"下跌趋势日，屏蔽逆势低吸；{regime_label}"
+
+            completed = finalized_points(quote.points, quote.observed_at)
+            health = self.health_classifier.classify(
+                generated_at or quote.observed_at,
+                completed[-1].timestamp if completed else None,
+                None,
+            )
+            regime = RegimeDetector().evaluate(completed)
+            decision_quote = self._decision_quote(quote, completed)
+            strategy_quote = decision_quote or Quote(
+                quote.symbol,
+                quote.name,
+                quote.price,
+                quote.average_price,
+                quote.previous_close,
+                quote.timestamp,
+                (),
+                quote.observed_at,
+                quote.source,
+            )
+            decision = TStrategy().evaluate(CandidateContext(
+                strategy_quote, regime.state, health, item.grid_width_pct,
+            ))
+
+            latest = completed[-1] if completed else None
+            market_values_valid = (
+                latest is not None
+                and self._finite_positive(latest.price)
+                and self._finite_positive(latest.average_price)
+                and self._finite_positive(quote.previous_close)
+            )
+            raw_grid_size = (
+                latest.average_price * item.grid_width_pct
+                if market_values_valid and self._finite_positive(item.grid_width_pct)
+                else None
+            )
+            grid_size = (
+                raw_grid_size if self._finite_positive(raw_grid_size) else None
+            )
+            change = latest.price / quote.previous_close - 1 if market_values_valid else None
+            upper_grid_price = latest.average_price + grid_size if grid_size is not None else None
+            lower_grid_price = latest.average_price - grid_size if grid_size is not None else None
+            white_yellow_deviation_grids = (
+                round(abs(latest.price - latest.average_price) / grid_size, 6)
+                if grid_size is not None else None
+            )
+            previous_close_distance_grids = (
+                round(abs(latest.price - quote.previous_close) / grid_size, 6)
+                if grid_size is not None else None
+            )
+            rise_grids = (
+                fast_rise_grids(decision_quote, grid_size)
+                if decision_quote is not None and grid_size is not None else 0.0
+            )
+            decision_values_valid = (
+                decision_quote is not None
+                and all(
+                    self._finite_positive(value)
+                    for point in decision_quote.points
+                    for value in (point.price, point.average_price)
+                )
+            )
             signals.append(MonitorSignal(
-                item.symbol, item.name or quote.name, "OK", action, label,
-                quote.price, quote.average_price, quote.previous_close,
+                item.symbol, item.name or quote.name, "OK", decision.action,
+                decision.label,
+                latest.price if market_values_valid else None,
+                latest.average_price if market_values_valid else None,
+                quote.previous_close if market_values_valid else None,
                 upper_grid_price, lower_grid_price, item.grid_width_pct, change,
                 white_yellow_deviation_grids, previous_close_distance_grids,
-                fast_rise_grids, quote.timestamp,
-                strategy_version="T_V2",
-                deviation_pct=round(quote.price / quote.average_price - 1, 8),
-                minute_sigma=self._minute_sigma(quote),
-                trend_state=self._trend_state(quote),
-                trend_strength=self._trend_strength(quote),
-                volume_ratio=self._volume_ratio(quote),
-                regime_state=regime_state,
-                regime_label=regime_label,
+                rise_grids, latest.timestamp if latest is not None else None,
+                health_status=health.status,
+                health_reason=health.reason,
+                expected_gross_edge_pct=decision.expected_gross_edge_pct,
+                round_trip_cost_pct=decision.round_trip_cost_pct,
+                expected_net_edge_pct=decision.expected_net_edge_pct,
+                strategy_version="T_V3",
+                deviation_pct=(
+                    round(latest.price / latest.average_price - 1, 8)
+                    if market_values_valid else None
+                ),
+                minute_sigma=(
+                    self._minute_sigma(decision_quote)
+                    if decision_values_valid else None
+                ),
+                trend_state=(
+                    self._trend_state(decision_quote)
+                    if decision_values_valid else "UNCERTAIN"
+                ),
+                trend_strength=(
+                    self._trend_strength(decision_quote)
+                    if decision_values_valid else None
+                ),
+                volume_ratio=(
+                    self._volume_ratio(decision_quote)
+                    if decision_values_valid else None
+                ),
+                regime_state=regime.state,
+                regime_label=regime.label,
                 path_efficiency=regime.path_efficiency,
                 one_side_ratio=regime.one_side_ratio,
                 vwap_crossings=regime.vwap_crossings,
@@ -475,14 +555,44 @@ class TMonitorEngine:
                 trend_confirmation_count=regime.trend_confirmation_count,
                 regime_sample_count=regime.sample_count,
                 regime_reasons=regime.reasons,
-                trade_markers=self._trade_markers(quote, regime_state),
-                signal_level="GOLDEN" if action in {"BUY_REMINDER", "SELL_REMINDER"} else "NONE",
+                trade_markers=(
+                    self._trade_markers(decision_quote, regime.state)
+                    if decision_values_valid else ()
+                ),
+                signal_level="NONE",
+                blocked_reasons=decision.blocked_reasons,
             ))
         current = generated_at or max(
-            (quote.timestamp for quote in quotes.values()),
+            (quote.observed_at for quote in quotes.values()),
             default=datetime.now().astimezone(),
         )
         return MonitorSnapshot(current, tuple(signals), quotes, tuple(errors))
+
+    @staticmethod
+    def _decision_quote(quote: Quote, points: Sequence[QuotePoint]) -> Quote | None:
+        if not points:
+            return None
+        latest = points[-1]
+        return Quote(
+            quote.symbol,
+            quote.name,
+            latest.price,
+            latest.average_price,
+            quote.previous_close,
+            latest.timestamp,
+            tuple(points),
+            quote.observed_at,
+            quote.source,
+        )
+
+    @staticmethod
+    def _finite_positive(value: object) -> bool:
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+            and value > 0
+        )
 
     def _minute_sigma(self, quote: Quote) -> float | None:
         returns = []
@@ -531,16 +641,6 @@ class TMonitorEngine:
             return None
         return round(latest / (sum(volumes) / len(volumes)), 6)
 
-    def _fast_rise_grids(self, quote: Quote, grid_size: float) -> float:
-        if len(quote.points) < 2:
-            return 0.0
-        previous, latest = quote.points[-2:]
-        seconds = (latest.timestamp - previous.timestamp).total_seconds()
-        if not 0 < seconds <= 300:
-            return 0.0
-        return round(max(0.0, (latest.price - previous.price) / grid_size), 6)
-
-
 def snapshot_to_dict(snapshot: MonitorSnapshot) -> dict[str, Any]:
     return {
         "generated_at": snapshot.generated_at.isoformat(),
@@ -565,6 +665,11 @@ def snapshot_to_dict(snapshot: MonitorSnapshot) -> dict[str, Any]:
                 "previous_close_distance_grids": signal.previous_close_distance_grids,
                 "fast_rise_grids": signal.fast_rise_grids,
                 "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
+                "health_status": signal.health_status,
+                "health_reason": signal.health_reason,
+                "expected_gross_edge_pct": signal.expected_gross_edge_pct,
+                "round_trip_cost_pct": signal.round_trip_cost_pct,
+                "expected_net_edge_pct": signal.expected_net_edge_pct,
                 "safety": signal.safety,
                 "strategy_version": signal.strategy_version,
                 "deviation_pct": signal.deviation_pct,
