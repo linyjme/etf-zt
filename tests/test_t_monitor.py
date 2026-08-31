@@ -439,8 +439,10 @@ class EtfMetadataTests(unittest.TestCase):
             ("intraday_turnaround", 0, "日内回转"),
             ("sellable_delay_days", -1, "可卖延迟"),
             ("sellable_delay_days", False, "可卖延迟"),
+            ("sellable_delay_days", 1.0, "可卖延迟"),
             ("lot_size", 0, "每手股数"),
             ("lot_size", True, "每手股数"),
+            ("lot_size", 100.0, "每手股数"),
             ("price_tick", 0, "最小价位"),
             ("price_tick", True, "最小价位"),
             ("price_limit_pct", 0, "涨跌幅限制"),
@@ -454,6 +456,27 @@ class EtfMetadataTests(unittest.TestCase):
                 payload["items"][0]["trading"][field] = value
                 with self.assertRaisesRegex(MetadataError, message):
                     self.load_payload(payload)
+
+    def test_rejects_nonfinite_trading_numbers(self) -> None:
+        for field, message in (("price_tick", "最小价位"), ("price_limit_pct", "涨跌幅限制")):
+            for value in (float("nan"), float("inf")):
+                with self.subTest(field=field, value=value):
+                    payload = self.metadata_payload()
+                    payload["items"][0]["trading"][field] = value
+                    with self.assertRaisesRegex(MetadataError, message):
+                        self.load_payload(payload)
+
+    def test_rejects_unicode_digit_etf_symbol(self) -> None:
+        payload = self.metadata_payload()
+        payload["items"][0]["symbol"] = "５１０３００"
+        with self.assertRaisesRegex(MetadataError, "ETF代码"):
+            self.load_payload(payload)
+
+    def test_rejects_unicode_digit_index_code(self) -> None:
+        payload = self.metadata_payload()
+        payload["items"][0]["index"]["code"] = "٠٠٠٣٠٠"
+        with self.assertRaisesRegex(MetadataError, "指数代码"):
+            self.load_payload(payload)
 
 
 class MonitorWebTests(unittest.TestCase):

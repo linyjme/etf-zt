@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -119,7 +120,12 @@ class EtfMetadataStore:
 
     @staticmethod
     def _code(value: object, label: str) -> str:
-        if not isinstance(value, str) or len(value) != 6 or not value.isdigit():
+        if (
+            not isinstance(value, str)
+            or len(value) != 6
+            or not value.isascii()
+            or not value.isdigit()
+        ):
             raise MetadataError(f"{label}代码必须是6位数字")
         return value
 
@@ -143,6 +149,11 @@ class EtfMetadataStore:
 
     @staticmethod
     def _positive_number(value: object, label: str) -> float:
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
             raise MetadataError(f"{label}必须是正数")
         return float(value)
