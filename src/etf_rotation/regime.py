@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+import math
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -28,6 +29,7 @@ _MORNING_START = time(9, 30)
 _MORNING_END = time(11, 30)
 _AFTERNOON_START = time(13, 0)
 _AFTERNOON_END = time(15, 0)
+_THRESHOLD_ABS_TOLERANCE = 1e-12
 
 
 @dataclass(frozen=True)
@@ -70,7 +72,14 @@ class RegimeDetector:
         if not windows:
             return _uncertain_result(len(segment), "INSUFFICIENT_SAMPLES")
 
-        metrics = [self._metrics(window) for window in windows]
+        try:
+            metrics = [self._metrics(window) for window in windows]
+        except ValueError:
+            return _uncertain_result(
+                len(segment),
+                "INVALID_WINDOW_VALUES",
+                label="窗口数据无效，暂停做T",
+            )
         current = metrics[-1]
         range_count = _trailing_count(metrics, lambda item: item.range_ok)
         trend_direction = current.trend_direction
@@ -101,10 +110,10 @@ class RegimeDetector:
             )
 
         if current.range_ok:
-            reasons = ("RANGE_CONFIRMATION_BELOW_3",)
+            reasons = ("RANGE_CONFIRMATION_PENDING",)
         elif trend_direction != 0:
             state = "UPTREND" if trend_direction > 0 else "DOWNTREND"
-            reasons = (f"{state}_CONFIRMATION_BELOW_2",)
+            reasons = (f"{state}_CONFIRMATION_PENDING",)
         else:
             reasons = current.range_reasons + current.trend_reasons
         return _result_from(
@@ -119,10 +128,12 @@ class RegimeDetector:
     def _metrics(self, window: Sequence[QuotePoint]) -> _WindowMetrics:
         prices = [point.price for point in window]
         averages = [point.average_price for point in window]
+        if any(not math.isfinite(value) or value <= 0 for value in prices + averages):
+            raise ValueError("window prices and VWAP values must be finite and positive")
         path = sum(abs(current - previous) for previous, current in zip(prices, prices[1:]))
         path_efficiency = abs(prices[-1] - prices[0]) / path if path > 0 else 0.0
-        average_baseline = sum(averages) / len(averages)
-        vwap_slope = (averages[-1] - averages[0]) / average_baseline
+        first_vwap = averages[0]
+        vwap_slope = (averages[-1] - first_vwap) / first_vwap
 
         sides = [_vwap_side(price, average) for price, average in zip(prices, averages)]
         above_count = sides.count(1)
@@ -132,17 +143,17 @@ class RegimeDetector:
 
         range_reasons: list[str] = []
         if crossings < 2:
-            range_reasons.append("RANGE_VWAP_CROSSINGS_BELOW_2")
+            range_reasons.append("RANGE_VWAP_CROSSINGS_INSUFFICIENT")
         if above_count < 2:
-            range_reasons.append("RANGE_ABOVE_VWAP_COUNT_BELOW_2")
+            range_reasons.append("RANGE_ABOVE_VWAP_SAMPLES_INSUFFICIENT")
         if below_count < 2:
-            range_reasons.append("RANGE_BELOW_VWAP_COUNT_BELOW_2")
+            range_reasons.append("RANGE_BELOW_VWAP_SAMPLES_INSUFFICIENT")
         if one_side_ratio > RANGE_MAX_ONE_SIDE_RATIO:
-            range_reasons.append("RANGE_ONE_SIDE_RATIO_ABOVE_0_70")
+            range_reasons.append("RANGE_ONE_SIDE_DOMINANT")
         if path_efficiency > RANGE_MAX_ER:
-            range_reasons.append("RANGE_PATH_EFFICIENCY_ABOVE_0_30")
-        if abs(vwap_slope) > RANGE_MAX_VWAP_SLOPE:
-            range_reasons.append("RANGE_VWAP_SLOPE_ABOVE_0_001")
+            range_reasons.append("RANGE_PATH_TOO_EFFICIENT")
+        if _strictly_above(abs(vwap_slope), RANGE_MAX_VWAP_SLOPE):
+            range_reasons.append("RANGE_VWAP_SLOPE_TOO_STEEP")
 
         price_direction = _direction(prices[-1] - prices[0])
         same_side_ratio = (
@@ -155,15 +166,15 @@ class RegimeDetector:
         high_low_progress = _high_low_progress(window, price_direction)
         trend_reasons: list[str] = []
         if path_efficiency < TREND_MIN_ER:
-            trend_reasons.append("TREND_PATH_EFFICIENCY_BELOW_0_55")
-        if abs(vwap_slope) < TREND_MIN_VWAP_SLOPE:
-            trend_reasons.append("TREND_VWAP_SLOPE_BELOW_0_001")
+            trend_reasons.append("TREND_PATH_NOT_EFFICIENT")
+        if _strictly_below(abs(vwap_slope), TREND_MIN_VWAP_SLOPE):
+            trend_reasons.append("TREND_VWAP_SLOPE_TOO_FLAT")
         if price_direction == 0:
             trend_reasons.append("TREND_PRICE_DIRECTION_FLAT")
         elif vwap_slope * price_direction <= 0:
             trend_reasons.append("TREND_PRICE_VWAP_DIRECTION_MISMATCH")
         if same_side_ratio < TREND_MIN_ONE_SIDE_RATIO:
-            trend_reasons.append("TREND_ONE_SIDE_RATIO_BELOW_0_80")
+            trend_reasons.append("TREND_ONE_SIDE_NOT_DOMINANT")
         if not high_low_progress:
             trend_reasons.append("TREND_HIGH_LOW_NOT_ADVANCING")
 
@@ -256,6 +267,24 @@ def _direction(value: float) -> int:
     return 0
 
 
+def _strictly_above(value: float, threshold: float) -> bool:
+    return value > threshold and not math.isclose(
+        value,
+        threshold,
+        rel_tol=0.0,
+        abs_tol=_THRESHOLD_ABS_TOLERANCE,
+    )
+
+
+def _strictly_below(value: float, threshold: float) -> bool:
+    return value < threshold and not math.isclose(
+        value,
+        threshold,
+        rel_tol=0.0,
+        abs_tol=_THRESHOLD_ABS_TOLERANCE,
+    )
+
+
 def _trailing_count(
     metrics: Sequence[_WindowMetrics],
     predicate: Callable[[_WindowMetrics], bool],
@@ -268,10 +297,15 @@ def _trailing_count(
     return count
 
 
-def _uncertain_result(sample_count: int, reason: str) -> RegimeResult:
+def _uncertain_result(
+    sample_count: int,
+    reason: str,
+    *,
+    label: str = "样本不足，暂停做T",
+) -> RegimeResult:
     return RegimeResult(
         state="UNCERTAIN",
-        label="样本不足，暂停做T",
+        label=label,
         sample_count=sample_count,
         path_efficiency=None,
         one_side_ratio=None,

@@ -37,6 +37,26 @@ def trending_points(count: int, direction: int, start: str = "09:30") -> tuple[Q
     return tuple(points)
 
 
+def boundary_slope_points(
+    count: int,
+    direction: int,
+    *,
+    alternating: bool,
+    start: str = "09:30",
+) -> tuple[QuotePoint, ...]:
+    origin = _start(start)
+    minute_factor = (1.0 + direction * 0.001) ** (1.0 / 19.0)
+    points = []
+    for index in range(count):
+        average = 10.0 * minute_factor ** index
+        if alternating:
+            price = average * (1.0005 if index % 2 == 0 else 0.9995)
+        else:
+            price = average * (1.001 if direction > 0 else 0.999)
+        points.append(_point(origin + timedelta(minutes=index), price, average))
+    return tuple(points)
+
+
 def confirmed_range_quote(
     previous_deviation: float,
     current_deviation: float,
