@@ -6,6 +6,10 @@ from typing import TYPE_CHECKING
 
 from .constants import BUY_COMMISSION_RATE, SELL_COMMISSION_RATE, SLIPPAGE_RATE
 
+
+CURRENT_STRATEGY_VERSION = "T_V3"
+_NARROWING_ABS_TOLERANCE = 1e-12
+
 if TYPE_CHECKING:
     from .market_data import MarketHealth
     from .t_monitor import Quote
@@ -70,7 +74,8 @@ class TStrategy:
             reasons.append("PREVIOUS_CLOSE_DISTANCE_BELOW_5_GRIDS")
         if (
             current_deviation * previous_deviation <= 0
-            or abs(current_deviation) >= abs(previous_deviation)
+            or abs(current_deviation)
+            >= abs(previous_deviation) - _NARROWING_ABS_TOLERANCE
         ):
             reasons.append("DEVIATION_NOT_NARROWING")
         if gross <= cost:

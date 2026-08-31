@@ -50,3 +50,27 @@ class TStrategyTests(unittest.TestCase):
         self.assertIn("INVALID_GRID_WIDTH", zero_grid.blocked_reasons)
         self.assertEqual(invalid.action, "WAIT")
         self.assertIn("INVALID_PRICE_DATA", invalid.blocked_reasons)
+
+    def test_equal_and_near_equal_deviation_are_not_narrowing(self) -> None:
+        health = MarketHealth("REALTIME", 10, "行情实时")
+        strategy = TStrategy()
+        equal = strategy.evaluate(CandidateContext(
+            confirmed_range_quote(-0.007, -0.007), "RANGE", health, 0.002,
+        ))
+        near_equal = strategy.evaluate(CandidateContext(
+            confirmed_range_quote(-0.007, -0.0069999999995),
+            "RANGE", health, 0.002,
+        ))
+        self.assertEqual(equal.action, "DEVIATION_OBSERVE")
+        self.assertEqual(near_equal.action, "DEVIATION_OBSERVE")
+        self.assertIn("DEVIATION_NOT_NARROWING", equal.blocked_reasons)
+        self.assertIn("DEVIATION_NOT_NARROWING", near_equal.blocked_reasons)
+
+    def test_positive_narrowing_deviation_produces_sell_candidate(self) -> None:
+        quote = confirmed_range_quote(0.008, 0.007)
+        decision = TStrategy().evaluate(CandidateContext(
+            quote, "RANGE", MarketHealth("REALTIME", 10, "行情实时"), 0.002,
+        ))
+        self.assertEqual(decision.action, "SELL_CANDIDATE")
+        self.assertEqual(decision.label, "做T候选")
+        self.assertEqual(decision.blocked_reasons, ())

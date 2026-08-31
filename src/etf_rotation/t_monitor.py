@@ -12,7 +12,23 @@ from typing import Any, Mapping, Sequence
 
 from .constants import DEFAULT_GRID_WIDTH_PCT
 from .regime import RegimeDetector
-from .t_strategy import CandidateContext, TStrategy, fast_rise_grids
+from .t_strategy import (
+    CURRENT_STRATEGY_VERSION,
+    CandidateContext,
+    TStrategy,
+    fast_rise_grids,
+)
+
+
+_CURRENT_CANDIDATE_ACTIONS = frozenset({"BUY_CANDIDATE", "SELL_CANDIDATE"})
+
+
+def _is_current_candidate(item: object) -> bool:
+    return (
+        isinstance(item, dict)
+        and item.get("action") in _CURRENT_CANDIDATE_ACTIONS
+        and item.get("strategy_version") == CURRENT_STRATEGY_VERSION
+    )
 
 
 class QuoteHistoryStore:
@@ -67,9 +83,7 @@ class AlertHistoryStore:
             keys = {(item.get("symbol"), item.get("timestamp"), item.get("action"), item.get("strategy_version")) for item in existing}
             pending = []
             for item in records:
-                if not isinstance(item, dict) or item.get("action") not in {
-                    "BUY_CANDIDATE", "SELL_CANDIDATE", "DEVIATION_OBSERVE",
-                }:
+                if not _is_current_candidate(item):
                     continue
                 key = (item.get("symbol"), item.get("timestamp"), item.get("action"), item.get("strategy_version"))
                 if key in keys:
@@ -93,6 +107,8 @@ class AlertHistoryStore:
     def _write_daily(self, records: Sequence[Mapping[str, Any]]) -> None:
         grouped: dict[str, list[Mapping[str, Any]]] = {}
         for item in records:
+            if not _is_current_candidate(item):
+                continue
             trading_date = str(item.get("trading_date") or "")
             if trading_date:
                 grouped.setdefault(trading_date, []).append(item)
@@ -114,7 +130,12 @@ class AlertHistoryStore:
         if not path.exists():
             return []
         try:
-            return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            records = [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            return [item for item in records if _is_current_candidate(item)]
         except (OSError, json.JSONDecodeError, TypeError) as error:
             raise MarketDataError(f"提示历史读取失败: {error}") from error
 
@@ -133,12 +154,7 @@ class AlertHistoryStore:
         return result
 
     def _read(self) -> list[dict[str, Any]]:
-        if not self.path.exists():
-            return []
-        try:
-            return [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        except (OSError, json.JSONDecodeError, TypeError) as error:
-            raise MarketDataError(f"提示历史读取失败: {error}") from error
+        return self._read_path(self.path)
 
 
 @dataclass(frozen=True)
@@ -192,11 +208,6 @@ class MonitorSignal:
     previous_close_distance_grids: float | None
     fast_rise_grids: float | None
     timestamp: datetime | None
-    health_status: str = "UNKNOWN"
-    health_reason: str = "行情状态未知"
-    expected_gross_edge_pct: float | None = None
-    round_trip_cost_pct: float | None = None
-    expected_net_edge_pct: float | None = None
     safety: str = "MONITOR_ONLY"
     strategy_version: str = "T_V1"
     deviation_pct: float | None = None
@@ -221,6 +232,11 @@ class MonitorSignal:
     trade_markers: tuple[dict[str, Any], ...] = ()
     signal_level: str = "NONE"
     blocked_reasons: tuple[str, ...] = ()
+    health_status: str = "UNKNOWN"
+    health_reason: str = "行情状态未知"
+    expected_gross_edge_pct: float | None = None
+    round_trip_cost_pct: float | None = None
+    expected_net_edge_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -430,6 +446,7 @@ class TMonitorEngine:
     ) -> MonitorSnapshot:
         from .market_data import finalized_points
 
+        current = generated_at or datetime.now().astimezone()
         signals: list[MonitorSignal] = []
         errors: list[str] = []
         for item in watchlist:
@@ -449,7 +466,7 @@ class TMonitorEngine:
 
             completed = finalized_points(quote.points, quote.observed_at)
             health = self.health_classifier.classify(
-                generated_at or quote.observed_at,
+                current,
                 completed[-1].timestamp if completed else None,
                 None,
             )
@@ -522,7 +539,7 @@ class TMonitorEngine:
                 expected_gross_edge_pct=decision.expected_gross_edge_pct,
                 round_trip_cost_pct=decision.round_trip_cost_pct,
                 expected_net_edge_pct=decision.expected_net_edge_pct,
-                strategy_version="T_V3",
+                strategy_version=CURRENT_STRATEGY_VERSION,
                 deviation_pct=(
                     round(latest.price / latest.average_price - 1, 8)
                     if market_values_valid else None
@@ -562,10 +579,6 @@ class TMonitorEngine:
                 signal_level="NONE",
                 blocked_reasons=decision.blocked_reasons,
             ))
-        current = generated_at or max(
-            (quote.observed_at for quote in quotes.values()),
-            default=datetime.now().astimezone(),
-        )
         return MonitorSnapshot(current, tuple(signals), quotes, tuple(errors))
 
     @staticmethod

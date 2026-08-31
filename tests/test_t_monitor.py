@@ -1,10 +1,12 @@
 from dataclasses import replace
 from datetime import datetime, timedelta
+import inspect
 import json
 from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
@@ -13,7 +15,7 @@ from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
 from etf_rotation.quote_collector import SOURCE_NAME, Trends2QuoteCollector, market_for_symbol
 from etf_rotation.t_monitor import (
     AlertHistoryStore, JsonQuoteAdapter, MarketDataError, QuoteHistoryStore,
-    TMonitorEngine, WatchItem, load_watchlist, snapshot_to_dict,
+    MonitorSignal, TMonitorEngine, WatchItem, load_watchlist, snapshot_to_dict,
 )
 from etf_rotation.t_web import MonitorApplication, PAGE, create_server
 from tests.regime_fixtures import confirmed_range_quote
@@ -262,12 +264,73 @@ class AlertHistoryStoreTests(unittest.TestCase):
                         "symbol": "510500", "timestamp": NOW,
                         "action": "SELL_REMINDER", "strategy_version": "T_V2",
                     },
+                    {
+                        "symbol": "510100", "timestamp": NOW,
+                        "action": "DEVIATION_OBSERVE", "strategy_version": "T_V3",
+                    },
                 ],
             })
             self.assertEqual(
                 [item["action"] for item in store.query()],
                 ["BUY_CANDIDATE"],
             )
+
+    def test_preexisting_legacy_records_are_filtered_without_rewriting_canonical(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "alerts.jsonl"
+            store = AlertHistoryStore(path)
+
+            def event(symbol: str, action: str, version: str) -> dict[str, str]:
+                return {
+                    "symbol": symbol,
+                    "timestamp": NOW,
+                    "trading_date": "2026-08-28",
+                    "action": action,
+                    "strategy_version": version,
+                }
+
+            records = [
+                event("legacy-buy", "BUY_REMINDER", "T_V2"),
+                event("legacy-observe", "OBSERVE", "T_V2"),
+                event("old-candidate", "BUY_CANDIDATE", "T_V2"),
+                event("deviation", "DEVIATION_OBSERVE", "T_V3"),
+                event("current-buy", "BUY_CANDIDATE", "T_V3"),
+                event("current-sell", "SELL_CANDIDATE", "T_V3"),
+            ]
+            path.write_text(
+                "\n".join(json.dumps(item, ensure_ascii=False) for item in records) + "\n",
+                encoding="utf-8",
+            )
+            daily = store.daily_root / "2026-08-28" / "alerts.jsonl"
+            daily.parent.mkdir(parents=True)
+            daily.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            canonical_before = path.read_bytes()
+
+            self.assertEqual(
+                [item["symbol"] for item in store.query()],
+                ["current-sell", "current-buy"],
+            )
+            self.assertEqual(
+                [item["symbol"] for item in store._read_path(daily)],
+                ["current-buy", "current-sell"],
+            )
+            self.assertEqual(path.read_bytes(), canonical_before)
+
+
+class MonitorSignalCompatibilityTests(unittest.TestCase):
+    def test_legacy_positional_optional_fields_keep_their_original_slots(self) -> None:
+        timestamp = datetime.fromisoformat(NOW)
+        signal = MonitorSignal(
+            "510300", "ETF", "OK", "WAIT", "等待",
+            10.0, 10.0, 10.0, 10.02, 9.98, 0.002,
+            0.0, 0.0, 0.0, 0.0, timestamp,
+            "LEGACY_SAFETY", "LEGACY_VERSION", 0.123,
+        )
+        self.assertEqual(signal.timestamp, timestamp)
+        self.assertEqual(signal.safety, "LEGACY_SAFETY")
+        self.assertEqual(signal.strategy_version, "LEGACY_VERSION")
+        self.assertEqual(signal.deviation_pct, 0.123)
+        self.assertEqual(signal.health_status, "UNKNOWN")
 
 
 class TMonitorEngineTests(unittest.TestCase):
@@ -336,7 +399,9 @@ class TMonitorEngineTests(unittest.TestCase):
     def test_confirmed_range_narrowing_finalized_points_produce_neutral_candidate(self) -> None:
         market_quote = confirmed_range_quote(-0.008, -0.007)
         watchlist = (WatchItem("510300", "沪深300ETF", 0.002),)
-        snapshot = TMonitorEngine().evaluate(watchlist, {market_quote.symbol: market_quote})
+        snapshot = TMonitorEngine().evaluate(
+            watchlist, {market_quote.symbol: market_quote}, market_quote.observed_at,
+        )
         item = snapshot_to_dict(snapshot)["items"][0]
         self.assertEqual(item["action"], "BUY_CANDIDATE")
         self.assertEqual(item["label"], "做T候选")
@@ -367,6 +432,7 @@ class TMonitorEngineTests(unittest.TestCase):
         signal = TMonitorEngine().evaluate(
             (WatchItem("510300", "沪深300ETF", 0.002),),
             {live_quote.symbol: live_quote},
+            live_quote.observed_at,
         ).signals[0]
         self.assertEqual(signal.action, "BUY_CANDIDATE")
         self.assertEqual(signal.price, market_quote.points[-1].price)
@@ -383,6 +449,66 @@ class TMonitorEngineTests(unittest.TestCase):
         self.assertEqual(item["action"], "DEVIATION_OBSERVE")
         self.assertEqual(item["health_status"], "OUTAGE")
         self.assertIn("MARKET_NOT_REALTIME", item["blocked_reasons"])
+
+    def test_all_symbols_share_one_health_clock_for_fresh_and_stale_quotes(self) -> None:
+        fresh = confirmed_range_quote(-0.008, -0.007)
+        shift = timedelta(minutes=4)
+        stale_points = tuple(
+            replace(point, timestamp=point.timestamp - shift)
+            for point in fresh.points
+        )
+        stale = replace(
+            fresh,
+            symbol="510500",
+            name="中证500ETF",
+            price=stale_points[-1].price,
+            average_price=stale_points[-1].average_price,
+            timestamp=stale_points[-1].timestamp,
+            points=stale_points,
+            observed_at=fresh.observed_at - shift,
+        )
+        current = fresh.observed_at
+
+        class FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz: object = None) -> datetime:
+                return current if tz is None else current.astimezone(tz)
+
+        with patch("etf_rotation.t_monitor.datetime", FixedDatetime):
+            snapshot = TMonitorEngine().evaluate(
+                (
+                    WatchItem("510300", "沪深300ETF", 0.002),
+                    WatchItem("510500", "中证500ETF", 0.002),
+                ),
+                {fresh.symbol: fresh, stale.symbol: stale},
+            )
+        signals = {item.symbol: item for item in snapshot.signals}
+        self.assertEqual(snapshot.generated_at, current)
+        self.assertEqual(signals["510300"].health_status, "REALTIME")
+        self.assertEqual(signals["510300"].action, "BUY_CANDIDATE")
+        self.assertEqual(signals["510500"].health_status, "OUTAGE")
+        self.assertEqual(signals["510500"].action, "DEVIATION_OBSERVE")
+
+    def test_lunch_close_and_weekend_never_produce_candidates(self) -> None:
+        market_quote = confirmed_range_quote(-0.008, -0.007)
+        watchlist = (WatchItem("510300", "沪深300ETF", 0.002),)
+        cases = (
+            ("2026-08-28T12:00:00+08:00", "LUNCH_BREAK"),
+            ("2026-08-28T15:01:00+08:00", "CLOSED"),
+            ("2026-08-29T10:02:00+08:00", "CLOSED"),
+        )
+        for value, expected_health in cases:
+            with self.subTest(value=value):
+                signal = TMonitorEngine().evaluate(
+                    watchlist,
+                    {market_quote.symbol: market_quote},
+                    datetime.fromisoformat(value),
+                ).signals[0]
+                self.assertEqual(signal.health_status, expected_health)
+                self.assertNotIn(
+                    signal.action, {"BUY_CANDIDATE", "SELL_CANDIDATE"},
+                )
+                self.assertIn("MARKET_NOT_REALTIME", signal.blocked_reasons)
 
     def test_zero_grid_width_waits_without_dividing(self) -> None:
         market_quote = confirmed_range_quote(-0.008, -0.007)
@@ -686,12 +812,14 @@ class MonitorWebTests(unittest.TestCase):
         self.assertIn("if((data.dates||[]).includes(selected))historyDate.value=selected", PAGE)
         self.assertNotIn("render(await response.json());loadAlerts();loadDailyHistory()", PAGE)
 
-    def test_page_highlights_fresh_golden_window_only(self) -> None:
-        self.assertIn("item.action==='BUY_REMINDER'||item.action==='SELL_REMINDER'", PAGE)
-        self.assertIn("golden=!stale", PAGE)
-        self.assertIn("做T黄金窗口", PAGE)
-        self.assertIn("回补提醒", PAGE)
-        self.assertIn("减仓提醒", PAGE)
+    def test_page_highlights_fresh_candidates_with_neutral_language_only(self) -> None:
+        self.assertIn("item.action==='BUY_CANDIDATE'||item.action==='SELL_CANDIDATE'", PAGE)
+        self.assertIn("candidate=!stale", PAGE)
+        self.assertIn("做T候选", PAGE)
+        self.assertIn("偏离观察", PAGE)
+        self.assertNotIn("做T黄金窗口", PAGE)
+        self.assertNotIn("回补提醒", PAGE)
+        self.assertNotIn("减仓提醒", PAGE)
         self.assertIn("watch-item.opportunity", PAGE)
         self.assertIn('role="alert"', PAGE)
 
@@ -730,6 +858,13 @@ class MonitorWebTests(unittest.TestCase):
         self.assertEqual(payload["buy_commission_rate"], 0.00012)
         self.assertEqual(payload["minimum_commission_cny"], 0.0)
         self.assertTrue(payload["commission_minimum_waived"])
+
+    def test_backtest_replay_recognizes_new_candidate_actions(self) -> None:
+        source = inspect.getsource(MonitorApplication.backtest)
+        self.assertIn('signal.action == "BUY_CANDIDATE"', source)
+        self.assertIn('signal.action == "SELL_CANDIDATE"', source)
+        self.assertNotIn('signal.action == "BUY_REMINDER"', source)
+        self.assertNotIn('signal.action == "SELL_REMINDER"', source)
 
     def test_page_marks_each_stale_market_time_and_shows_independent_backtest(self) -> None:
         self.assertIn("const STALE_AFTER_MS=60000", PAGE)
