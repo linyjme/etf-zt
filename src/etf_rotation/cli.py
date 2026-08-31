@@ -16,6 +16,8 @@ def _parser() -> argparse.ArgumentParser:
     monitor.add_argument("--watchlist", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "watchlist.json")
     monitor.add_argument("--history", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "quotes.jsonl")
     monitor.add_argument("--alert-history", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "alerts.jsonl")
+    monitor.add_argument("--metadata", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "etf_metadata.json")
+    monitor.add_argument("--calendar", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "market_calendar.json")
     monitor.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "localhost"))
     monitor.add_argument("--port", type=int, default=8765)
     monitor.add_argument("--refresh-interval", type=float, default=5.0)
@@ -34,14 +36,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     collector = None if arguments.no_collect else Trends2QuoteCollector()
     server = create_server(
-        arguments.host,
-        arguments.port,
-        arguments.quotes,
-        arguments.watchlist,
-        arguments.history,
-        collector,
-        arguments.refresh_interval,
-        arguments.alert_history,
+        host=arguments.host,
+        port=arguments.port,
+        quotes_path=arguments.quotes,
+        watchlist_path=arguments.watchlist,
+        history_path=arguments.history,
+        collector=collector,
+        refresh_interval=arguments.refresh_interval,
+        alert_history_path=arguments.alert_history,
+        metadata_path=arguments.metadata,
+        calendar_path=arguments.calendar,
     )
     host, port = server.server_address
     print(f"monitor-only: http://{host}:{port}/")

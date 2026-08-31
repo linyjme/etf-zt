@@ -104,6 +104,9 @@ class AlertHistoryStore:
                 os.fsync(handle.fileno())
             self._write_daily(pending)
 
+    def append_candidates(self, payload: Mapping[str, Any]) -> None:
+        self.append(payload)
+
     def _write_daily(self, records: Sequence[Mapping[str, Any]]) -> None:
         grouped: dict[str, list[Mapping[str, Any]]] = {}
         for item in records:
@@ -443,6 +446,7 @@ class TMonitorEngine:
         watchlist: Sequence[WatchItem],
         quotes: Mapping[str, Quote],
         generated_at: datetime | None = None,
+        health: Any | None = None,
     ) -> MonitorSnapshot:
         from .market_data import finalized_points
 
@@ -465,10 +469,8 @@ class TMonitorEngine:
                 continue
 
             completed = finalized_points(quote.points, quote.observed_at)
-            health = self.health_classifier.classify(
-                current,
-                completed[-1].timestamp if completed else None,
-                None,
+            item_health = health or self.health_classifier.classify(
+                current, completed[-1].timestamp if completed else None, None,
             )
             regime = RegimeDetector().evaluate(completed)
             decision_quote = self._decision_quote(quote, completed)
@@ -484,7 +486,7 @@ class TMonitorEngine:
                 quote.source,
             )
             decision = TStrategy().evaluate(CandidateContext(
-                strategy_quote, regime.state, health, item.grid_width_pct,
+                strategy_quote, regime.state, item_health, item.grid_width_pct,
             ))
 
             latest = completed[-1] if completed else None
@@ -534,8 +536,8 @@ class TMonitorEngine:
                 upper_grid_price, lower_grid_price, item.grid_width_pct, change,
                 white_yellow_deviation_grids, previous_close_distance_grids,
                 rise_grids, latest.timestamp if latest is not None else None,
-                health_status=health.status,
-                health_reason=health.reason,
+                health_status=item_health.status,
+                health_reason=item_health.reason,
                 expected_gross_edge_pct=decision.expected_gross_edge_pct,
                 round_trip_cost_pct=decision.round_trip_cost_pct,
                 expected_net_edge_pct=decision.expected_net_edge_pct,

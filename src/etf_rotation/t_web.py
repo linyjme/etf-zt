@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -10,11 +12,18 @@ import re
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 from . import constants
+from .etf_metadata import EtfMetadataStore
+from .market_data import MarketHealthClassifier, MinuteHistoryStore, finalized_points, load_closed_dates
 from .t_monitor import AlertHistoryStore, JsonQuoteAdapter, QuoteHistoryStore, TMonitorEngine, load_watchlist, snapshot_to_dict
+
+
+_DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "monitor"
+_DEFAULT_METADATA_PATH = _DATA_ROOT / "etf_metadata.json"
+_DEFAULT_CALENDAR_PATH = _DATA_ROOT / "market_calendar.json"
 
 
 @dataclass
@@ -25,72 +34,198 @@ class MonitorApplication:
     collector: Any | None = None
     refresh_interval: float = 5.0
     alert_history_path: Path | None = None
+    metadata_path: Path | None = None
+    calendar_path: Path | None = None
+    clock: Callable[[], datetime] = field(default=lambda: datetime.now().astimezone(), compare=False)
     watchlist_lock: threading.Lock = field(default_factory=threading.Lock, compare=False)
     refresh_lock: threading.Lock = field(default_factory=threading.Lock, compare=False)
+    producer_lock: threading.Lock = field(default_factory=threading.Lock, compare=False)
     refresh_error: str | None = None
     last_refresh_at: str | None = None
     _stop_event: threading.Event = field(default_factory=threading.Event, compare=False)
     _refresh_thread: threading.Thread | None = field(default=None, compare=False)
+    _published: dict[str, Any] = field(default_factory=dict, init=False, compare=False)
+    _revision: int = field(default=0, init=False, compare=False)
+    metadata_store: EtfMetadataStore = field(init=False, compare=False)
+    history_store: MinuteHistoryStore | None = field(init=False, compare=False)
+    alert_store: AlertHistoryStore | None = field(init=False, compare=False)
+    health_classifier: MarketHealthClassifier = field(init=False, compare=False)
+    engine: TMonitorEngine = field(init=False, compare=False)
+
+    def __post_init__(self) -> None:
+        self.quotes_path = Path(self.quotes_path)
+        self.watchlist_path = Path(self.watchlist_path)
+        self.history_path = Path(self.history_path) if self.history_path is not None else None
+        self.alert_history_path = (
+            Path(self.alert_history_path) if self.alert_history_path is not None else None
+        )
+        self.metadata_path = Path(self.metadata_path or _DEFAULT_METADATA_PATH)
+        self.calendar_path = Path(self.calendar_path or _DEFAULT_CALENDAR_PATH)
+        self.metadata_store = EtfMetadataStore(self.metadata_path)
+        self.history_store = (
+            MinuteHistoryStore(self.history_path) if self.history_path is not None else None
+        )
+        self.alert_store = (
+            AlertHistoryStore(self.alert_history_path)
+            if self.alert_history_path is not None else None
+        )
+        self.health_classifier = MarketHealthClassifier(
+            load_closed_dates(self.calendar_path),
+        )
+        self.engine = TMonitorEngine(self.health_classifier)
+        self._published = self._empty_snapshot()
+        self._bootstrap(increment_revision=self.collector is None)
 
     def snapshot(self) -> dict[str, Any]:
-        quotes = JsonQuoteAdapter().load(self.quotes_path)
-        if self.history_path is not None:
-            store = QuoteHistoryStore(self.history_path)
-            store.append(quotes)
-            quotes = store.merge(quotes)
-        watchlist = load_watchlist(self.watchlist_path)
-        result = snapshot_to_dict(TMonitorEngine().evaluate(watchlist, quotes))
-        if self.alert_history_path is not None:
-            AlertHistoryStore(self.alert_history_path).append(result)
-        metadata = self._quote_metadata()
         with self.refresh_lock:
-            result["source"] = metadata.get("source")
-            result["refresh_error"] = self.refresh_error
-            result["last_refresh_at"] = self.last_refresh_at or metadata.get("collected_at")
-        return result
+            return copy.deepcopy(self._published)
 
     def start_refresh(self) -> None:
-        if self.collector is None or self._refresh_thread is not None:
-            return
-        self._refresh_thread = threading.Thread(target=self._refresh_loop, daemon=True)
-        self._refresh_thread.start()
+        with self.refresh_lock:
+            if (
+                self.collector is None
+                or self._refresh_thread is not None
+                and self._refresh_thread.is_alive()
+            ):
+                return
+            self._stop_event.clear()
+            thread = threading.Thread(target=self._refresh_loop, daemon=True)
+            self._refresh_thread = thread
+            thread.start()
 
     def stop_refresh(self) -> None:
         self._stop_event.set()
-        if self._refresh_thread is not None:
-            self._refresh_thread.join(timeout=max(self.refresh_interval, 1.0) + 1.0)
-            self._refresh_thread = None
+        with self.refresh_lock:
+            thread = self._refresh_thread
+        if thread is not None:
+            thread.join(timeout=max(self.refresh_interval, 1.0) + 1.0)
+            with self.refresh_lock:
+                if self._refresh_thread is thread:
+                    self._refresh_thread = None
 
     def refresh_once(self) -> bool:
-        try:
-            watchlist = load_watchlist(self.watchlist_path)
-            payload = self.collector.collect_to_file(watchlist, self.quotes_path)
-        except (ValueError, OSError) as error:
-            with self.refresh_lock:
-                self.refresh_error = str(error)
-            return False
-        with self.refresh_lock:
-            self.refresh_error = None
-            self.last_refresh_at = payload["collected_at"]
-        return True
+        with self.producer_lock:
+            if self.collector is None:
+                return False
+            try:
+                watchlist = load_watchlist(self.watchlist_path)
+                payload = self.collector.collect_to_file(watchlist, self.quotes_path)
+                quotes = JsonQuoteAdapter().parse(payload)
+                metadata = self.metadata_store.load()
+                if self.history_store is not None:
+                    self.history_store.upsert(quotes, metadata)
+                now = self.clock()
+                completed_at = [
+                    point.timestamp
+                    for quote in quotes.values()
+                    for point in finalized_points(quote.points, quote.observed_at)
+                ]
+                health = self.health_classifier.classify(
+                    now, max(completed_at) if completed_at else None, None,
+                )
+                published = snapshot_to_dict(self.engine.evaluate(
+                    watchlist, quotes, generated_at=now, health=health,
+                ))
+                if self.alert_store is not None:
+                    self.alert_store.append_candidates(published)
+            except Exception as error:
+                self._publish_outage(str(error))
+                return False
+            self._publish(published, payload)
+            return True
 
     def _refresh_loop(self) -> None:
         while not self._stop_event.is_set():
             self.refresh_once()
             self._stop_event.wait(self.refresh_interval)
 
-    def _quote_metadata(self) -> dict[str, Any]:
+    def _bootstrap(self, *, increment_revision: bool) -> None:
+        watchlist = load_watchlist(self.watchlist_path)
+        error: str | None = None
         try:
-            raw = json.loads(Path(self.quotes_path).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return raw if isinstance(raw, dict) else {}
+            raw = json.loads(self.quotes_path.read_text(encoding="utf-8"))
+            quotes = JsonQuoteAdapter().parse(raw)
+            payload = raw if isinstance(raw, dict) else {}
+        except (ValueError, OSError) as failure:
+            quotes = {}
+            payload = {}
+            error = str(failure)
+        now = self.clock()
+        completed_at = [
+            point.timestamp
+            for quote in quotes.values()
+            for point in finalized_points(quote.points, quote.observed_at)
+        ]
+        health = self.health_classifier.classify(
+            now, max(completed_at) if completed_at else None, error,
+        )
+        published = snapshot_to_dict(self.engine.evaluate(
+            watchlist, quotes, generated_at=now, health=health,
+        ))
+        if error is not None:
+            published["errors"] = [error]
+        self._publish(
+            published, payload, error=error, increment_revision=increment_revision,
+        )
+
+    def _empty_snapshot(self) -> dict[str, Any]:
+        return {
+            "generated_at": self.clock().isoformat(),
+            "mode": "MONITOR_ONLY",
+            "auto_trade": False,
+            "errors": [],
+            "items": [],
+            "revision": 0,
+            "source": None,
+            "refresh_error": None,
+            "last_refresh_at": None,
+        }
+
+    def _publish(
+        self,
+        published: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        *,
+        error: str | None = None,
+        increment_revision: bool = True,
+    ) -> None:
+        with self.refresh_lock:
+            if increment_revision:
+                self._revision += 1
+            result = copy.deepcopy(dict(published))
+            result["revision"] = self._revision
+            result["source"] = copy.deepcopy(payload.get("source"))
+            result["refresh_error"] = error
+            result["last_refresh_at"] = payload.get("collected_at")
+            self.refresh_error = error
+            self.last_refresh_at = result["last_refresh_at"]
+            self._published = copy.deepcopy(result)
+
+    def _publish_outage(self, message: str) -> None:
+        with self.refresh_lock:
+            self._revision += 1
+            result = copy.deepcopy(self._published)
+            result["revision"] = self._revision
+            result["generated_at"] = self.clock().isoformat()
+            result["errors"] = [message]
+            result["refresh_error"] = message
+            for item in result.get("items", []):
+                if item.get("action") in {"BUY_CANDIDATE", "SELL_CANDIDATE"}:
+                    item["action"] = "DEVIATION_OBSERVE"
+                    item["label"] = "偏离观察"
+                item["health_status"] = "OUTAGE"
+                item["health_reason"] = message
+                reasons = list(item.get("blocked_reasons") or [])
+                if "MARKET_NOT_REALTIME" not in reasons:
+                    reasons.append("MARKET_NOT_REALTIME")
+                item["blocked_reasons"] = reasons
+            self.refresh_error = message
+            self._published = copy.deepcopy(result)
 
     def backtest(self) -> dict[str, Any]:
         quotes = JsonQuoteAdapter().load(self.quotes_path)
         if self.history_path is not None:
             store = QuoteHistoryStore(self.history_path)
-            store.append(quotes)
             quotes = store.merge(quotes)
         watchlist = load_watchlist(self.watchlist_path)
         items = []
@@ -387,9 +522,20 @@ def create_server(
     collector: Any | None = None,
     refresh_interval: float = 5.0,
     alert_history_path: Path | None = None,
+    metadata_path: Path | None = None,
+    calendar_path: Path | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> MonitorServer:
     application = MonitorApplication(
-        quotes_path, watchlist_path, history_path, collector, refresh_interval, alert_history_path,
+        quotes_path=quotes_path,
+        watchlist_path=watchlist_path,
+        history_path=history_path,
+        collector=collector,
+        refresh_interval=refresh_interval,
+        alert_history_path=alert_history_path,
+        metadata_path=metadata_path,
+        calendar_path=calendar_path,
+        **({"clock": clock} if clock is not None else {}),
     )
     server = MonitorServer((host, port), application)
     application.start_refresh()

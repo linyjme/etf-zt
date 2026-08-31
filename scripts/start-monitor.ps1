@@ -9,6 +9,8 @@ $arguments += @(
     '--watchlist', (Join-Path $root 'data\monitor\watchlist.json'),
     '--history', (Join-Path $root 'data\monitor\quotes.jsonl'),
     '--alert-history', (Join-Path $root 'data\monitor\alerts.jsonl'),
+    '--metadata', (Join-Path $root 'data\monitor\etf_metadata.json'),
+    '--calendar', (Join-Path $root 'data\monitor\market_calendar.json'),
     '--refresh-interval', '5',
     '--host', '127.0.0.1',
     '--port', '8765'

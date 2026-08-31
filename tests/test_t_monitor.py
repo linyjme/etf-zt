@@ -628,7 +628,7 @@ class MonitorRefreshTests(unittest.TestCase):
             self.assertEqual(payload["items"][0]["price"], 10.3)
             self.assertEqual(payload["source"]["name"], SOURCE_NAME)
             self.assertEqual(payload["refresh_error"], "远端明确失败")
-            self.assertEqual(payload["errors"], [])
+            self.assertEqual(payload["errors"], ["远端明确失败"])
 
 
 class EtfMetadataTests(unittest.TestCase):
