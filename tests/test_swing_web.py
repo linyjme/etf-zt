@@ -338,6 +338,52 @@ class SwingWebTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 4.0)
         self.assertEqual(int(response.split(b" ", 2)[1]), 408)
 
+    def test_trickled_body_cannot_extend_absolute_request_deadline(self) -> None:
+        self.server.request_deadline_seconds = 1.0
+        host, port = self.server.server_address
+        body = b'{"a":1}'
+        request = (
+            b"POST /api/swing/watchlist HTTP/1.1\r\n"
+            b"Host: localhost\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+        )
+        started = time.monotonic()
+        with socket.create_connection((host, port), timeout=4) as client:
+            client.sendall(request)
+            for value in body:
+                try:
+                    client.sendall(bytes((value,)))
+                except OSError:
+                    break
+                time.sleep(0.25)
+            try:
+                response = client.recv(4096)
+            except OSError:
+                response = b""
+        self.assertLess(time.monotonic() - started, 2.5)
+        if response:
+            self.assertEqual(int(response.split(b" ", 2)[1]), 408)
+
+    def test_trickled_headers_cannot_extend_absolute_request_deadline(self) -> None:
+        self.server.request_deadline_seconds = 1.0
+        host, port = self.server.server_address
+        started = time.monotonic()
+        with socket.create_connection((host, port), timeout=4) as client:
+            client.sendall(b"GET /api/swing/snapshot HTTP/1.1\r\n")
+            for value in b"Host: localhost\r\n\r\n":
+                try:
+                    client.sendall(bytes((value,)))
+                except OSError:
+                    break
+                time.sleep(0.15)
+            try:
+                response = client.recv(4096)
+            except OSError:
+                response = b""
+        self.assertLess(time.monotonic() - started, 2.5)
+        if response:
+            self.assertEqual(int(response.split(b" ", 2)[1]), 408)
+
     def test_transfer_encoding_is_rejected_even_with_content_length(self) -> None:
         body = b'{"symbol":"510500","enabled":true}'
         content_length = str(len(body)).encode("ascii")
@@ -423,7 +469,11 @@ class SwingWebTests(unittest.TestCase):
             raise RuntimeError("swing start failed")
 
         swing.start_refresh.side_effect = fail_swing_start
-        swing.stop_refresh.side_effect = lambda: events.append("swing_stop")
+        def fail_swing_stop() -> None:
+            events.append("swing_stop")
+            raise OSError("swing cleanup failed")
+
+        swing.stop_refresh.side_effect = fail_swing_stop
 
         def make_server(*args: object, **kwargs: object) -> MonitorServer:
             server = real_server(*args, **kwargs)
@@ -444,7 +494,7 @@ class SwingWebTests(unittest.TestCase):
             patch("etf_rotation.t_web.SwingService", return_value=swing),
             patch("etf_rotation.t_web.MonitorServer", side_effect=make_server),
         ):
-            with self.assertRaisesRegex(RuntimeError, "swing start failed"):
+            with self.assertRaisesRegex(RuntimeError, "swing start failed") as captured:
                 create_server(
                     "127.0.0.1", 0,
                     quotes_path=self.quotes_path,
@@ -455,6 +505,10 @@ class SwingWebTests(unittest.TestCase):
                     swing_paths=self.swing_paths,
                     clock=lambda: self.now,
                 )
+        self.assertIn(
+            "server cleanup also failed",
+            "\n".join(getattr(captured.exception, "__notes__", ())),
+        )
         self.assertEqual(
             events,
             ["t_start", "swing_start", "swing_stop", "t_stop"],

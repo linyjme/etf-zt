@@ -65,11 +65,97 @@ _EXPECTED_CLIENT_DISCONNECTS = (
     ConnectionAbortedError,
 )
 _REQUEST_SOCKET_TIMEOUT_SECONDS = 2.0
+_RESPONSE_SOCKET_TIMEOUT_SECONDS = 10.0
 _MAX_CURSOR_DIGITS = 19
 
 
 class _RequestBodyTimeoutError(ValueError):
     """Raised when a declared local JSON body does not arrive in time."""
+
+
+class _RequestDeadlineExceeded(TimeoutError):
+    """Raised when request headers or body exceed one absolute deadline."""
+
+
+class _DeadlineReader:
+    """Buffered request reader that cannot be kept alive by trickled bytes."""
+
+    def __init__(
+        self,
+        source: Any,
+        connection: socket.socket,
+        deadline: Callable[[], float | None],
+    ) -> None:
+        self.source = source
+        self.connection = connection
+        self.deadline = deadline
+        self.buffer = bytearray()
+
+    def _remaining(self) -> float | None:
+        deadline = self.deadline()
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            raise _RequestDeadlineExceeded("absolute request deadline exceeded")
+        return remaining
+
+    def _read_once(self, size: int) -> bytes:
+        remaining = self._remaining()
+        if remaining is not None:
+            self.connection.settimeout(remaining)
+        try:
+            reader = getattr(self.source, "read1", self.source.read)
+            return reader(max(1, size))
+        except socket.timeout as error:
+            raise _RequestDeadlineExceeded(
+                "absolute request deadline exceeded",
+            ) from error
+
+    def readline(self, limit: int = -1) -> bytes:
+        bounded = limit is not None and limit >= 0
+        while True:
+            search_end = limit if bounded else len(self.buffer)
+            newline = self.buffer.find(b"\n", 0, search_end)
+            if newline >= 0:
+                return self._consume(newline + 1)
+            if bounded and len(self.buffer) >= limit:
+                return self._consume(limit)
+            read_size = 8192
+            if bounded:
+                read_size = min(read_size, limit - len(self.buffer))
+            chunk = self._read_once(read_size)
+            if not chunk:
+                return self._consume(len(self.buffer))
+            self.buffer.extend(chunk)
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            return b""
+        if size < 0:
+            chunks = [self._consume(len(self.buffer))]
+            while True:
+                chunk = self._read_once(8192)
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+        while len(self.buffer) < size:
+            chunk = self._read_once(min(8192, size - len(self.buffer)))
+            if not chunk:
+                break
+            self.buffer.extend(chunk)
+        return self._consume(min(size, len(self.buffer)))
+
+    def _consume(self, size: int) -> bytes:
+        result = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        return result
+
+    def close(self) -> None:
+        self.source.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.source, name)
 
 
 class MissingWatchMetadataError(Exception):
@@ -1199,6 +1285,8 @@ class MonitorServer(ThreadingHTTPServer):
         super().__init__(address, MonitorRequestHandler)
         self.application = application
         self.swing_application = swing_application
+        self.request_deadline_seconds = _REQUEST_SOCKET_TIMEOUT_SECONDS
+        self.response_socket_timeout_seconds = _RESPONSE_SOCKET_TIMEOUT_SECONDS
 
     def server_close(self) -> None:
         try:
@@ -1216,11 +1304,43 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def setup(self) -> None:
+        self._request_deadline: float | None = None
         super().setup()
-        self.connection.settimeout(_REQUEST_SOCKET_TIMEOUT_SECONDS)
+        self.connection.settimeout(
+            getattr(
+                self.server,
+                "response_socket_timeout_seconds",
+                _RESPONSE_SOCKET_TIMEOUT_SECONDS,
+            ),
+        )
+        self.rfile = _DeadlineReader(
+            self.rfile,
+            self.connection,
+            lambda: self._request_deadline,
+        )
+
+    def send_response(self, code: int, message: str | None = None) -> None:
+        self._request_deadline = None
+        self.connection.settimeout(
+            getattr(
+                self.server,
+                "response_socket_timeout_seconds",
+                _RESPONSE_SOCKET_TIMEOUT_SECONDS,
+            ),
+        )
+        super().send_response(code, message)
 
     def handle_one_request(self) -> None:
         """Handle one request, quieting only an aborted request-line read."""
+        deadline_seconds = float(getattr(
+            self.server,
+            "request_deadline_seconds",
+            _REQUEST_SOCKET_TIMEOUT_SECONDS,
+        ))
+        self._request_deadline = time.monotonic() + deadline_seconds
+        self.requestline = ""
+        self.request_version = ""
+        self.command = ""
         try:
             try:
                 self.raw_requestline = self.rfile.readline(65537)
@@ -1248,6 +1368,15 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             method = getattr(self, method_name)
             method()
             self.wfile.flush()
+        except _RequestDeadlineExceeded as error:
+            self.close_connection = True
+            try:
+                self._json(HTTPStatus.REQUEST_TIMEOUT, {
+                    "error": "request_timeout", "message": str(error),
+                })
+            except (OSError, _RequestDeadlineExceeded):
+                pass
+            return
         except socket.timeout as error:
             self.log_error("Request timed out: %r", error)
             self.close_connection = True
@@ -1437,7 +1566,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("request body size is invalid")
         try:
             raw = self.rfile.read(length)
-        except socket.timeout as error:
+        except (_RequestDeadlineExceeded, socket.timeout) as error:
             raise _RequestBodyTimeoutError(
                 "request body timed out before Content-Length bytes arrived",
             ) from error
@@ -1994,7 +2123,12 @@ def create_server(
     try:
         application.start_refresh()
         swing_application.start_refresh()
-    except BaseException:
-        server.server_close()
+    except BaseException as start_error:
+        try:
+            server.server_close()
+        except BaseException as cleanup_error:
+            start_error.add_note(
+                f"server cleanup also failed: {cleanup_error!r}",
+            )
         raise
     return server
