@@ -71,7 +71,8 @@ class SwingPageContractTests(unittest.TestCase):
             self.assertIn(f'id="{form_id}"', SWING_PAGE)
         self.assertIn("失败后会保留已输入内容", SWING_PAGE)
         self.assertIn("'Content-Type':'application/json'", SWING_PAGE)
-        self.assertIn("'Idempotency-Key':crypto.randomUUID()", SWING_PAGE)
+        self.assertIn("'Idempotency-Key':idempotencyKey", SWING_PAGE)
+        self.assertIn("prepareIntent", SWING_PAGE)
         self.assertNotIn("broker", SWING_PAGE.lower())
         self.assertIn("encodeURIComponent", SWING_PAGE)
 
@@ -153,6 +154,66 @@ console.log(JSON.stringify({noClick:shouldNotifyAlert({alert_id:'b',active:true}
         self.assertEqual(result["escaped"], "&lt;img src=x onerror=1&gt;")
         self.assertTrue(result["alert"])
         self.assertTrue(result["uuid"])
+
+    def test_numeric_parser_never_turns_missing_or_boolean_values_into_zero(self) -> None:
+        result = run_swing_helpers(
+            "console.log(JSON.stringify([null,undefined,'',true,false,'  ',Infinity,'1.25',2].map(value=>finite(value))));",
+        )
+        self.assertEqual(result, [None, None, None, None, None, None, None, 1.25, 2])
+
+    def test_execution_requires_complete_server_health_and_valid_sse_snapshot(self) -> None:
+        result = run_swing_helpers(
+            """
+const state=createPageState();
+state.failureSources.add('snapshot'); state.failureSources.add('sse');
+state.snapshot={health:{intraday:'REALTIME'}}; refreshExecutionPaused(state);
+const afterOpen=eventStreamOpened(state);
+const payload={revision:1,items:[{symbol:'510300',execution_status:'READY_TO_EXECUTE'}],health:{service:'OK',configuration:'OK',daily:'OK',strategy:'OK',portfolio:'OK',alerts:'OK',intraday:'REALTIME'},errors:{}};
+const accepted=acceptSseSnapshot(state,payload,false);
+payload.health.portfolio='UNINITIALIZED'; applySnapshotPayload(state,payload,true); refreshExecutionPaused(state);
+console.log(JSON.stringify({afterOpen,accepted,afterValid:!state.failureSources.size,blocked:state.executionPaused}));
+""",
+        )
+        self.assertEqual(result, {"afterOpen": True, "accepted": True, "afterValid": True, "blocked": True})
+
+    def test_chart_computes_ma_on_179_bars_before_slicing_last_120(self) -> None:
+        result = run_swing_helpers(
+            """
+const bars=Array.from({length:179},(_,index)=>({symbol:'510300',trading_date:`2026-${String(1+Math.floor(index/28)).padStart(2,'0')}-${String(1+index%28).padStart(2,'0')}`,close:index+1,adjusted_close:index+1}));
+const series=chartSeries(bars);
+console.log(JSON.stringify({length:series.points.length,firstMa60:series.points[0].ma60,firstClose:series.points[0].close}));
+""",
+        )
+        self.assertEqual(result["length"], 120)
+        self.assertIsNotNone(result["firstMa60"])
+
+    def test_idempotency_key_is_reused_until_success_or_payload_change(self) -> None:
+        result = run_swing_helpers(
+            """
+let serial=0; const registry=new Map(),factory=()=>`key-${++serial}`;
+const first=prepareIntent(registry,'trade','/api/swing/trades',{shares:100},factory);
+const retry=prepareIntent(registry,'trade','/api/swing/trades',{shares:100},factory);
+const changed=prepareIntent(registry,'trade','/api/swing/trades',{shares:200},factory);
+settleIntentSuccess(registry,'trade',changed.key);
+const afterSuccess=prepareIntent(registry,'trade','/api/swing/trades',{shares:200},factory);
+console.log(JSON.stringify({first:first.key,retry:retry.key,changed:changed.key,afterSuccess:afterSuccess.key}));
+""",
+        )
+        self.assertEqual(result, {"first": "key-1", "retry": "key-1", "changed": "key-2", "afterSuccess": "key-3"})
+
+    def test_initial_positions_use_api_field_names_and_validate_lots(self) -> None:
+        result = run_swing_helpers(
+            """
+const good=buildInitialPositions([{symbol:'510300',enabled:true,shares:'200',average_cost:'4.1',planned_risk_per_share:'0.2'}]);
+let bad='';try{buildInitialPositions([{symbol:'510300',enabled:true,shares:'150',average_cost:'4.1',planned_risk_per_share:'0'}])}catch(error){bad=error.message}
+console.log(JSON.stringify({good,bad}));
+""",
+        )
+        self.assertEqual(result["good"]["510300"], {"shares": 200, "average_cost": 4.1, "planned_risk_per_share": 0.2})
+        self.assertTrue(result["bad"])
+        self.assertIn('id="initial-position-rows"', SWING_PAGE)
+        self.assertIn("initial_positions", SWING_PAGE)
+        self.assertIn("limit=179", SWING_PAGE)
 
 
 if __name__ == "__main__":
