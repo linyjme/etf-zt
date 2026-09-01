@@ -1,12 +1,90 @@
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 
 class RunTestsScriptTests(unittest.TestCase):
+    def test_start_monitor_quotes_each_argument_for_windows_process_launch(self) -> None:
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        self.assertIsNotNone(powershell, "PowerShell is required to test argument quoting")
+        source_script = Path(__file__).resolve().parents[1] / "scripts" / "start-monitor.ps1"
+        expected = [
+            r"C:\path with spaces\quotes.json",
+            "plain",
+            "tab\tvalue",
+            "C:\\trailing slash\\",
+            'quote"inside',
+            "",
+        ]
+
+        with tempfile.TemporaryDirectory(prefix="monitor launch ") as temporary:
+            root = Path(temporary)
+            probe = root / "argv probe.py"
+            output = root / "received arguments.json"
+            harness = root / "quote harness.ps1"
+            probe.write_text(
+                "import json\n"
+                "from pathlib import Path\n"
+                "import sys\n\n"
+                "Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]), encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            harness.write_text(
+                "param($SourceScript, $PythonExecutable, $ProbeScript, $OutputPath)\n"
+                "$tokens = $null\n"
+                "$errors = $null\n"
+                "$ast = [System.Management.Automation.Language.Parser]::ParseFile(\n"
+                "    $SourceScript, [ref]$tokens, [ref]$errors\n"
+                ")\n"
+                "if ($errors.Count -gt 0) { throw $errors[0] }\n"
+                "$functionAst = $ast.Find({\n"
+                "    param($node)\n"
+                "    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and\n"
+                "        $node.Name -eq 'ConvertTo-WindowsCommandLineArgument'\n"
+                "}, $true)\n"
+                "if ($null -eq $functionAst) { throw 'Argument quoting helper not found' }\n"
+                ". ([scriptblock]::Create($functionAst.Extent.Text))\n"
+                "$rawArguments = @(\n"
+                "    $ProbeScript, $OutputPath,\n"
+                "    'C:\\path with spaces\\quotes.json', 'plain', \"tab`tvalue\",\n"
+                "    'C:\\trailing slash\\', 'quote\"inside', ''\n"
+                ")\n"
+                "$quotedArguments = @($rawArguments | ForEach-Object {\n"
+                "    ConvertTo-WindowsCommandLineArgument -Argument ([string]$_)\n"
+                "})\n"
+                "$process = Start-Process -FilePath $PythonExecutable `\n"
+                "    -ArgumentList $quotedArguments -Wait -PassThru -WindowStyle Hidden\n"
+                "exit $process.ExitCode\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    str(Path(powershell).resolve()),
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(harness),
+                    str(source_script),
+                    str(Path(sys.executable).resolve()),
+                    str(probe),
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            diagnostic = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, diagnostic)
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), expected)
+
     def test_start_monitor_uses_one_minute_refresh_interval(self) -> None:
         script = (
             Path(__file__).resolve().parents[1] / "scripts" / "start-monitor.ps1"

@@ -1,4 +1,42 @@
 $ErrorActionPreference = 'Stop'
+
+function ConvertTo-WindowsCommandLineArgument {
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Argument
+    )
+
+    if ($null -eq $Argument) { $Argument = '' }
+    if ($Argument.Length -gt 0 -and $Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    $quoted = '"'
+    $backslashCount = 0
+    foreach ($character in $Argument.ToCharArray()) {
+        if ($character -eq '\') {
+            $backslashCount++
+            continue
+        }
+        if ($character -eq '"') {
+            $quoted += ('\' * (($backslashCount * 2) + 1))
+            $quoted += '"'
+            $backslashCount = 0
+            continue
+        }
+        if ($backslashCount -gt 0) {
+            $quoted += ('\' * $backslashCount)
+            $backslashCount = 0
+        }
+        $quoted += $character
+    }
+    if ($backslashCount -gt 0) {
+        $quoted += ('\' * ($backslashCount * 2))
+    }
+    return $quoted + '"'
+}
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $runtimeRoot = Join-Path $projectRoot 'var\monitor'
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
@@ -55,7 +93,10 @@ $previousPythonPath = $env:PYTHONPATH
 $env:PYTHONPATH = Join-Path $projectRoot 'src'
 try {
     $stderrPath = Join-Path $runtimeRoot 'monitor.err.log'
-    $process = Start-Process -FilePath $pythonCommand -ArgumentList $arguments -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtimeRoot 'monitor.out.log') -RedirectStandardError $stderrPath -PassThru
+    $quotedArguments = @($arguments | ForEach-Object {
+        ConvertTo-WindowsCommandLineArgument -Argument ([string]$_)
+    })
+    $process = Start-Process -FilePath $pythonCommand -ArgumentList $quotedArguments -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtimeRoot 'monitor.out.log') -RedirectStandardError $stderrPath -PassThru
     $process.WaitForExit(750) | Out-Null
     if ($process.HasExited) {
         $detail = if (Test-Path -LiteralPath $stderrPath) { (Get-Content -LiteralPath $stderrPath -Raw).Trim() } else { '' }
