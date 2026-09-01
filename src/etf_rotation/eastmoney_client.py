@@ -172,7 +172,12 @@ def _default_transport(request: Request, timeout: float) -> bytes:
         except OSError:
             last_error = "行情请求失败"
         else:
-            if len(result.stdout) > MAX_RESPONSE_BYTES:
+            if type(result.returncode) is not int or result.returncode != 0:
+                if type(result.returncode) is int:
+                    last_error = f"curl 请求失败 (退出码 {result.returncode})"
+                else:
+                    last_error = "curl 请求失败"
+            elif len(result.stdout) > MAX_RESPONSE_BYTES:
                 last_error = "行情响应超过大小限制"
             elif result.stdout:
                 try:

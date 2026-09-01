@@ -221,6 +221,32 @@ class SharedEastmoneyTransportTests(unittest.TestCase):
         self.assertNotIn("HOSTILE_CURL_PROCESS_SECRET", str(caught.exception))
         self.assertNotIn("HOSTILE_POWERSHELL_SECRET", str(caught.exception))
 
+    def test_curl_nonzero_exit_never_accepts_valid_json_stdout(self) -> None:
+        request = Request("https://fixture.invalid/data")
+        curl_stdout = b'{"rc":0,"partial":true}'
+        fallback = b'{"rc":0,"fallback":true}'
+        completed = SimpleNamespace(
+            stdout=curl_stdout,
+            stderr=b"HOSTILE_CURLE_FILESIZE_SECRET",
+            returncode=63,
+        )
+        with (
+            patch.object(eastmoney_client.shutil, "which", return_value="curl.exe"),
+            patch.object(eastmoney_client.subprocess, "run", return_value=completed) as run,
+            patch.object(eastmoney_client.time, "sleep"),
+            patch.object(
+                eastmoney_client,
+                "_powershell_transport",
+                return_value=fallback,
+            ) as powershell,
+        ):
+            result = eastmoney_client._default_transport(request, 2.0)
+
+        self.assertEqual(result, fallback)
+        self.assertNotEqual(result, curl_stdout)
+        self.assertEqual(run.call_count, 3)
+        powershell.assert_called_once_with(request, 2.0)
+
     def test_powershell_transport_streams_with_encoded_inputs_and_bounds_output(self) -> None:
         request = Request(
             "https://fixture.invalid/HOSTILE_URL_SECRET",
