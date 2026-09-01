@@ -1300,6 +1300,45 @@ class SwingServiceTests(unittest.TestCase):
                     service.snapshot()["revision"], stable_revision,
                 )
 
+    def test_old_retry_uses_entire_ledger_when_clock_fails_after_restart(self) -> None:
+        service = self.make_service()
+        first_trade = TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        )
+        first = service.record_trade(first_trade, "older-buy")
+        service.clock = lambda: datetime(
+            2026, 9, 2, 10, tzinfo=SHANGHAI,
+        )
+        service.record_trade(TradeInput(
+            "510300", "BUY", 100, 101.0, 0.0,
+            datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        ), "later-buy")
+
+        def unavailable_clock() -> datetime:
+            raise RuntimeError("clock unavailable after restart")
+
+        restarted = self.make_service(clock=unavailable_clock)
+        revision_before_repair = restarted.snapshot()["revision"]
+        self.assertEqual(
+            restarted.record_trade(first_trade, "older-buy"), first,
+        )
+        repaired = restarted.snapshot()
+        self.assertEqual(repaired["revision"], revision_before_repair + 1)
+        self.assertEqual(
+            repaired["portfolio"]["as_of_trading_date"], "2026-09-02",
+        )
+        self.assertEqual(
+            repaired["portfolio"]["positions"]["510300"]["shares"], 200,
+        )
+        stable_revision = repaired["revision"]
+        self.assertEqual(
+            restarted.record_trade(first_trade, "older-buy"), first,
+        )
+        self.assertEqual(restarted.snapshot()["revision"], stable_revision)
+
     def test_trade_clock_validation_never_mutates_unpublished_health(self) -> None:
         class ToggleClock:
             failed = False

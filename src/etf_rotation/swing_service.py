@@ -573,8 +573,9 @@ class SwingService:
         with self.producer_lock:
             ledger = self._require_ledger()
             normalized = trade
+            events = ledger.load_events()
             prior = tuple(
-                event for event in ledger.load_events()
+                event for event in events
                 if event.idempotency_key == idempotency_key
             )
             if len(prior) > 1:
@@ -592,7 +593,9 @@ class SwingService:
                 event = ledger.record_trade(
                     normalized, idempotency_key,
                 )
-                repair_now = self._trade_retry_reference_time(event, trade)
+                repair_now = self._trade_retry_reference_time(
+                    events, event, trade,
+                )
                 if self._trade_derivations_are_current(repair_now):
                     self._ensure_current_formal_alerts(repair_now)
                 else:
@@ -627,6 +630,7 @@ class SwingService:
 
     def _trade_retry_reference_time(
         self,
+        events: Sequence[PortfolioEvent],
         event: PortfolioEvent,
         trade: TradeInput,
     ) -> datetime:
@@ -635,6 +639,30 @@ class SwingService:
             trade.executed_at.astimezone(SHANGHAI),
             self._fallback_now(),
         ]
+        for ledger_event in events:
+            candidates.append(ledger_event.recorded_at.astimezone(SHANGHAI))
+            if ledger_event.event_type not in {
+                PortfolioEventType.BUY_CONFIRMED,
+                PortfolioEventType.SELL_CONFIRMED,
+            }:
+                continue
+            raw_executed_at = ledger_event.payload.get("executed_at")
+            if type(raw_executed_at) is not str:
+                raise SwingServiceError(
+                    "authoritative ledger trade time is unavailable",
+                )
+            try:
+                executed_at = datetime.fromisoformat(raw_executed_at)
+                if (
+                    executed_at.tzinfo is None
+                    or executed_at.utcoffset() is None
+                ):
+                    raise ValueError("ledger trade time is timezone-naive")
+                candidates.append(executed_at.astimezone(SHANGHAI))
+            except (TypeError, ValueError, OverflowError) as error:
+                raise SwingServiceError(
+                    "authoritative ledger trade time is invalid",
+                ) from error
         raw_generated = self.published.get("generated_at")
         if type(raw_generated) is str:
             try:
