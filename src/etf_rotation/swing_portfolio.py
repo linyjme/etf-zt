@@ -402,14 +402,7 @@ class PortfolioLedger:
         events: tuple[PortfolioEvent, ...],
     ) -> bool:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (
-            FileNotFoundError, OSError, UnicodeDecodeError, ValueError,
-            RecursionError,
-        ):
-            return False
-        try:
-            existing = _parse_projection(payload)
+            existing = load_projection(path)
         except PortfolioLedgerError:
             return False
         if (
@@ -431,7 +424,7 @@ class PortfolioLedger:
             authoritative = self._replay(
                 events, existing.as_of_trading_date, marks,
             )
-            return _canonical_projection_payload(payload) == (
+            return _canonical_projection_payload(existing.to_dict()) == (
                 _canonical_projection_payload(authoritative.to_dict())
             )
         except PortfolioLedgerError:
@@ -1285,6 +1278,44 @@ def _canonical_projection_payload(value: object) -> bytes:
         ).encode("utf-8")
     except (TypeError, ValueError, OverflowError) as error:
         raise PortfolioLedgerError("projection serialization failed") from error
+
+
+def load_projection(path: Path) -> PortfolioProjection:
+    """Load and strictly validate a persisted portfolio projection."""
+
+    source = _resolve_path(path, "projection_path")
+    try:
+        raw = source.read_text(encoding="utf-8")
+        payload = json.loads(
+            raw,
+            object_pairs_hook=_projection_object,
+            parse_constant=_reject_projection_constant,
+        )
+    except PortfolioLedgerError:
+        raise
+    except (
+        FileNotFoundError, OSError, UnicodeDecodeError, ValueError,
+        OverflowError, RecursionError,
+    ) as error:
+        raise PortfolioLedgerError("projection JSON is invalid") from error
+    return _parse_projection(payload)
+
+
+def _projection_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise PortfolioLedgerError(
+                f"projection JSON contains duplicate field: {key}",
+            )
+        value[key] = item
+    return value
+
+
+def _reject_projection_constant(value: str) -> object:
+    raise PortfolioLedgerError(
+        f"projection JSON contains invalid numeric constant: {value}",
+    )
 
 
 def _parse_projection(value: object) -> PortfolioProjection:

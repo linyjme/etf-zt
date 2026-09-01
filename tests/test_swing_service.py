@@ -1222,6 +1222,67 @@ class SwingServiceTests(unittest.TestCase):
                     service.snapshot()["revision"], stable_revision,
                 )
 
+    def test_idempotent_retry_strictly_repairs_corrupt_projection_json(self) -> None:
+        tracked_paths = (
+            self.paths.trades,
+            self.paths.portfolio_snapshot,
+            self.paths.alerts,
+        )
+        baseline = {
+            path: path.read_bytes() if path.exists() else None
+            for path in tracked_paths
+        }
+        for corruption in ("boolean-schema", "duplicate-key"):
+            with self.subTest(corruption=corruption):
+                for path, content in baseline.items():
+                    if content is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_bytes(content)
+                service = self.make_service()
+                trade = TradeInput(
+                    "510300", "BUY", 100, 100.0, 0.0,
+                    datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+                    planned_risk_per_share=2.0,
+                )
+                first = service.record_trade(trade, "corrupt-projection-buy")
+                valid_text = self.paths.portfolio_snapshot.read_text(
+                    encoding="utf-8",
+                )
+                if corruption == "boolean-schema":
+                    payload = json.loads(valid_text)
+                    payload["schema_version"] = True
+                    corrupt_text = json.dumps(payload, ensure_ascii=False)
+                else:
+                    corrupt_text = '{"schema_version":1,' + valid_text.lstrip()[1:]
+                self.paths.portfolio_snapshot.write_text(
+                    corrupt_text, encoding="utf-8",
+                )
+                revision_before_repair = service.snapshot()["revision"]
+                self.assertEqual(
+                    service.record_trade(
+                        trade, "corrupt-projection-buy",
+                    ),
+                    first,
+                )
+                self.assertEqual(
+                    service.snapshot()["revision"], revision_before_repair + 1,
+                )
+                repaired = json.loads(
+                    self.paths.portfolio_snapshot.read_text(encoding="utf-8"),
+                )
+                self.assertIs(type(repaired["schema_version"]), int)
+                stable_revision = service.snapshot()["revision"]
+                self.assertEqual(
+                    service.record_trade(
+                        trade, "corrupt-projection-buy",
+                    ),
+                    first,
+                )
+                self.assertEqual(
+                    service.snapshot()["revision"], stable_revision,
+                )
+
     def test_trade_clock_validation_never_mutates_unpublished_health(self) -> None:
         class ToggleClock:
             failed = False

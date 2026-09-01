@@ -22,6 +22,7 @@ from etf_rotation.swing_portfolio import (
     PortfolioLedger,
     PortfolioLedgerError,
     TradeInput,
+    load_projection,
 )
 from tests.swing_helpers import metadata_fixture
 
@@ -497,6 +498,23 @@ print(ledger.record_trade(trade, 'subprocess-same-key').event_id, flush=True)
         self.assertEqual(rebuilt.positions["510300"].shares, 1000)
         on_disk = json.loads(projection_path.read_text(encoding="utf-8"))
         self.assertEqual(on_disk["positions"]["510300"]["shares"], 1000)
+
+    def test_strict_projection_loader_rejects_noncanonical_json_values(self) -> None:
+        self.initialize()
+        projection_path = self.root / "portfolio.json"
+        valid = self.ledger.load_or_rebuild_projection(
+            projection_path, self.wednesday.date(), {},
+        ).to_dict()
+        corruptions = (
+            json.dumps({**valid, "schema_version": True}),
+            json.dumps({**valid, "schema_version": 1.0}),
+            '{"schema_version":1,' + json.dumps(valid)[1:],
+        )
+        for raw in corruptions:
+            with self.subTest(raw=raw[:40]):
+                projection_path.write_text(raw, encoding="utf-8")
+                with self.assertRaises(PortfolioLedgerError):
+                    load_projection(projection_path)
 
     def test_newer_projection_with_missing_or_wrong_fields_is_rebuilt(self) -> None:
         self.initialize()

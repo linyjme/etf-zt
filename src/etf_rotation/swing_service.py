@@ -46,6 +46,7 @@ from .swing_portfolio import (
     PortfolioPosition,
     PortfolioProjection,
     TradeInput,
+    load_projection,
 )
 from .swing_strategy import (
     IntradayOverlay,
@@ -708,7 +709,7 @@ class SwingService:
             or self._published_portfolio_view.get("projection")
             != projection_payload
             or self._published_portfolio_view.get("error") != portfolio_error
-            or not self._projection_file_matches(projection_payload)
+            or not self._projection_file_matches(projection)
         ):
             return False
         alert_history, active_alerts = self._alert_snapshot(
@@ -726,16 +727,13 @@ class SwingService:
 
     def _projection_file_matches(
         self,
-        expected: Mapping[str, object] | None,
+        expected: PortfolioProjection | None,
     ) -> bool:
+        if expected is None:
+            return False
         try:
-            actual = json.loads(
-                self.paths.portfolio_snapshot.read_text(encoding="utf-8"),
-            )
-        except (
-            FileNotFoundError, OSError, UnicodeDecodeError, ValueError,
-            OverflowError, RecursionError,
-        ):
+            actual = load_projection(self.paths.portfolio_snapshot)
+        except PortfolioLedgerError:
             return False
         return actual == expected
 
