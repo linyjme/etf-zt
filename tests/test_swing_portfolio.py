@@ -3,10 +3,15 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 import uuid
+from unittest import mock
 
 from etf_rotation.etf_metadata import EtfMetadataStore
 from etf_rotation.swing_portfolio import (
@@ -27,11 +32,11 @@ class SwingPortfolioTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        metadata_path = self.root / "metadata.json"
-        metadata_path.write_text(
+        self.metadata_path = self.root / "metadata.json"
+        self.metadata_path.write_text(
             json.dumps(metadata_fixture(), ensure_ascii=False), encoding="utf-8",
         )
-        self.metadata = EtfMetadataStore(metadata_path).load()
+        self.metadata = EtfMetadataStore(self.metadata_path).load()
         self.path = self.root / "trades.jsonl"
         self.tuesday = datetime(2026, 9, 1, 10, 0, tzinfo=SHANGHAI)
         self.wednesday = datetime(2026, 9, 2, 10, 0, tzinfo=SHANGHAI)
@@ -67,6 +72,47 @@ class SwingPortfolioTests(unittest.TestCase):
         self.assertAlmostEqual(rebuilt.cash, 97_790.0)
         self.assertAlmostEqual(rebuilt.realized_pnl, 92.5)
         self.assertAlmostEqual(rebuilt.equity, 100_190.0)
+
+    def test_t_plus_one_uses_authoritative_trading_days_not_calendar_days(self) -> None:
+        friday = datetime(2026, 9, 4, 10, 0, tzinfo=SHANGHAI)
+        saturday = friday + timedelta(days=1)
+        monday = friday + timedelta(days=3)
+        tuesday = friday + timedelta(days=4)
+        ledger = PortfolioLedger(
+            self.path,
+            self.metadata,
+            closed_dates={monday.date()},
+            clock=lambda: tuesday,
+        )
+        ledger.initialize("波段账户", 100_000.0, "init-calendar")
+        ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.0, 0.0, friday), "friday-buy",
+        )
+        self.assertEqual(
+            ledger.project(saturday.date(), {}).positions["510300"].sellable_shares,
+            0,
+        )
+        self.assertEqual(
+            ledger.project(monday.date(), {}).positions["510300"].sellable_shares,
+            0,
+        )
+        self.assertEqual(
+            ledger.project(tuesday.date(), {}).positions["510300"].sellable_shares,
+            100,
+        )
+        for index, closed_time in enumerate((saturday, monday)):
+            with self.subTest(closed_time=closed_time):
+                with self.assertRaisesRegex(PortfolioLedgerError, "trading day"):
+                    ledger.record_trade(
+                        TradeInput(
+                            "510300", "SELL", 100, 4.1, 0.0, closed_time,
+                        ),
+                        f"closed-sell-{index}",
+                    )
+        ledger.record_trade(
+            TradeInput("510300", "SELL", 100, 4.1, 0.0, tuesday),
+            "tuesday-sell",
+        )
 
     def test_weighted_average_cost_includes_buy_fees(self) -> None:
         self.initialize()
@@ -206,6 +252,51 @@ class SwingPortfolioTests(unittest.TestCase):
             800,
         )
 
+    def test_subprocess_duplicate_idempotency_uses_cross_process_lock(self) -> None:
+        self.initialize()
+        start_flag = self.root / "subprocess-start.flag"
+        project_root = Path(__file__).resolve().parents[1]
+        child = """
+import sys, time
+from datetime import datetime
+from pathlib import Path
+from etf_rotation.etf_metadata import EtfMetadataStore
+from etf_rotation.swing_portfolio import PortfolioLedger, TradeInput
+path, metadata_path, start = map(Path, sys.argv[1:])
+while not start.exists():
+    time.sleep(0.001)
+ledger = PortfolioLedger(path, EtfMetadataStore(metadata_path).load())
+trade = TradeInput('510300', 'BUY', 100, 4.0, 0.0, datetime.fromisoformat('2026-09-01T10:00:00+08:00'))
+print(ledger.record_trade(trade, 'subprocess-same-key').event_id, flush=True)
+"""
+        environment = dict(os.environ)
+        environment["PYTHONPATH"] = str(project_root / "src")
+        processes = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    child,
+                    str(self.path),
+                    str(self.metadata_path),
+                    str(start_flag),
+                ],
+                cwd=project_root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(4)
+        ]
+        start_flag.write_text("go", encoding="ascii")
+        outputs = [process.communicate(timeout=15) for process in processes]
+        for process, (_, stderr) in zip(processes, outputs, strict=True):
+            self.assertEqual(process.returncode, 0, stderr)
+        event_ids = {stdout.strip() for stdout, _ in outputs}
+        self.assertEqual(len(event_ids), 1)
+        self.assertEqual(len(self.ledger.load_events()), 2)
+
     def test_event_ids_are_canonical_lowercase_uuid4_and_not_idempotency_keys(self) -> None:
         event = self.ledger.initialize(
             "波段账户", cash=100_000.0, idempotency_key="CALLER-Key/opaque",
@@ -214,6 +305,23 @@ class SwingPortfolioTests(unittest.TestCase):
         self.assertEqual(parsed.version, 4)
         self.assertEqual(str(parsed), event.event_id)
         self.assertNotEqual(event.event_id, event.idempotency_key)
+
+    def test_event_payload_is_recursively_snapshotted_frozen_and_deep_copied(self) -> None:
+        event = self.ledger.initialize(
+            "波段账户",
+            1000.0,
+            "deep-payload",
+            initial_positions={
+                "510300": {"shares": 100, "average_cost": 4.0},
+            },
+        )
+        exported = event.to_dict()
+        exported["payload"]["initial_positions"]["510300"]["shares"] = 999
+        self.assertEqual(
+            event.payload["initial_positions"]["510300"]["shares"], 100,
+        )
+        with self.assertRaises(TypeError):
+            event.payload["initial_positions"]["510300"]["shares"] = 999
 
     def test_initialize_retry_is_exact_and_changed_payload_conflicts(self) -> None:
         first = self.ledger.initialize("波段账户", 100_000.0, "init-exact")
@@ -308,6 +416,102 @@ class SwingPortfolioTests(unittest.TestCase):
         self.assertEqual(rebuilt.positions["510300"].shares, 1000)
         on_disk = json.loads(projection_path.read_text(encoding="utf-8"))
         self.assertEqual(on_disk["positions"]["510300"]["shares"], 1000)
+
+    def test_projection_path_must_not_alias_authoritative_event_log(self) -> None:
+        self.initialize()
+        with self.assertRaisesRegex(PortfolioLedgerError, "alias"):
+            self.ledger.load_or_rebuild_projection(
+                self.path, self.wednesday.date(), {},
+            )
+        hardlink = self.root / "portfolio-hardlink.json"
+        os.link(self.path, hardlink)
+        with self.assertRaisesRegex(PortfolioLedgerError, "alias"):
+            self.ledger.load_or_rebuild_projection(
+                hardlink, self.wednesday.date(), {},
+            )
+        symlink = self.root / "portfolio-symlink.json"
+        try:
+            symlink.symlink_to(self.path)
+        except OSError:
+            pass
+        else:
+            with self.assertRaisesRegex(PortfolioLedgerError, "alias"):
+                self.ledger.load_or_rebuild_projection(
+                    symlink, self.wednesday.date(), {},
+                )
+
+    def test_projection_rebuild_holds_event_snapshot_until_atomic_write(self) -> None:
+        self.initialize()
+        projection_path = self.root / "portfolio.json"
+        old_writer_entered = threading.Event()
+        allow_old_writer = threading.Event()
+        writer_lock_attempted = threading.Event()
+        writer_appended = threading.Event()
+        module = __import__(
+            "etf_rotation.swing_portfolio", fromlist=["_atomic_replace_json"],
+        )
+        original_atomic_write = module._atomic_replace_json
+        original_lock_enter = module._SiblingFileLock.__enter__
+        event_lock_name = f".{self.path.name}.lock"
+
+        def tracking_lock_enter(lock: object) -> object:
+            if (
+                lock.path.name == event_lock_name
+                and not lock.shared
+                and old_writer_entered.is_set()
+            ):
+                writer_lock_attempted.set()
+            return original_lock_enter(lock)
+
+        def blocking_atomic_write(path: Path, payload: object) -> None:
+            if not old_writer_entered.is_set():
+                old_writer_entered.set()
+                if not allow_old_writer.wait(15):
+                    raise AssertionError("timed out waiting to release old writer")
+            original_atomic_write(path, payload)
+
+        def rebuild_old() -> None:
+            self.ledger.load_or_rebuild_projection(
+                projection_path, self.tuesday.date(), {},
+            )
+
+        def append_and_rebuild_new() -> None:
+            self.ledger.record_trade(
+                TradeInput("510300", "BUY", 100, 4.0, 0.0, self.tuesday),
+                "concurrent-new-trade",
+            )
+            writer_appended.set()
+            self.ledger.load_or_rebuild_projection(
+                projection_path, self.tuesday.date(), {},
+            )
+
+        with (
+            mock.patch(
+                "etf_rotation.swing_portfolio._atomic_replace_json",
+                side_effect=blocking_atomic_write,
+            ),
+            mock.patch.object(
+                module._SiblingFileLock, "__enter__", tracking_lock_enter,
+            ),
+        ):
+            old = threading.Thread(target=rebuild_old)
+            new = threading.Thread(target=append_and_rebuild_new)
+            old.start()
+            try:
+                self.assertTrue(old_writer_entered.wait(5))
+                new.start()
+                self.assertTrue(writer_lock_attempted.wait(5))
+                self.assertFalse(writer_appended.is_set())
+            finally:
+                allow_old_writer.set()
+                old.join(5)
+                if new.ident is not None:
+                    new.join(5)
+        self.assertFalse(old.is_alive())
+        self.assertFalse(new.is_alive())
+        self.assertTrue(writer_appended.is_set())
+        on_disk = json.loads(projection_path.read_text(encoding="utf-8"))
+        self.assertEqual(on_disk["positions"]["510300"]["shares"], 100)
 
     def test_corrupt_event_log_is_never_silently_recovered(self) -> None:
         self.path.write_text("{broken\n", encoding="utf-8")
@@ -445,6 +649,15 @@ class SwingPortfolioTests(unittest.TestCase):
         projected = self.ledger.project(self.tuesday.date(), {"510300": 4.60})
         self.assertIn("RISK_LIMIT_EXCEEDED", projected.warnings)
         self.assertAlmostEqual(projected.planned_risk, 3000.0)
+
+    def test_projection_rejects_decimal_results_not_representable_as_float(self) -> None:
+        self.initialize()
+        self.ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.0, 0.0, self.tuesday),
+            "finite-buy",
+        )
+        with self.assertRaisesRegex(PortfolioLedgerError, "finite float"):
+            self.ledger.project(self.tuesday.date(), {"510300": 1e308})
 
     def test_default_trade_risk_accumulates_into_portfolio_warning(self) -> None:
         self.ledger.initialize(
