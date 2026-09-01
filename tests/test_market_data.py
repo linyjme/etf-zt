@@ -19,6 +19,7 @@ from etf_rotation.market_data import (
     MinuteHistoryStore,
     finalized_points,
     load_closed_dates,
+    market_session_state,
 )
 from etf_rotation.quote_collector import SOURCE_NAME, Trends2QuoteCollector
 from etf_rotation.t_monitor import JsonQuoteAdapter, MarketDataError, Quote, QuotePoint, WatchItem
@@ -662,6 +663,40 @@ class FinalizedPointTests(unittest.TestCase):
             finalized_points((point("09:30"),), datetime.fromisoformat("2026-08-28T09:32:00"))
         with self.assertRaisesRegex(MarketDataError, "分钟时间.*时区"):
             finalized_points((point("09:29"), naive_point), aware_observed)
+
+
+class MarketSessionStateTests(unittest.TestCase):
+    def test_trading_day_boundaries_control_collection(self) -> None:
+        expected = {
+            "2026-08-28T09:29:59+08:00": ("PRE_OPEN", "CLOSED", False, False),
+            "2026-08-28T09:30:00+08:00": ("MORNING", "REALTIME", True, False),
+            "2026-08-28T11:30:00+08:00": ("MORNING", "REALTIME", True, False),
+            "2026-08-28T11:30:01+08:00": ("LUNCH_BREAK", "LUNCH_BREAK", False, True),
+            "2026-08-28T13:00:00+08:00": ("AFTERNOON", "REALTIME", True, False),
+            "2026-08-28T15:00:00+08:00": ("AFTERNOON", "REALTIME", True, False),
+            "2026-08-28T15:00:01+08:00": ("CLOSED", "CLOSED", False, True),
+        }
+
+        for value, wanted in expected.items():
+            with self.subTest(now=value):
+                state = market_session_state(datetime.fromisoformat(value))
+                self.assertEqual(
+                    (state.phase, state.health_status, state.active, state.catch_up_allowed),
+                    wanted,
+                )
+
+    def test_weekend_and_calendar_closure_never_collect(self) -> None:
+        closed_dates = {date(2026, 10, 1)}
+
+        for value in ("2026-08-29T10:00:00+08:00", "2026-10-01T10:00:00+08:00"):
+            with self.subTest(now=value):
+                state = market_session_state(
+                    datetime.fromisoformat(value), closed_dates=closed_dates,
+                )
+                self.assertEqual(
+                    (state.phase, state.health_status, state.active, state.catch_up_allowed),
+                    ("CLOSED", "CLOSED", False, False),
+                )
 
 
 class MarketHealthTests(unittest.TestCase):

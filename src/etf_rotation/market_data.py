@@ -46,6 +46,33 @@ class MarketHealth:
     reason: str
 
 
+@dataclass(frozen=True)
+class MarketSessionState:
+    phase: str
+    health_status: str
+    active: bool
+    catch_up_allowed: bool
+
+
+def market_session_state(
+    now: datetime,
+    closed_dates: set[date] | None = None,
+) -> MarketSessionState:
+    local = _aware_time(now, "当前时间").astimezone(SHANGHAI)
+    local_time = local.time().replace(tzinfo=None)
+    if local.weekday() >= 5 or local.date() in frozenset(closed_dates or ()):
+        return MarketSessionState("CLOSED", "CLOSED", False, False)
+    if local_time < _MORNING_START:
+        return MarketSessionState("PRE_OPEN", "CLOSED", False, False)
+    if local_time <= _MORNING_END:
+        return MarketSessionState("MORNING", "REALTIME", True, False)
+    if local_time < _AFTERNOON_START:
+        return MarketSessionState("LUNCH_BREAK", "LUNCH_BREAK", False, True)
+    if local_time <= _AFTERNOON_END:
+        return MarketSessionState("AFTERNOON", "REALTIME", True, False)
+    return MarketSessionState("CLOSED", "CLOSED", False, True)
+
+
 def finalized_points(
     points: Sequence[QuotePoint], observed_at: datetime,
 ) -> tuple[QuotePoint, ...]:
@@ -69,15 +96,10 @@ class MarketHealthClassifier:
         error: str | None,
     ) -> MarketHealth:
         local = _aware_time(now, "当前时间").astimezone(SHANGHAI)
-        local_time = local.time().replace(tzinfo=None)
-        if (
-            local.weekday() >= 5
-            or local.date() in self.closed_dates
-            or local_time < _MORNING_START
-            or local_time > _AFTERNOON_END
-        ):
+        session = market_session_state(local, closed_dates=set(self.closed_dates))
+        if session.health_status == "CLOSED":
             return MarketHealth("CLOSED", None, "非连续交易时段")
-        if _MORNING_END < local_time < _AFTERNOON_START:
+        if session.health_status == "LUNCH_BREAK":
             return MarketHealth("LUNCH_BREAK", None, "午间休市")
         if error is not None:
             return MarketHealth("OUTAGE", None, error or "行情采集失败")
