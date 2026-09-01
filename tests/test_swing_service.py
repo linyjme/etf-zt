@@ -17,6 +17,7 @@ from etf_rotation.swing_config import SwingWatchItem
 from etf_rotation.swing_data import DailyBar, DailyHistoryStore
 from etf_rotation.swing_portfolio import PortfolioLedger, TradeInput
 from etf_rotation.swing_service import SwingPaths, SwingService
+from etf_rotation.swing_strategy import evaluate_swing as real_evaluate_swing
 
 from tests.swing_helpers import (
     metadata_fixture,
@@ -123,10 +124,10 @@ class SwingServiceTests(unittest.TestCase):
                 intraday_provider
                 if intraday_provider is not None
                 else lambda: {
-                    "generated_at": "2026-09-01T10:00:00+08:00",
+                    "generated_at": "2026-09-01T14:00:00+08:00",
                     "items": [{
                         "symbol": "510300", "price": 106.0,
-                        "timestamp": "2026-09-01T10:00:00+08:00",
+                        "timestamp": "2026-09-01T13:59:30+08:00",
                         "health_status": "REALTIME",
                     }],
                 }
@@ -236,6 +237,11 @@ class SwingServiceTests(unittest.TestCase):
         self.assertEqual(snapshot["health"]["daily"], "COLLECTION_FAILED")
 
         service.clock = lambda: datetime(2026, 9, 2, 10, 0, tzinfo=SHANGHAI)
+        service.intraday_provider = lambda: {"items": [{
+            "symbol": "510300", "price": 106.0,
+            "timestamp": "2026-09-02T09:59:30+08:00",
+            "health_status": "REALTIME",
+        }]}
         realtime = service.refresh_intraday()["items"][0]
         self.assertEqual(realtime["formal_state"], formal)
         self.assertEqual(realtime["execution_status"], "PAUSED_DAILY_DATA")
@@ -376,6 +382,119 @@ class SwingServiceTests(unittest.TestCase):
         self.assertIsNone(item["intraday_overlay"])
         self.assertEqual(item["execution_status"], "PAUSED_MARKET_NOT_REALTIME")
 
+    def test_realtime_quote_requires_current_fresh_continuous_session(self) -> None:
+        cases = (
+            (
+                "yesterday", datetime(2026, 9, 1, 10, 0, tzinfo=SHANGHAI),
+                "2026-08-31T10:00:00+08:00",
+            ),
+            (
+                "weekend", datetime(2026, 9, 5, 10, 0, tzinfo=SHANGHAI),
+                "2026-09-05T10:00:00+08:00",
+            ),
+            (
+                "lunch", datetime(2026, 9, 1, 12, 0, tzinfo=SHANGHAI),
+                "2026-09-01T11:59:30+08:00",
+            ),
+            (
+                "stale", datetime(2026, 9, 1, 10, 0, tzinfo=SHANGHAI),
+                "2026-09-01T09:58:00+08:00",
+            ),
+            (
+                "future", datetime(2026, 9, 1, 10, 0, tzinfo=SHANGHAI),
+                "2026-09-01T10:01:00+08:00",
+            ),
+        )
+        for label, now, timestamp in cases:
+            with self.subTest(label=label):
+                service = self.make_service(
+                    clock=lambda now=now: now,
+                    intraday_provider=lambda timestamp=timestamp: {
+                        "items": [{
+                            "symbol": "510300", "price": 106.0,
+                            "timestamp": timestamp,
+                            "health_status": "REALTIME",
+                        }],
+                    },
+                )
+                snapshot = service.refresh_intraday()
+                item = snapshot["items"][0]
+                self.assertEqual(snapshot["health"]["intraday"], "UNAVAILABLE")
+                self.assertIsNone(item["intraday_overlay"])
+                self.assertEqual(
+                    item["execution_status"], "PAUSED_MARKET_NOT_REALTIME",
+                )
+                self.assertFalse(any(
+                    alert["scope"] == "INTRADAY"
+                    for alert in snapshot["active_alerts"]
+                ))
+
+    def test_hostile_intraday_fields_withdraw_previous_overlay(self) -> None:
+        class HostileStatus(str):
+            def __eq__(self, other: object) -> bool:
+                raise RuntimeError("hostile equality")
+
+        class HostileItem(dict[str, object]):
+            def get(self, key: str, default: object = None) -> object:
+                if key == "price":
+                    raise RuntimeError("hostile item")
+                return super().get(key, default)
+
+        service = self.make_service()
+        self.assertTrue(service.refresh_intraday()["active_alerts"])
+        service.intraday_provider = lambda: {"items": [{
+            "symbol": "510300", "price": 106.0,
+            "timestamp": "2026-09-01T13:59:30+08:00",
+            "health_status": HostileStatus("REALTIME"),
+        }]}
+        hostile_status = service.refresh_intraday()
+        self.assertEqual(hostile_status["health"]["intraday"], "UNAVAILABLE")
+        self.assertFalse(any(
+            item["scope"] == "INTRADAY"
+            for item in hostile_status["active_alerts"]
+        ))
+
+        service.intraday_provider = lambda: {"items": [HostileItem({
+            "symbol": "510300", "price": 106.0,
+            "timestamp": "2026-09-01T13:59:30+08:00",
+            "health_status": "REALTIME",
+        })]}
+        hostile_item = service.refresh_intraday()
+        self.assertEqual(hostile_item["health"]["intraday"], "UNAVAILABLE")
+        self.assertIsNone(hostile_item["items"][0]["intraday_overlay"])
+
+    def test_intraday_evaluate_and_sync_exceptions_withdraw_overlay(self) -> None:
+        for target in (
+            "etf_rotation.swing_service.evaluate_intraday_overlay",
+            "service-sync",
+        ):
+            with self.subTest(target=target):
+                service = self.make_service()
+                self.assertTrue(any(
+                    item["scope"] == "INTRADAY"
+                    for item in service.refresh_intraday()["active_alerts"]
+                ))
+                context = (
+                    patch(target, side_effect=RuntimeError("intraday failed"))
+                    if target != "service-sync"
+                    else patch.object(
+                        service, "_sync_overlay_alerts",
+                        side_effect=RuntimeError("sync failed"),
+                    )
+                )
+                with context:
+                    withdrawn = service.refresh_intraday()
+                self.assertEqual(
+                    withdrawn["health"]["intraday"], "UNAVAILABLE",
+                )
+                self.assertIsNone(
+                    withdrawn["items"][0]["intraday_overlay"],
+                )
+                self.assertFalse(any(
+                    item["scope"] == "INTRADAY"
+                    for item in withdrawn["active_alerts"]
+                ))
+
     def test_refresh_is_single_producer_under_concurrency(self) -> None:
         collector = StaticDailyCollector(self.final_bars, delay=0.03)
         service = self.make_service(collector=collector)
@@ -384,6 +503,117 @@ class SwingServiceTests(unittest.TestCase):
             results = tuple(pool.map(lambda _index: service.refresh_once(now), range(6)))
         self.assertEqual(collector.calls, 1)
         self.assertEqual(results.count(True), 1)
+
+    def test_all_getters_read_one_published_revision_during_recompute(self) -> None:
+        service = self.make_service()
+        before = {
+            "snapshot": service.snapshot(),
+            "portfolio": service.portfolio(),
+            "alerts": service.alerts(include_retracted=True),
+            "watchlist": service.watchlist(),
+        }
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_evaluate(*args: object, **kwargs: object) -> object:
+            entered.set()
+            release.wait(2.0)
+            return real_evaluate_swing(*args, **kwargs)
+
+        errors: list[BaseException] = []
+        with patch(
+            "etf_rotation.swing_service.evaluate_swing",
+            side_effect=blocking_evaluate,
+        ):
+            thread = threading.Thread(target=lambda: self._capture_error(
+                errors,
+                lambda: service.record_trade(TradeInput(
+                    "510300", "BUY", 100, 100.0, 0.0,
+                    datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+                    planned_risk_per_share=2.0,
+                ), "blocked-read-buy"),
+            ))
+            thread.start()
+            self.assertTrue(entered.wait(1.0))
+            during = {
+                "snapshot": service.snapshot(),
+                "portfolio": service.portfolio(),
+                "alerts": service.alerts(include_retracted=True),
+                "watchlist": service.watchlist(),
+            }
+            self.assertEqual(during, before)
+            release.set()
+            thread.join(2.0)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        after = service.snapshot()
+        self.assertGreater(after["revision"], before["snapshot"]["revision"])
+        for getter in (
+            service.portfolio(), service.alerts(include_retracted=True),
+            service.watchlist(),
+        ):
+            self.assertEqual(getter["revision"], after["revision"])
+        self.assertEqual(
+            service.portfolio()["projection"], after["portfolio"],
+        )
+
+    @staticmethod
+    def _capture_error(
+        errors: list[BaseException], action: object,
+    ) -> None:
+        try:
+            action()  # type: ignore[operator]
+        except BaseException as error:
+            errors.append(error)
+
+    def test_clock_failure_is_published_and_later_success_clears_it(self) -> None:
+        class FlakyClock:
+            failed = True
+
+            def __call__(self) -> datetime:
+                if self.failed:
+                    raise RuntimeError("clock unavailable")
+                return datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI)
+
+        clock = FlakyClock()
+        service = self.make_service(clock=clock)
+        failed = service.snapshot()
+        self.assertEqual(failed["health"]["service"], "CLOCK_FAILED")
+        self.assertIn("service", failed["errors"])
+        self.assertFalse(
+            failed["health"]["service"] == "OK"
+            and "service" in failed["errors"],
+        )
+
+        clock.failed = False
+        recovered = service.refresh_intraday()
+        self.assertEqual(recovered["health"]["service"], "OK")
+        self.assertNotIn("service", recovered["errors"])
+
+        clock.failed = True
+        intraday_clock_failure = service.refresh_intraday()
+        self.assertEqual(
+            intraday_clock_failure["health"]["service"], "CLOCK_FAILED",
+        )
+        self.assertIn("service", intraday_clock_failure["errors"])
+
+        clock.failed = False
+        recovered_intraday = service.refresh_intraday()
+        self.assertEqual(recovered_intraday["health"]["service"], "OK")
+        self.assertNotIn("service", recovered_intraday["errors"])
+
+        clock.failed = True
+        self.assertFalse(service.refresh_once())
+        failed_again = service.snapshot()
+        self.assertEqual(failed_again["health"]["service"], "CLOCK_FAILED")
+        self.assertIn("service", failed_again["errors"])
+        failed_revision = failed_again["revision"]
+        clock.failed = False
+        self.assertFalse(service.refresh_once())
+        recovered_again = service.snapshot()
+        self.assertEqual(recovered_again["health"]["service"], "OK")
+        self.assertNotIn("service", recovered_again["errors"])
+        self.assertEqual(recovered_again["revision"], failed_revision + 1)
 
     def test_snapshot_and_cursor_payloads_are_deep_copies(self) -> None:
         service = self.make_service()
@@ -699,6 +929,25 @@ class SwingServiceTests(unittest.TestCase):
             "510300", "SELL", 100, 101.0, 0.0,
             datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
         ), "ordinary-after-old-overlay-sell")
+        self.assertNotIn("exit_reason", event["payload"])
+
+    def test_current_stop_does_not_reclassify_a_historical_sell(self) -> None:
+        service = self.make_service()
+        service.record_trade(TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        ), "historical-stop-buy")
+        service.clock = lambda: datetime(2026, 9, 3, 10, tzinfo=SHANGHAI)
+        with service.publish_condition:
+            item = service.published["items"][0]
+            item["intraday_overlay"] = "PREDEFINED_STOP_TOUCHED"
+            item["intraday_health_status"] = "REALTIME"
+            item["current_price_time"] = "2026-09-03T09:59:30+08:00"
+        event = service.record_trade(TradeInput(
+            "510300", "SELL", 100, 99.0, 0.0,
+            datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+        ), "historical-stop-sell")
         self.assertNotIn("exit_reason", event["payload"])
 
     def test_current_healthy_formal_stop_can_classify_a_full_exit(self) -> None:
