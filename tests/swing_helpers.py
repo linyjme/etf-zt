@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Sequence
 
 
@@ -74,3 +74,44 @@ def completed_daily_bars(
             })
         timestamp += timedelta(days=1)
     return tuple(bars)
+
+
+def daily_bar_mapping(
+    *,
+    symbol: str = "510300",
+    trading_date: date | str = "2026-08-28",
+    observed_at: str = "2026-08-28T15:10:00+08:00",
+    previous_close: float = 10.0,
+    open_price: float = 10.0,
+    high: float = 10.1,
+    low: float = 9.9,
+    close: float = 10.05,
+    volume: float = 1_000.0,
+    amount: float = 1_000_000.0,
+    adjustment_scale: float = 1.1,
+) -> dict[str, object]:
+    """Return one exact schema-v1 completed daily-bar mapping."""
+    date_text = (
+        trading_date.isoformat()
+        if isinstance(trading_date, date)
+        else trading_date
+    )
+    return {
+        "schema_version": 1,
+        "symbol": symbol,
+        "trading_date": date_text,
+        "observed_at": observed_at,
+        "source": "TEST_DAILY",
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "close": close,
+        "previous_close": previous_close,
+        "volume": volume,
+        "amount": amount,
+        "adjusted_open": open_price * adjustment_scale,
+        "adjusted_high": high * adjustment_scale,
+        "adjusted_low": low * adjustment_scale,
+        "adjusted_close": close * adjustment_scale,
+        "is_final": True,
+    }
