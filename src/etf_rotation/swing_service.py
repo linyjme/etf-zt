@@ -41,6 +41,7 @@ from .swing_portfolio import (
     InitialPositionInput,
     PortfolioLedger,
     PortfolioLedgerError,
+    PortfolioEvent,
     PortfolioEventType,
     PortfolioPosition,
     PortfolioProjection,
@@ -587,9 +588,15 @@ class SwingService:
                     and existing.payload.get("exit_reason") == "STOP_EXIT"
                 ):
                     normalized = replace(trade, exit_reason="STOP_EXIT")
-                return ledger.record_trade(
+                event = ledger.record_trade(
                     normalized, idempotency_key,
-                ).to_dict()
+                )
+                repair_now = self._trade_retry_reference_time(event, trade)
+                if self._trade_derivations_are_current(repair_now):
+                    self._ensure_current_formal_alerts(repair_now)
+                else:
+                    self._rebuild_after_portfolio_mutation(repair_now)
+                return event.to_dict()
 
             inference_now = self._trusted_trade_now()
             self._validate_trade_execution_time(trade, inference_now)
@@ -613,13 +620,124 @@ class SwingService:
 
     def _trusted_trade_now(self) -> datetime:
         try:
-            value = self._local_time(self.clock())
+            return self._local_time(self.clock())
         except Exception as error:
-            self._health["service"] = "CLOCK_FAILED"
-            self._errors["service"] = self._safe_error(error)
             raise SwingServiceError("trusted clock is unavailable") from error
-        self._mark_clock_success()
-        return value
+
+    def _trade_retry_reference_time(
+        self,
+        event: PortfolioEvent,
+        trade: TradeInput,
+    ) -> datetime:
+        candidates = [
+            event.recorded_at.astimezone(SHANGHAI),
+            trade.executed_at.astimezone(SHANGHAI),
+            self._fallback_now(),
+        ]
+        raw_generated = self.published.get("generated_at")
+        if type(raw_generated) is str:
+            try:
+                generated = datetime.fromisoformat(raw_generated)
+                if (
+                    generated.tzinfo is not None
+                    and generated.utcoffset() is not None
+                ):
+                    candidates.append(generated.astimezone(SHANGHAI))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        try:
+            payload = json.loads(
+                self.paths.portfolio_snapshot.read_text(encoding="utf-8"),
+            )
+            raw_as_of = payload.get("as_of_trading_date")
+            if type(raw_as_of) is str:
+                as_of = date.fromisoformat(raw_as_of)
+                if as_of > max(candidate.date() for candidate in candidates):
+                    candidates.append(datetime.combine(
+                        as_of, time.min, SHANGHAI,
+                    ))
+        except (
+            FileNotFoundError, OSError, UnicodeDecodeError, ValueError,
+            OverflowError, AttributeError,
+        ):
+            pass
+        return max(candidates)
+
+    def _trade_derivations_are_current(self, now: datetime) -> bool:
+        projection, portfolio_status, portfolio_error = (
+            self._calculate_portfolio_projection(
+                self._history, now, persist=False,
+            )
+        )
+        formal = self._calculate_formal(
+            self._history,
+            projection,
+            portfolio_status,
+            self._health["daily"],
+            now,
+        )
+        projection_payload = (
+            projection.to_dict() if projection is not None else None
+        )
+        expected_formal = {
+            symbol: decision.to_dict() for symbol, decision in formal.items()
+        }
+        published_items = self.published.get("items")
+        if not isinstance(published_items, list):
+            return False
+        actual_formal = {
+            item.get("symbol"): item.get("formal_decision")
+            for item in published_items if isinstance(item, Mapping)
+        }
+        published_health = self.published.get("health")
+        published_errors = self.published.get("errors")
+        if not isinstance(published_health, Mapping):
+            return False
+        if not isinstance(published_errors, Mapping):
+            return False
+        if (
+            self._portfolio_projection != projection
+            or self._formal != formal
+            or self._health.get("portfolio") != portfolio_status
+            or self._errors.get("portfolio") != portfolio_error
+            or published_health != self._health
+            or published_errors != self._errors
+            or self.published.get("portfolio") != projection_payload
+            or actual_formal != expected_formal
+            or self._published_portfolio_view.get("status") != portfolio_status
+            or self._published_portfolio_view.get("projection")
+            != projection_payload
+            or self._published_portfolio_view.get("error") != portfolio_error
+            or not self._projection_file_matches(projection_payload)
+        ):
+            return False
+        alert_history, active_alerts = self._alert_snapshot(
+            now, include_retracted=True,
+        )
+        alert_current = [
+            item for item in alert_history if not item.get("retracted")
+        ]
+        return bool(
+            self.published.get("active_alerts") == active_alerts
+            and self.published.get("alerts") == active_alerts
+            and self._published_alerts_current.get("items") == alert_current
+            and self._published_alerts_history.get("items") == alert_history
+        )
+
+    def _projection_file_matches(
+        self,
+        expected: Mapping[str, object] | None,
+    ) -> bool:
+        try:
+            actual = json.loads(
+                self.paths.portfolio_snapshot.read_text(encoding="utf-8"),
+            )
+        except (
+            FileNotFoundError, OSError, UnicodeDecodeError, ValueError,
+            OverflowError, RecursionError,
+        ):
+            return False
+        return actual == expected
 
     @staticmethod
     def _validate_trade_execution_time(

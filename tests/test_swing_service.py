@@ -1139,6 +1139,126 @@ class SwingServiceTests(unittest.TestCase):
             self.paths.portfolio_snapshot.read_bytes(), accepted_portfolio,
         )
 
+    def test_idempotent_retry_repairs_failed_trade_derivations_once(self) -> None:
+        tracked_paths = (
+            self.paths.trades,
+            self.paths.portfolio_snapshot,
+            self.paths.alerts,
+        )
+        baseline = {
+            path: path.read_bytes() if path.exists() else None
+            for path in tracked_paths
+        }
+
+        def restore() -> None:
+            for path, content in baseline.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(content)
+
+        for failure_point in ("evaluate", "build", "publish"):
+            with self.subTest(failure_point=failure_point):
+                restore()
+                service = self.make_service()
+                trade = TradeInput(
+                    "510300", "BUY", 100, 100.0, 0.0,
+                    datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+                    planned_risk_per_share=2.0,
+                )
+                if failure_point == "evaluate":
+                    context = patch(
+                        "etf_rotation.swing_service.evaluate_swing",
+                        side_effect=RuntimeError("evaluate failed"),
+                    )
+                elif failure_point == "build":
+                    context = patch.object(
+                        service, "_build_snapshot",
+                        side_effect=RuntimeError("build failed"),
+                    )
+                else:
+                    context = patch.object(
+                        service, "_publish",
+                        side_effect=RuntimeError("publish failed"),
+                    )
+                with context, self.assertRaisesRegex(
+                    RuntimeError, f"{failure_point} failed",
+                ):
+                    service.record_trade(trade, "repairable-buy")
+
+                existing = next(
+                    event for event in service._ledger.load_events()
+                    if event.idempotency_key == "repairable-buy"
+                )
+                failed_revision = service.snapshot()["revision"]
+                service.clock = lambda: datetime(
+                    2026, 9, 1, 9, 0, tzinfo=SHANGHAI,
+                )
+                repaired = service.record_trade(trade, "repairable-buy")
+                self.assertEqual(repaired, existing.to_dict())
+                repaired_snapshot = service.snapshot()
+                self.assertGreater(
+                    repaired_snapshot["revision"], failed_revision,
+                )
+                repaired_position = (
+                    repaired_snapshot["portfolio"]["positions"]["510300"]
+                )
+                self.assertEqual(
+                    repaired_position["shares"], 100,
+                )
+                self.assertEqual(
+                    service.portfolio()["projection"],
+                    repaired_snapshot["portfolio"],
+                )
+                self.assertEqual(
+                    repaired_snapshot["items"][0]["formal_decision"],
+                    service._formal["510300"].to_dict(),
+                )
+                stable_revision = repaired_snapshot["revision"]
+                self.assertEqual(
+                    service.record_trade(trade, "repairable-buy"), repaired,
+                )
+                self.assertEqual(
+                    service.snapshot()["revision"], stable_revision,
+                )
+
+    def test_trade_clock_validation_never_mutates_unpublished_health(self) -> None:
+        class ToggleClock:
+            failed = False
+
+            def __call__(self) -> datetime:
+                if self.failed:
+                    raise RuntimeError("trade clock failed")
+                return datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI)
+
+        clock = ToggleClock()
+        service = self.make_service(clock=clock)
+        before = service.snapshot()
+        before_health = dict(service._health)
+        before_errors = dict(service._errors)
+        clock.failed = True
+        with self.assertRaisesRegex(Exception, "trusted clock"):
+            service.record_trade(TradeInput(
+                "510300", "BUY", 100, 100.0, 0.0,
+                datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+                planned_risk_per_share=2.0,
+            ), "failed-trade-clock")
+        self.assertEqual(service._health, before_health)
+        self.assertEqual(service._errors, before_errors)
+        self.assertEqual(service.snapshot(), before)
+
+        clock.failed = False
+        service.record_trade(TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        ), "recovered-trade-clock")
+        recovered = service.snapshot()
+        self.assertEqual(recovered["health"]["service"], "OK")
+        self.assertNotIn("service", recovered["errors"])
+        self.assertEqual(service._health, recovered["health"])
+        self.assertEqual(service._errors, recovered["errors"])
+
     def test_inferred_stop_exit_retry_is_stable_and_still_checks_payload(self) -> None:
         service = self.make_service()
         service.record_trade(TradeInput(
