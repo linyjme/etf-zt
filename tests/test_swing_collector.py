@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Sequence
 from datetime import date, datetime, timezone
 import json
 import math
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request
 
+import etf_rotation.eastmoney_client as eastmoney_client
+from etf_rotation.eastmoney_client import EastmoneyMarketError
 from etf_rotation.swing_collector import (
     FIELDS1,
     FIELDS2,
@@ -74,6 +79,11 @@ class FixtureTransport:
         ))
 
 
+class FalseyFixtureTransport(FixtureTransport):
+    def __bool__(self) -> bool:
+        return False
+
+
 class BrokenSequence(Sequence[SwingWatchItem]):
     def __len__(self) -> int:
         return 1
@@ -93,12 +103,182 @@ class FalseyCallable:
         return self.result
 
 
+class HostileSymbol(str):
+    def __str__(self) -> str:
+        raise AssertionError("hostile __str__ called")
+
+    def __repr__(self) -> str:
+        raise AssertionError("hostile __repr__ called")
+
+    def __format__(self, format_spec: str) -> str:
+        raise AssertionError("hostile __format__ called")
+
+
+class FakeUrlResponse:
+    def __init__(self, body: bytes, content_length: str | None = None):
+        self.body = body
+        self.headers = {}
+        if content_length is not None:
+            self.headers["Content-Length"] = content_length
+        self.read_limits: list[int] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        return None
+
+    def read(self, limit: int) -> bytes:
+        self.read_limits.append(limit)
+        return self.body
+
+
+class SharedEastmoneyTransportTests(unittest.TestCase):
+    def test_urlopen_transport_prechecks_and_bounds_response_bytes(self) -> None:
+        request = Request("https://fixture.invalid/data")
+        good = FakeUrlResponse(b"{}")
+        declared_oversize = FakeUrlResponse(b"", "9")
+        streamed_oversize = FakeUrlResponse(b"123456789")
+
+        with (
+            patch.object(eastmoney_client, "MAX_RESPONSE_BYTES", 8),
+            patch.object(eastmoney_client.shutil, "which", return_value=None),
+            patch.object(eastmoney_client, "urlopen", return_value=good),
+        ):
+            self.assertEqual(eastmoney_client._default_transport(request, 2.0), b"{}")
+        self.assertEqual(good.read_limits, [9])
+
+        for response in (declared_oversize, streamed_oversize):
+            with self.subTest(response=response):
+                with (
+                    patch.object(eastmoney_client, "MAX_RESPONSE_BYTES", 8),
+                    patch.object(eastmoney_client.shutil, "which", return_value=None),
+                    patch.object(eastmoney_client, "urlopen", return_value=response),
+                ):
+                    with self.assertRaisesRegex(OSError, "大小限制"):
+                        eastmoney_client._default_transport(request, 2.0)
+        self.assertEqual(declared_oversize.read_limits, [])
+        self.assertEqual(streamed_oversize.read_limits, [9])
+
+        with (
+            patch.object(eastmoney_client, "MAX_RESPONSE_BYTES", 8),
+            patch.object(eastmoney_client.shutil, "which", return_value=None),
+            patch.object(
+                eastmoney_client,
+                "urlopen",
+                side_effect=OSError("HOSTILE_URLOPEN_SECRET"),
+            ),
+        ):
+            with self.assertRaises(OSError) as caught:
+                eastmoney_client._default_transport(request, 2.0)
+        self.assertNotIn("HOSTILE_URLOPEN_SECRET", str(caught.exception))
+
+    def test_curl_transport_sets_limit_and_rejects_oversize_stdout_safely(self) -> None:
+        request = Request("https://fixture.invalid/HOSTILE_URL_SECRET")
+        completed = SimpleNamespace(
+            stdout=b"123456789",
+            stderr=b"HOSTILE_STDERR_SECRET",
+            returncode=0,
+        )
+        with (
+            patch.object(eastmoney_client, "MAX_RESPONSE_BYTES", 8),
+            patch.object(eastmoney_client.shutil, "which", return_value="curl.exe"),
+            patch.object(eastmoney_client.subprocess, "run", return_value=completed) as run,
+            patch.object(eastmoney_client.time, "sleep"),
+            patch.object(
+                eastmoney_client,
+                "_powershell_transport",
+                side_effect=OSError("HOSTILE_POWERSHELL_SECRET"),
+            ),
+        ):
+            with self.assertRaises(OSError) as caught:
+                eastmoney_client._default_transport(request, 2.0)
+
+        self.assertNotIn("HOSTILE_STDERR_SECRET", str(caught.exception))
+        self.assertNotIn("HOSTILE_POWERSHELL_SECRET", str(caught.exception))
+        for call in run.call_args_list:
+            command = call.args[0]
+            self.assertIn("--max-filesize", command)
+            self.assertEqual(command[command.index("--max-filesize") + 1], "8")
+
+        with (
+            patch.object(eastmoney_client, "MAX_RESPONSE_BYTES", 8),
+            patch.object(eastmoney_client.shutil, "which", return_value="curl.exe"),
+            patch.object(
+                eastmoney_client.subprocess,
+                "run",
+                side_effect=OSError("HOSTILE_CURL_PROCESS_SECRET"),
+            ),
+            patch.object(eastmoney_client.time, "sleep"),
+            patch.object(
+                eastmoney_client,
+                "_powershell_transport",
+                side_effect=OSError("HOSTILE_POWERSHELL_SECRET"),
+            ),
+        ):
+            with self.assertRaises(OSError) as caught:
+                eastmoney_client._default_transport(request, 2.0)
+        self.assertNotIn("HOSTILE_CURL_PROCESS_SECRET", str(caught.exception))
+        self.assertNotIn("HOSTILE_POWERSHELL_SECRET", str(caught.exception))
+
+    def test_powershell_transport_streams_with_encoded_inputs_and_bounds_output(self) -> None:
+        request = Request(
+            "https://fixture.invalid/HOSTILE_URL_SECRET",
+            headers={"Accept": "application/json", "X-Fixture": "header-value"},
+        )
+        completed = SimpleNamespace(stdout=base64.b64encode(b"{}") + b"\n")
+        with (
+            patch.object(eastmoney_client, "MAX_RESPONSE_BYTES", 8),
+            patch.object(eastmoney_client.subprocess, "run", return_value=completed) as run,
+        ):
+            self.assertEqual(eastmoney_client._powershell_transport(request, 2.0), b"{}")
+
+        command = run.call_args.args[0]
+        script = command[-1]
+        self.assertIn("ResponseHeadersRead", script)
+        self.assertIn("ReadAsync", script)
+        self.assertIn("$max=8", script)
+        self.assertIn("ConvertFrom-Json", script)
+        self.assertNotIn(request.full_url, script)
+        self.assertNotIn("header-value", script)
+
+        oversized_outputs = (
+            b"A" * 13,
+            base64.b64encode(b"123456789"),
+        )
+        for stdout in oversized_outputs:
+            with self.subTest(stdout_length=len(stdout)):
+                with (
+                    patch.object(eastmoney_client, "MAX_RESPONSE_BYTES", 8),
+                    patch.object(
+                        eastmoney_client.subprocess,
+                        "run",
+                        return_value=SimpleNamespace(stdout=stdout),
+                    ),
+                ):
+                    with self.assertRaisesRegex(OSError, "大小限制"):
+                        eastmoney_client._powershell_transport(request, 2.0)
+
+        with patch.object(
+            eastmoney_client.subprocess,
+            "run",
+            side_effect=OSError("HOSTILE_POWERSHELL_PROCESS_SECRET"),
+        ):
+            with self.assertRaises(OSError) as caught:
+                eastmoney_client._powershell_transport(request, 2.0)
+        self.assertNotIn("HOSTILE_POWERSHELL_PROCESS_SECRET", str(caught.exception))
+
+    def test_shared_mapper_never_formats_non_builtin_string(self) -> None:
+        with self.assertRaisesRegex(EastmoneyMarketError, "6位数字"):
+            eastmoney_client.market_for_symbol(HostileSymbol("510300"))
+
+
 class EastmoneyDailyCollectorTests(unittest.TestCase):
     def collector(self, transport=None, now=None, timeout: float = 8.0):
         return EastmoneyDailyCollector(
             timeout=timeout,
-            transport=transport or FixtureTransport(),
-            now=now or (lambda: NOW),
+            transport=FixtureTransport() if transport is None else transport,
+            now=(lambda: NOW) if now is None else now,
         )
 
     def test_joins_raw_and_adjusted_bars_with_one_canonical_observation(self) -> None:
@@ -158,6 +338,16 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
             self.assertEqual(headers["accept"], "application/json")
             self.assertEqual(headers["user-agent"], "Mozilla/5.0")
             self.assertEqual(headers["referer"], "https://quote.eastmoney.com/")
+
+    def test_rejects_response_with_more_rows_than_requested_count(self) -> None:
+        transport = FixtureTransport()
+        with self.assertRaisesRegex(SwingDataError, "count"):
+            self.collector(transport).collect(
+                (SwingWatchItem("510300", True),),
+                date(2026, 8, 28),
+                count=1,
+            )
+        self.assertEqual(len(transport.requests), 1)
 
     def test_primary_request_failure_refetches_whole_batch_from_fallback(self) -> None:
         requests: list[str] = []
@@ -524,29 +714,25 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
             [(date(2026, 8, 27), 9.5), (date(2026, 8, 28), 10.5)],
         )
 
-    def test_first_retained_previous_close_uses_filtered_preceding_raw_row(self) -> None:
-        def transport(request: Request, timeout: float) -> bytes:
-            query = parse_qs(urlsplit(request.full_url).query)
-            adjusted = query["fqt"] == ["1"]
-            payload = kline_payload("510300", 1, adjusted=adjusted)
-            if adjusted:
-                payload["data"]["klines"] = [
-                    "2026-08-28,5,5.25,5.5,4.9,1000,10000,0,0,0,0",
-                ]
-            else:
-                payload["data"]["klines"] = [
-                    "2026-09-01,9,9.75,10,8.5,900,9000,0,0,0,0",
-                    "2026-08-28,10,10.5,11,9.8,1000,10000,0,0,0,0",
-                ]
-            return payload_bytes(payload)
+    def test_rejects_raw_or_adjusted_inversion_before_filtering(self) -> None:
+        for inverted_adjusted in (False, True):
+            with self.subTest(inverted_adjusted=inverted_adjusted):
+                def transport(request: Request, timeout: float) -> bytes:
+                    query = parse_qs(urlsplit(request.full_url).query)
+                    adjusted = query["fqt"] == ["1"]
+                    dates = (
+                        ("2026-09-01", "2026-08-28")
+                        if adjusted == inverted_adjusted
+                        else ("2026-08-28",)
+                    )
+                    return payload_bytes(kline_payload(
+                        "510300", 1, adjusted=adjusted, dates=dates,
+                    ))
 
-        bars = self.collector(transport).collect(
-            (SwingWatchItem("510300", True),), date(2026, 9, 1),
-        )
-
-        self.assertEqual(len(bars), 1)
-        self.assertEqual(bars[0].trading_date, date(2026, 8, 28))
-        self.assertEqual(bars[0].previous_close, 9.75)
+                with self.assertRaisesRegex(SwingDataError, "严格递增"):
+                    self.collector(transport).collect(
+                        (SwingWatchItem("510300", True),), date(2026, 9, 1),
+                    )
 
     def test_normalizes_aware_clock_to_shanghai_for_all_bars(self) -> None:
         utc_now = datetime(2026, 8, 31, 7, 10, tzinfo=timezone.utc)
@@ -573,12 +759,23 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
                 self.assertNotIn("HOSTILE_CLOCK_SECRET", str(caught.exception))
 
     def test_preserves_falsey_callable_dependencies(self) -> None:
-        transport = FalseyCallable(b"{}")
+        transport = FalseyFixtureTransport()
         now = FalseyCallable(NOW)
-        collector = EastmoneyDailyCollector(transport=transport, now=now)
+        collector = self.collector(transport=transport, now=now)
 
-        self.assertIs(collector.transport, transport)
-        self.assertIs(collector.now, now)
+        bars = collector.collect(
+            (SwingWatchItem("510300", True),), date(2026, 8, 28),
+        )
+
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(len(transport.requests), 2)
+
+    def test_daily_collector_never_formats_hostile_symbol_subclass(self) -> None:
+        with self.assertRaisesRegex(SwingDataError, "代码或市场无效"):
+            self.collector().collect(
+                (SwingWatchItem(HostileSymbol("510300"), True),),
+                date(2026, 8, 28),
+            )
 
     def test_rejects_invalid_call_inputs_without_transport_or_file_side_effects(self) -> None:
         requests = []

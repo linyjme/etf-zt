@@ -249,6 +249,7 @@ class EastmoneyDailyCollector:
             symbol=symbol,
             expected_market=expected_market,
             require_pre_close=adjustment == 0,
+            count=count,
         )
 
     def _parse_payload(
@@ -258,6 +259,7 @@ class EastmoneyDailyCollector:
         symbol: str,
         expected_market: int,
         require_pre_close: bool,
+        count: int,
     ) -> _Response:
         if type(payload) is not dict or type(payload.get("rc")) is not int or payload.get("rc") != 0:
             raise SwingDataError(f"{symbol} kline返回失败")
@@ -278,10 +280,14 @@ class EastmoneyDailyCollector:
         klines = data.get("klines")
         if type(klines) is not list or not klines:
             raise SwingDataError(f"{symbol} kline缺少日线")
+        if len(klines) > count or len(klines) > _MAX_COUNT:
+            raise SwingDataError(f"{symbol} kline条数超过count限制")
         bars = tuple(self._parse_line(symbol, line) for line in klines)
         dates = [bar.trading_date for bar in bars]
         if len(set(dates)) != len(dates):
             raise SwingDataError(f"{symbol} kline日期重复")
+        if any(left >= right for left, right in zip(dates, dates[1:])):
+            raise SwingDataError(f"{symbol} kline日期必须严格递增")
         return _Response(pre_close, bars)
 
     def _parse_line(self, symbol: str, value: Any) -> _ParsedKline:

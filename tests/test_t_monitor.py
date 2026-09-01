@@ -29,6 +29,17 @@ from tests.regime_fixtures import confirmed_range_quote
 NOW = "2026-08-28T10:00:00+08:00"
 
 
+class HostileSymbol(str):
+    def __str__(self) -> str:
+        raise AssertionError("hostile __str__ called")
+
+    def __repr__(self) -> str:
+        raise AssertionError("hostile __repr__ called")
+
+    def __format__(self, format_spec: str) -> str:
+        raise AssertionError("hostile __format__ called")
+
+
 def run_page_helpers(body: str) -> object:
     start_marker = "/* PAGE_HELPERS_START */"
     end_marker = "/* PAGE_HELPERS_END */"
@@ -142,6 +153,10 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
             with self.subTest(symbol=symbol):
                 with self.assertRaisesRegex(MarketDataError, "6位数字"):
                     market_for_symbol(symbol)
+
+    def test_market_mapping_never_formats_hostile_string_subclass(self) -> None:
+        with self.assertRaisesRegex(MarketDataError, "6位数字"):
+            market_for_symbol(HostileSymbol("510300"))
 
     def test_primary_source_label_remains_public_and_exact(self) -> None:
         self.assertEqual(
