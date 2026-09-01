@@ -209,7 +209,7 @@ class PortfolioLedger:
         *,
         clock: Callable[[], datetime] | None = None,
         max_portfolio_risk_rate: float = 0.02,
-        closed_dates: Iterable[date] = (),
+        closed_dates: Iterable[date] | None = None,
     ):
         self.path = Path(path).resolve(strict=False)
         self.metadata = _snapshot_metadata(metadata)
@@ -388,9 +388,53 @@ class PortfolioLedger:
             events = self._load_events_unlocked()
             projected = self._replay(events, as_of, normalized_marks)
             with _SiblingFileLock(destination, shared=False):
-                if not _existing_projection_is_newer(destination, projected):
+                if not self._existing_projection_is_newer(
+                    destination, projected, events,
+                ):
                     _atomic_replace_json(destination, projected.to_dict())
             return projected
+
+    def _existing_projection_is_newer(
+        self,
+        path: Path,
+        projected: PortfolioProjection,
+        events: tuple[PortfolioEvent, ...],
+    ) -> bool:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (
+            FileNotFoundError, OSError, UnicodeDecodeError, ValueError,
+            RecursionError,
+        ):
+            return False
+        try:
+            existing = _parse_projection(payload)
+        except PortfolioLedgerError:
+            return False
+        if (
+            existing.last_event_id != projected.last_event_id
+            or existing.as_of_trading_date <= projected.as_of_trading_date
+        ):
+            return False
+        missing_marks = {
+            warning.removeprefix("MISSING_MARK:")
+            for warning in existing.warnings
+            if warning.startswith("MISSING_MARK:")
+        }
+        try:
+            marks = self._validate_marks({
+                symbol: position.market_price
+                for symbol, position in existing.positions.items()
+                if symbol not in missing_marks
+            })
+            authoritative = self._replay(
+                events, existing.as_of_trading_date, marks,
+            )
+            return _canonical_projection_payload(payload) == (
+                _canonical_projection_payload(authoritative.to_dict())
+            )
+        except PortfolioLedgerError:
+            return False
 
     def _reject_projection_alias(self, destination: Path) -> None:
         if destination == self.path:
@@ -554,6 +598,7 @@ class PortfolioLedger:
         if not events:
             raise PortfolioLedgerError("portfolio account is not initialized")
         self._validate_event_sequence(events)
+        closed_dates = self._closed_dates_for_events(events)
         name, initial_cash, initial_positions, default_risk_rate = (
             self._parse_initialization(events[0])
         )
@@ -614,7 +659,7 @@ class PortfolioLedger:
             if position is None or position.shares < trade.shares:
                 raise PortfolioLedgerError("event log sell exceeds sellable shares")
             sellable = _sellable_shares(
-                position, execution_date, metadata, self.closed_dates,
+                position, execution_date, metadata, closed_dates,
             )
             if trade.shares > sellable:
                 raise PortfolioLedgerError("event log sell exceeds sellable shares")
@@ -628,7 +673,7 @@ class PortfolioLedger:
             position.shares -= trade.shares
             consumed_risk = _consume_sellable_lots(
                 position, trade.shares, execution_date, metadata,
-                self.closed_dates,
+                closed_dates,
             )
             position.planned_risk -= consumed_risk
             if position.shares == 0:
@@ -647,7 +692,7 @@ class PortfolioLedger:
                 warnings.append(f"MISSING_MARK:{symbol}")
             market_value = mark * position.shares
             sellable = _sellable_shares(
-                position, trading_date, self.metadata[symbol], self.closed_dates,
+                position, trading_date, self.metadata[symbol], closed_dates,
             )
             today_bought = sum(
                 lot.shares for lot in position.lots if lot.bought_on == trading_date
@@ -722,7 +767,8 @@ class PortfolioLedger:
             positive=False,
         )
         executed_at = _aware_datetime(trade.executed_at, "executed_at")
-        if not _is_trading_date(executed_at.date(), self.closed_dates):
+        closed_dates = self._require_closed_dates()
+        if not _is_trading_date(executed_at.date(), closed_dates):
             raise PortfolioLedgerError("trade executed_at must be a trading day")
         return TradeInput(
             symbol,
@@ -733,6 +779,27 @@ class PortfolioLedger:
             executed_at,
             _public_float(risk, "planned_risk_per_share"),
         )
+
+    def _require_closed_dates(self) -> frozenset[date]:
+        if self.closed_dates is None:
+            raise PortfolioLedgerError(
+                "authoritative trading calendar unavailable",
+            )
+        return self.closed_dates
+
+    def _closed_dates_for_events(
+        self,
+        events: tuple[PortfolioEvent, ...],
+    ) -> frozenset[date]:
+        if any(
+            event.event_type in {
+                PortfolioEventType.BUY_CONFIRMED,
+                PortfolioEventType.SELL_CONFIRMED,
+            }
+            for event in events
+        ):
+            return self._require_closed_dates()
+        return self.closed_dates or frozenset()
 
     @staticmethod
     def _trade_request_payload(trade: TradeInput) -> dict[str, object]:
@@ -974,7 +1041,11 @@ def _snapshot_metadata(
     return MappingProxyType(result)
 
 
-def _snapshot_closed_dates(value: Iterable[date]) -> frozenset[date]:
+def _snapshot_closed_dates(
+    value: Iterable[date] | None,
+) -> frozenset[date] | None:
+    if value is None:
+        return None
     try:
         dates = tuple(value)
     except Exception as error:
@@ -1055,6 +1126,10 @@ def _public_float(value: Decimal, field: str) -> float:
             f"{field} must be representable as a finite float",
         ) from error
     if not math.isfinite(number):
+        raise PortfolioLedgerError(
+            f"{field} must be representable as a finite float",
+        )
+    if value != 0 and number == 0.0:
         raise PortfolioLedgerError(
             f"{field} must be representable as a finite float",
         )
@@ -1185,22 +1260,17 @@ def _resolve_path(value: Path, field: str) -> Path:
         raise PortfolioLedgerError(f"{field} could not be resolved") from error
 
 
-def _existing_projection_is_newer(
-    path: Path,
-    projected: PortfolioProjection,
-) -> bool:
+def _canonical_projection_payload(value: object) -> bytes:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError, RecursionError):
-        return False
-    try:
-        existing = _parse_projection(payload)
-    except PortfolioLedgerError:
-        return False
-    return (
-        existing.last_event_id == projected.last_event_id
-        and existing.as_of_trading_date > projected.as_of_trading_date
-    )
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError) as error:
+        raise PortfolioLedgerError("projection serialization failed") from error
 
 
 def _parse_projection(value: object) -> PortfolioProjection:

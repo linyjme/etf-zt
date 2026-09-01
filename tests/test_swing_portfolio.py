@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import uuid
 from unittest import mock
 
 from etf_rotation.etf_metadata import EtfMetadataStore
+from etf_rotation.market_data import load_closed_dates
 from etf_rotation.swing_portfolio import (
     InitialPositionInput,
     PortfolioEventType,
@@ -42,7 +44,10 @@ class SwingPortfolioTests(unittest.TestCase):
         self.wednesday = datetime(2026, 9, 2, 10, 0, tzinfo=SHANGHAI)
         self.clock_time = datetime(2026, 9, 2, 15, 30, tzinfo=SHANGHAI)
         self.ledger = PortfolioLedger(
-            self.path, self.metadata, clock=lambda: self.clock_time,
+            self.path,
+            self.metadata,
+            clock=lambda: self.clock_time,
+            closed_dates=frozenset(),
         )
 
     def initialize(self, cash: float = 100_000.0) -> None:
@@ -63,7 +68,9 @@ class SwingPortfolioTests(unittest.TestCase):
             TradeInput("510300", "SELL", 500, 4.80, 5.0, self.wednesday),
             idempotency_key="sell-1",
         )
-        rebuilt = PortfolioLedger(self.path, self.metadata).project(
+        rebuilt = PortfolioLedger(
+            self.path, self.metadata, closed_dates=frozenset(),
+        ).project(
             self.wednesday.date(), {"510300": 4.80},
         )
         self.assertEqual(rebuilt.positions["510300"].shares, 500)
@@ -114,6 +121,68 @@ class SwingPortfolioTests(unittest.TestCase):
             "tuesday-sell",
         )
 
+    def test_trades_fail_closed_when_authoritative_calendar_is_unavailable(self) -> None:
+        unavailable = PortfolioLedger(
+            self.root / "unavailable.jsonl",
+            self.metadata,
+            clock=lambda: self.clock_time,
+        )
+        unavailable.initialize("波段账户", 100_000.0, "init-unavailable")
+        with self.assertRaisesRegex(PortfolioLedgerError, "calendar unavailable"):
+            unavailable.record_trade(
+                TradeInput("510300", "BUY", 100, 4.0, 0.0, self.tuesday),
+                "buy-unavailable",
+            )
+
+        self.initialize()
+        self.ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.0, 0.0, self.tuesday),
+            "buy-with-calendar",
+        )
+        reader = PortfolioLedger(self.path, self.metadata)
+        with self.assertRaisesRegex(PortfolioLedgerError, "calendar unavailable"):
+            reader.load_events()
+        with self.assertRaisesRegex(PortfolioLedgerError, "calendar unavailable"):
+            reader.project(self.wednesday.date(), {})
+
+    def test_repository_calendar_rejects_configured_2026_holiday(self) -> None:
+        calendar_path = (
+            Path(__file__).resolve().parents[1]
+            / "data" / "monitor" / "market_calendar.json"
+        )
+        closed_dates = load_closed_dates(calendar_path)
+        self.assertIn(date(2026, 9, 25), closed_dates)
+        ledger = PortfolioLedger(
+            self.root / "configured-calendar.jsonl",
+            self.metadata,
+            clock=lambda: self.clock_time,
+            closed_dates=closed_dates,
+        )
+        ledger.initialize("波段账户", 100_000.0, "init-configured-calendar")
+        holiday = datetime(2026, 9, 25, 10, 0, tzinfo=SHANGHAI)
+        with self.assertRaisesRegex(PortfolioLedgerError, "trading day"):
+            ledger.record_trade(
+                TradeInput("510300", "BUY", 100, 4.0, 0.0, holiday),
+                "holiday-buy",
+            )
+        ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.0, 0.0, self.tuesday),
+            "valid-buy",
+        )
+        lines = ledger.path.read_text(encoding="utf-8").splitlines()
+        persisted_trade = json.loads(lines[1])
+        persisted_trade["payload"]["executed_at"] = holiday.isoformat()
+        lines[1] = json.dumps(
+            persisted_trade,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        ledger.path.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+        with self.assertRaisesRegex(PortfolioLedgerError, "trading day"):
+            ledger.load_events()
+
     def test_weighted_average_cost_includes_buy_fees(self) -> None:
         self.initialize()
         self.ledger.record_trade(
@@ -148,7 +217,9 @@ class SwingPortfolioTests(unittest.TestCase):
         self.assertAlmostEqual(projected.equity, 3_250.0)
         self.assertEqual(event.payload["default_risk_per_trade"], 0.01)
 
-        rebuilt = PortfolioLedger(self.path, self.metadata).project(
+        rebuilt = PortfolioLedger(
+            self.path, self.metadata, closed_dates=frozenset(),
+        ).project(
             self.wednesday.date(), {"510300": 11.0, "159915": 3.0},
         )
         self.assertEqual(rebuilt.to_dict(), projected.to_dict() | {
@@ -178,7 +249,11 @@ class SwingPortfolioTests(unittest.TestCase):
         )
         for index, (positions, risk_rate) in enumerate(invalid_cases):
             with self.subTest(index=index):
-                ledger = PortfolioLedger(self.root / f"invalid-{index}.jsonl", self.metadata)
+                ledger = PortfolioLedger(
+                    self.root / f"invalid-{index}.jsonl",
+                    self.metadata,
+                    closed_dates=frozenset(),
+                )
                 with self.assertRaises(PortfolioLedgerError):
                     ledger.initialize(
                         "波段账户", 1000.0, f"invalid-{index}",
@@ -225,7 +300,9 @@ class SwingPortfolioTests(unittest.TestCase):
         trade = TradeInput("510300", "BUY", 1000, 4.60, 5.0, self.tuesday)
 
         def append(_: int) -> str:
-            ledger = PortfolioLedger(self.path, self.metadata)
+            ledger = PortfolioLedger(
+                self.path, self.metadata, closed_dates=frozenset(),
+            )
             return ledger.record_trade(trade, "concurrent-trade").event_id
 
         with ThreadPoolExecutor(max_workers=8) as executor:
@@ -237,7 +314,9 @@ class SwingPortfolioTests(unittest.TestCase):
         self.initialize()
 
         def append(index: int) -> str:
-            ledger = PortfolioLedger(self.path, self.metadata)
+            ledger = PortfolioLedger(
+                self.path, self.metadata, closed_dates=frozenset(),
+            )
             return ledger.record_trade(
                 TradeInput("510300", "BUY", 100, 4.0, 0.0, self.tuesday),
                 f"distinct-{index}",
@@ -265,7 +344,9 @@ from etf_rotation.swing_portfolio import PortfolioLedger, TradeInput
 path, metadata_path, start = map(Path, sys.argv[1:])
 while not start.exists():
     time.sleep(0.001)
-ledger = PortfolioLedger(path, EtfMetadataStore(metadata_path).load())
+ledger = PortfolioLedger(
+    path, EtfMetadataStore(metadata_path).load(), closed_dates=frozenset(),
+)
 trade = TradeInput('510300', 'BUY', 100, 4.0, 0.0, datetime.fromisoformat('2026-09-01T10:00:00+08:00'))
 print(ledger.record_trade(trade, 'subprocess-same-key').event_id, flush=True)
 """
@@ -513,6 +594,77 @@ print(ledger.record_trade(trade, 'subprocess-same-key').event_id, flush=True)
                     rebuilt.to_dict(),
                 )
 
+    def test_newer_projection_must_match_authoritative_event_replay(self) -> None:
+        self.ledger.initialize(
+            "波段账户",
+            cash=100_000.0,
+            idempotency_key="init-authoritative-projection",
+            initial_positions={"510300": InitialPositionInput(100, 4.0)},
+        )
+        projection_path = self.root / "portfolio.json"
+        valid = self.ledger.project(
+            self.wednesday.date(), {"510300": 4.1},
+        ).to_dict()
+
+        def alter_cash(payload: dict[str, object]) -> None:
+            payload["cash"] += 1_000.0
+            payload["equity"] += 1_000.0
+
+        def add_unknown_position(payload: dict[str, object]) -> None:
+            position = dict(payload["positions"]["510300"])
+            position["symbol"] = "999999"
+            payload["positions"]["999999"] = position
+            payload["etf_market_value"] += position["market_value"]
+            payload["equity"] += position["market_value"]
+
+        def add_illegal_warning(payload: dict[str, object]) -> None:
+            payload["warnings"].append("ARBITRARY_WARNING")
+
+        for name, corrupt in (
+            ("self-consistent cash and equity", alter_cash),
+            ("unknown symbol", add_unknown_position),
+            ("illegal warning", add_illegal_warning),
+        ):
+            with self.subTest(name=name):
+                payload = json.loads(json.dumps(valid))
+                payload["as_of_trading_date"] = "2026-09-03"
+                corrupt(payload)
+                projection_path.write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+                )
+                rebuilt = self.ledger.load_or_rebuild_projection(
+                    projection_path,
+                    self.tuesday.date(),
+                    {"510300": 4.1},
+                )
+                self.assertEqual(
+                    json.loads(projection_path.read_text(encoding="utf-8")),
+                    rebuilt.to_dict(),
+                )
+
+    def test_valid_authoritative_newer_projection_is_not_downgraded(self) -> None:
+        self.ledger.initialize(
+            "波段账户",
+            cash=100_000.0,
+            idempotency_key="init-valid-newer-projection",
+            initial_positions={"510300": InitialPositionInput(100, 4.0)},
+        )
+        projection_path = self.root / "portfolio.json"
+        newer = self.ledger.project(date(2026, 9, 3), {}).to_dict()
+        self.assertEqual(newer["warnings"], ["MISSING_MARK:510300"])
+        projection_path.write_text(
+            json.dumps(newer, ensure_ascii=False), encoding="utf-8",
+        )
+        rebuilt = self.ledger.load_or_rebuild_projection(
+            projection_path,
+            self.tuesday.date(),
+            {"510300": 4.1},
+        )
+        self.assertEqual(rebuilt.as_of_trading_date, self.tuesday.date())
+        self.assertEqual(
+            json.loads(projection_path.read_text(encoding="utf-8")), newer,
+        )
+
     def test_projection_path_must_not_alias_authoritative_event_log(self) -> None:
         self.initialize()
         with self.assertRaisesRegex(PortfolioLedgerError, "alias"):
@@ -754,6 +906,33 @@ print(ledger.record_trade(trade, 'subprocess-same-key').event_id, flush=True)
         )
         with self.assertRaisesRegex(PortfolioLedgerError, "finite float"):
             self.ledger.project(self.tuesday.date(), {"510300": 1e308})
+
+    def test_nonzero_decimals_must_not_underflow_to_public_zero(self) -> None:
+        tiny = Decimal("1e-10000")
+        self.initialize()
+        with self.assertRaisesRegex(PortfolioLedgerError, "finite float"):
+            self.ledger.record_trade(
+                TradeInput(
+                    "510300", "BUY", 100, 4.0, 0.0, self.tuesday,
+                    planned_risk_per_share=tiny,
+                ),
+                "tiny-risk",
+            )
+
+        marked = self.root / "tiny-mark.jsonl"
+        ledger = PortfolioLedger(
+            marked,
+            self.metadata,
+            closed_dates=frozenset(),
+        )
+        ledger.initialize(
+            "波段账户",
+            100_000.0,
+            "init-tiny-mark",
+            initial_positions={"510300": InitialPositionInput(100, 4.0)},
+        )
+        with self.assertRaisesRegex(PortfolioLedgerError, "finite float"):
+            ledger.project(self.wednesday.date(), {"510300": tiny})
 
     def test_default_trade_risk_accumulates_into_portfolio_warning(self) -> None:
         self.ledger.initialize(
