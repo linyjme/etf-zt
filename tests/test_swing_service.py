@@ -1339,6 +1339,53 @@ class SwingServiceTests(unittest.TestCase):
         )
         self.assertEqual(restarted.snapshot()["revision"], stable_revision)
 
+    def test_retry_ignores_future_audit_timestamp_from_divergent_clock(self) -> None:
+        class DivergentClock:
+            calls = 0
+
+            def __call__(self) -> datetime:
+                self.calls += 1
+                year = 2026 if self.calls <= 2 else 2099
+                return datetime(year, 9, 1, 14, tzinfo=SHANGHAI)
+
+        service = self.make_service(clock=DivergentClock())
+        trade = TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        )
+        first = service.record_trade(trade, "future-audit-buy")
+        event = next(
+            item for item in service._ledger.load_events()
+            if item.idempotency_key == "future-audit-buy"
+        )
+        self.assertEqual(event.recorded_at.year, 2099)
+        payload = json.loads(
+            self.paths.portfolio_snapshot.read_text(encoding="utf-8"),
+        )
+        payload["schema_version"] = True
+        self.paths.portfolio_snapshot.write_text(
+            json.dumps(payload), encoding="utf-8",
+        )
+
+        revision_before_repair = service.snapshot()["revision"]
+        self.assertEqual(
+            service.record_trade(trade, "future-audit-buy"), first,
+        )
+        repaired = service.snapshot()
+        self.assertEqual(repaired["revision"], revision_before_repair + 1)
+        self.assertEqual(
+            repaired["portfolio"]["as_of_trading_date"], "2026-09-01",
+        )
+        self.assertEqual(
+            datetime.fromisoformat(repaired["generated_at"]).year, 2026,
+        )
+        stable_revision = repaired["revision"]
+        self.assertEqual(
+            service.record_trade(trade, "future-audit-buy"), first,
+        )
+        self.assertEqual(service.snapshot()["revision"], stable_revision)
+
     def test_trade_clock_validation_never_mutates_unpublished_health(self) -> None:
         class ToggleClock:
             failed = False

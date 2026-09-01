@@ -594,7 +594,7 @@ class SwingService:
                     normalized, idempotency_key,
                 )
                 repair_now = self._trade_retry_reference_time(
-                    events, event, trade,
+                    events, trade,
                 )
                 if self._trade_derivations_are_current(repair_now):
                     self._ensure_current_formal_alerts(repair_now)
@@ -631,16 +631,13 @@ class SwingService:
     def _trade_retry_reference_time(
         self,
         events: Sequence[PortfolioEvent],
-        event: PortfolioEvent,
         trade: TradeInput,
     ) -> datetime:
         candidates = [
-            event.recorded_at.astimezone(SHANGHAI),
             trade.executed_at.astimezone(SHANGHAI),
             self._fallback_now(),
         ]
         for ledger_event in events:
-            candidates.append(ledger_event.recorded_at.astimezone(SHANGHAI))
             if ledger_event.event_type not in {
                 PortfolioEventType.BUY_CONFIRMED,
                 PortfolioEventType.SELL_CONFIRMED,
