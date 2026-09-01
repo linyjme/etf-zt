@@ -1158,6 +1158,10 @@ console.log(JSON.stringify({failedState,quotesOnly,summarized,sseRecovered,pollR
         self.assertIn('id="watch-name"', PAGE)
         self.assertIn('id="watch-submit"', PAGE)
         self.assertIn("fetch('/api/watchlist'", PAGE)
+        self.assertIn("#form-error.success", PAGE)
+        self.assertIn("formError.className='success'", PAGE)
+        self.assertIn("formError.className='error'", PAGE)
+        self.assertIn("等待下一轮行情刷新", PAGE)
 
     def test_page_renders_only_selected_item_and_keeps_selection_on_updates(self) -> None:
         self.assertIn("let latestData=null,backtests=new Map(),replays=new Map(),selectedSymbol=null", PAGE)
