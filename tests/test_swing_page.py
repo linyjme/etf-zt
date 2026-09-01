@@ -304,6 +304,35 @@ console.log(JSON.stringify({visible:visible.length,keptActive:visible.some(item=
             self.assertIn(fragment, SWING_PAGE)
         self.assertNotIn("setError('监控列表已保存')", SWING_PAGE)
 
+    def test_auxiliary_intraday_alerts_are_hidden_and_inert_until_safe_recovery(self) -> None:
+        result = run_swing_helpers(
+            """
+const state=createPageState(); state.selectedSymbol='510300';
+const snapshot=revision=>({revision,items:[{symbol:'510300',execution_status:'READY_TO_EXECUTE'}],health:{service:'OK',configuration:'OK',daily:'OK',strategy:'OK',portfolio:'OK',alerts:'OK',intraday:'REALTIME'},errors:{}});
+const intraday={alert_id:'a'.repeat(24),symbol:'510300',scope:'INTRADAY',state:'APPROACHING_ENTRY_ZONE',currently_active:true};
+const bundle=revision=>({watch:{revision,items:[]},portfolio:{revision,projection:{}},alerts:{revision,items:[intraday]}});
+applyReadModelBundle(state,snapshot(1),bundle(1),true);refreshExecutionPaused(state);
+const healthy={visible:alertsForDisplay(state.auxiliary.alerts.items,state).length,trade:canActOnAlert(state,intraday.scope,intraday.state)};
+state.failureSources.add('daily');refreshExecutionPaused(state);
+const failed={visible:alertsForDisplay(state.auxiliary.alerts.items,state).length,trade:canActOnAlert(state,intraday.scope,intraday.state)};
+applyReadModelBundle(state,snapshot(2),bundle(2),false);refreshExecutionPaused(state);
+const failedNewBundle={visible:alertsForDisplay(state.auxiliary.alerts.items,state).length,stored:state.auxiliary.alerts.items.length};
+state.failureSources.delete('daily');applyReadModelBundle(state,snapshot(3),bundle(3),false);refreshExecutionPaused(state);
+const recovered={visible:alertsForDisplay(state.auxiliary.alerts.items,state).length,trade:canActOnAlert(state,intraday.scope,intraday.state)};
+console.log(JSON.stringify({healthy,failed,failedNewBundle,recovered}));
+""",
+        )
+        self.assertEqual(result, {
+            "healthy": {"visible": 1, "trade": True},
+            "failed": {"visible": 0, "trade": False},
+            "failedNewBundle": {"visible": 0, "stored": 1},
+            "recovered": {"visible": 1, "trade": True},
+        })
+        self.assertIn("data-alert-scope", SWING_PAGE)
+        self.assertIn("data-alert-state", SWING_PAGE)
+        self.assertIn("boundedAlerts(alertsForDisplay(source,state)", SWING_PAGE)
+        self.assertIn("if(!canActOnAlert(state", SWING_PAGE)
+
 
 if __name__ == "__main__":
     unittest.main()
