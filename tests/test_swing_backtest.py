@@ -29,6 +29,7 @@ def _decision(
     *,
     shares: int = 1_000,
     stop: float | None = 90.0,
+    evidence: dict[str, object] | None = None,
 ) -> SwingDecision:
     action_states = {
         SwingState.TRIAL_ENTRY_CANDIDATE,
@@ -43,7 +44,7 @@ def _decision(
         strategy_version="SWING_V1",
         as_of_trading_date=signal_date,
         state=state,
-        evidence={},
+        evidence={} if evidence is None else evidence,
         blocked_reasons=(),
         planned_entry_low=95.0 if state is SwingState.TRIAL_ENTRY_CANDIDATE else None,
         planned_entry_high=105.0 if state is SwingState.TRIAL_ENTRY_CANDIDATE else None,
@@ -109,11 +110,12 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         bars[71] = replace(
             bars[71], open=95.0, high=101.0, low=94.0, close=100.0,
             previous_close=bars[70].close,
+            amount=100.0 * bars[71].volume * self.trading.volume_unit_shares,
             adjusted_open=95.0, adjusted_high=101.0,
             adjusted_low=94.0, adjusted_close=100.0,
         )
         bars[72] = replace(bars[72], previous_close=100.0)
-        states = [SwingState.TRIAL_ENTRY_CANDIDATE, SwingState.EXIT_CANDIDATE]
+        states = [SwingState.TRIAL_ENTRY_CANDIDATE, SwingState.HOLDING]
 
         def evaluate(signal_bars, config, context):
             state = states.pop(0) if states else SwingState.TREND_BLOCKED
@@ -129,6 +131,94 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         self.assertLess(exit_trade.fill_price, exit_trade.planned_stop)
         self.assertEqual(exit_trade.reason, "GAP_THROUGH_STOP")
 
+    def test_protective_gap_respects_t_plus_one_volume_and_limit_lock(self) -> None:
+        bars = swing_strategy_bars(3, pattern="rising")
+
+        def opened_account():
+            account = BacktestAccount(100_000.0, self.trading, self.config)
+            account.execute(
+                _decision(SwingState.TRIAL_ENTRY_CANDIDATE,
+                          bars[0].trading_date, bars[1].trading_date,
+                          shares=100, stop=90.0),
+                bars[1], execution_index=1,
+            )
+            account.mark(bars[1], 1)
+            return account
+
+        same_day = opened_account()
+        self.assertTrue(same_day.execute_protective_gap(
+            _decision(SwingState.HOLDING, bars[0].trading_date,
+                      bars[1].trading_date, stop=108.0),
+            bars[1], execution_index=1,
+        ))
+        self.assertEqual(same_day.rejections[-1].reason, "T_PLUS_ONE")
+        self.assertEqual(same_day.shares, 100)
+
+        no_volume = opened_account()
+        gap = replace(
+            bars[2], open=90.0, high=100.0, low=89.0, close=95.0,
+            volume=0.0, amount=0.0, adjusted_open=90.0,
+            adjusted_high=100.0, adjusted_low=89.0, adjusted_close=95.0,
+        )
+        self.assertTrue(no_volume.execute_protective_gap(
+            _decision(SwingState.HOLDING, bars[1].trading_date,
+                      bars[2].trading_date, stop=99.0),
+            gap, execution_index=2,
+        ))
+        self.assertEqual(no_volume.rejections[-1].reason, "ZERO_VOLUME")
+        self.assertEqual(no_volume.shares, 100)
+
+        locked_account = opened_account()
+        lower = 100.0 * (1.0 - self.trading.price_limit_pct)
+        locked = replace(
+            bars[2], previous_close=100.0, open=lower, high=lower,
+            low=lower, close=lower, adjusted_open=lower,
+            adjusted_high=lower, adjusted_low=lower, adjusted_close=lower,
+        )
+        self.assertTrue(locked_account.execute_protective_gap(
+            _decision(SwingState.HOLDING, bars[1].trading_date,
+                      bars[2].trading_date, stop=90.0),
+            locked, execution_index=2,
+        ))
+        self.assertEqual(locked_account.rejections[-1].reason, "LIMIT_LOCKED")
+        self.assertEqual(locked_account.shares, 100)
+
+    def test_stop_exit_classification_controls_cooldown(self) -> None:
+        bars = swing_strategy_bars(4, pattern="rising")
+
+        def closed_account(exit_evidence):
+            account = BacktestAccount(100_000.0, self.trading, self.config)
+            account.execute(
+                _decision(SwingState.TRIAL_ENTRY_CANDIDATE,
+                          bars[0].trading_date, bars[1].trading_date,
+                          shares=100, stop=90.0),
+                bars[1], execution_index=1,
+            )
+            account.mark(bars[1], 1)
+            fill = account.execute(
+                _decision(SwingState.EXIT_CANDIDATE,
+                          bars[1].trading_date, bars[2].trading_date,
+                          shares=100, stop=90.0, evidence=exit_evidence),
+                bars[2], execution_index=2,
+            )
+            return account, fill
+
+        stop_account, stop_fill = closed_account({
+            "exit_any": True, "exit_hard_stop": True,
+            "exit_trailing_stop": False,
+        })
+        self.assertEqual(stop_fill.reason, "STOP_EXIT")
+        self.assertEqual(stop_account.context().last_stop_trading_date,
+                         bars[2].trading_date)
+
+        signal_account, signal_fill = closed_account({
+            "exit_any": True, "exit_hard_stop": False,
+            "exit_trailing_stop": False,
+            "exit_close_below_ma60": True,
+        })
+        self.assertEqual(signal_fill.reason, "EXIT_SIGNAL")
+        self.assertIsNone(signal_account.context().last_stop_trading_date)
+
     def test_no_completed_trade_reports_insufficient_sample(self) -> None:
         result = self.backtester.run_symbol(
             swing_strategy_bars(72, pattern="falling_ma60"), 100_000.0,
@@ -138,6 +228,23 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         self.assertIsNone(result.metrics.win_rate)
         self.assertEqual(result.completed_round_trips, 0)
         self.assertLess(result.benchmark.cumulative_return, 0.0)
+
+    def test_benchmark_retries_until_first_actually_executable_open(self) -> None:
+        bars = list(swing_strategy_bars(73, pattern="falling_ma60"))
+        bars[70] = replace(bars[70], volume=0.0, amount=0.0)
+        result = self.backtester.run_symbol(tuple(bars), 100_000.0)
+        self.assertIsNotNone(result.benchmark)
+        self.assertEqual(result.benchmark.start_date, bars[71].trading_date)
+
+        unavailable = tuple(
+            replace(bar, volume=0.0, amount=0.0)
+            if index >= 70 else bar
+            for index, bar in enumerate(bars)
+        )
+        missing = self.backtester.run_symbol(unavailable, 100_000.0)
+        self.assertIsNone(missing.benchmark)
+        self.assertIsNone(missing.outperformance)
+        self.assertEqual(missing.status, "INSUFFICIENT_SAMPLE")
 
     def test_fees_slippage_lots_volume_cash_limits_and_t_plus_one(self) -> None:
         account = BacktestAccount(
@@ -363,24 +470,29 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
     def test_adjusted_signal_raw_fill_and_corporate_action_scale(self) -> None:
         adjusted = swing_strategy_bars(72, pattern="pullback_reclaim")
         bars = with_raw_scales(adjusted, [1.0] * 70 + [0.5, 0.5])
-        contexts = []
-
-        def evaluate(signal_bars, config, context):
-            contexts.append(context)
-            if len(signal_bars) == 70:
-                return _decision(SwingState.TRIAL_ENTRY_CANDIDATE,
-                                 signal_bars[-1].trading_date,
-                                 bars[70].trading_date, shares=100, stop=4.0)
-            return _decision(SwingState.HOLDING, signal_bars[-1].trading_date,
-                             bars[71].trading_date, shares=0, stop=4.0)
-
-        with patch("etf_rotation.swing_backtest.evaluate_swing", side_effect=evaluate):
+        with patch("etf_rotation.swing_backtest.evaluate_swing") as evaluate:
             result = self.backtester.run_symbol(bars, 100_000.0)
-        self.assertEqual(result.trades[0].raw_reference_price, bars[70].open)
-        self.assertAlmostEqual(
-            contexts[1].position.average_cost_adjusted,
-            result.trades[0].fill_price * bars[70].adjusted_open / bars[70].open,
+        evaluate.assert_not_called()
+        self.assertEqual(result.status, "DATA_UNAVAILABLE")
+        self.assertEqual(result.reason, "CORPORATE_ACTION_UNSUPPORTED")
+        self.assertEqual(result.trades, ())
+        self.assertIsNone(result.ending_equity)
+        self.assertIsNone(result.metrics)
+        self.assertIsNone(result.benchmark)
+        self.assertIsNone(result.outperformance)
+        self.assertEqual(result.to_json(),
+                         self.backtester.run_symbol(bars, 100_000.0).to_json())
+
+    def test_early_observation_is_rejected_before_signal_or_mark(self) -> None:
+        bars = list(swing_strategy_bars(72, pattern="rising"))
+        bars[70] = replace(
+            bars[70],
+            observed_at=bars[70].observed_at.replace(hour=9, minute=0),
         )
+        with patch("etf_rotation.swing_backtest.evaluate_swing") as evaluate:
+            with self.assertRaises(SwingBacktestError):
+                self.backtester.run_symbol(tuple(bars), 100_000.0)
+        evaluate.assert_not_called()
 
 
 if __name__ == "__main__":

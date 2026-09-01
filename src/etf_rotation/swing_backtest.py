@@ -10,9 +10,17 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from etf_rotation import constants
-from etf_rotation.etf_metadata import TradingMetadata
+from etf_rotation.etf_metadata import (
+    EtfMetadata,
+    IndexMetadata,
+    TradingMetadata,
+)
 from etf_rotation.swing_config import SwingStrategyConfig
-from etf_rotation.swing_data import DailyBar
+from etf_rotation.swing_data import (
+    DailyBar,
+    DailyBarValidator,
+    SwingDataError,
+)
 from etf_rotation.swing_strategy import (
     PortfolioContext,
     PositionContext,
@@ -24,6 +32,12 @@ from etf_rotation.swing_strategy import (
 
 class SwingBacktestError(ValueError):
     """Raised when a backtest input or execution setting is invalid."""
+
+
+class _CorporateActionUnsupported(Exception):
+    def __init__(self, bars: tuple[DailyBar, ...]) -> None:
+        super().__init__("CORPORATE_ACTION_UNSUPPORTED")
+        self.bars = bars
 
 
 _BUY_STATES = frozenset((
@@ -241,9 +255,10 @@ class SwingBacktestResult:
     strategy_version: str
     symbol: str
     status: str
+    reason: str | None
     initial_cash: float
     cash: float
-    ending_equity: float
+    ending_equity: float | None
     start_date: date
     end_date: date
     trades: tuple[SwingFill, ...]
@@ -251,9 +266,9 @@ class SwingBacktestResult:
     round_trips: tuple[CompletedRoundTrip, ...]
     open_position_shares: int
     uncompleted_leg_count: int
-    benchmark: SwingBenchmarkResult
+    benchmark: SwingBenchmarkResult | None
     outperformance: float | None
-    metrics: SwingBacktestMetrics
+    metrics: SwingBacktestMetrics | None
 
     @property
     def completed_round_trips(self) -> int:
@@ -265,9 +280,12 @@ class SwingBacktestResult:
             "strategy_version": self.strategy_version,
             "symbol": self.symbol,
             "status": self.status,
+            "reason": self.reason,
             "initial_cash": _clean(self.initial_cash),
             "cash": _clean(self.cash),
-            "ending_equity": _clean(self.ending_equity),
+            "ending_equity": (
+                None if self.ending_equity is None else _clean(self.ending_equity)
+            ),
             "start_date": self.start_date.isoformat(),
             "end_date": self.end_date.isoformat(),
             "trades": [trade.to_dict() for trade in self.trades],
@@ -276,11 +294,13 @@ class SwingBacktestResult:
             "round_trips": [item.to_dict() for item in self.round_trips],
             "open_position_shares": self.open_position_shares,
             "uncompleted_leg_count": self.uncompleted_leg_count,
-            "benchmark": self.benchmark.to_dict(),
+            "benchmark": (
+                None if self.benchmark is None else self.benchmark.to_dict()
+            ),
             "outperformance": (
                 None if self.outperformance is None else _clean(self.outperformance)
             ),
-            "metrics": self.metrics.to_dict(),
+            "metrics": None if self.metrics is None else self.metrics.to_dict(),
             "metric_conventions": {
                 "annualization_sessions": 252,
                 "sharpe_frequency": "DAILY_252",
@@ -342,6 +362,7 @@ class BacktestAccount:
         self._last_adjusted_close = 0.0
         self._last_index = -1
         self._last_stop_date: date | None = None
+        self._pending_stop_exit_date: date | None = None
         self._equity_curve: list[float] = []
         self._utilization: list[float] = []
         self._blocked_counts: dict[str, int] = {}
@@ -534,6 +555,43 @@ class BacktestAccount:
         self._last_index = max(self._last_index, execution_index)
         return fill
 
+    def execute_protective_gap(
+        self,
+        decision: SwingDecision,
+        bar: DailyBar,
+        *,
+        execution_index: int,
+    ) -> bool:
+        """Exit before any lower-priority action when open gaps below prior stop."""
+        if self.shares <= 0 or decision.planned_stop is None:
+            return False
+        execution_stop = self._execution_stop(decision, bar)
+        if execution_stop is None or bar.open >= execution_stop:
+            return False
+        evidence = dict(decision.evidence)
+        evidence.update({
+            "exit_any": True,
+            "exit_hard_stop": True,
+            "protective_gap_at_open": True,
+        })
+        protective = SwingDecision(
+            symbol=decision.symbol,
+            strategy_version=decision.strategy_version,
+            as_of_trading_date=decision.as_of_trading_date,
+            state=SwingState.EXIT_CANDIDATE,
+            evidence=evidence,
+            blocked_reasons=(),
+            planned_entry_low=None,
+            planned_entry_high=None,
+            planned_stop=decision.planned_stop,
+            planned_shares=self.shares,
+            planned_risk_rate=decision.planned_risk_rate,
+            first_reduce_price=None,
+            valid_for_trading_date=None,
+        )
+        self.execute(protective, bar, execution_index=execution_index)
+        return True
+
     def record_blocked_decision(self, decision: SwingDecision) -> None:
         """Count a technically actionable signal blocked before order creation."""
         if decision.state in _BUY_STATES | _SELL_STATES:
@@ -645,6 +703,9 @@ class BacktestAccount:
             if shares:
                 new_lots.append((acquired, shares))
         self._lots = new_lots
+        if fill.reason in {"GAP_THROUGH_STOP", "STOP_EXIT"}:
+            if self._pending_stop_exit_date is None:
+                self._pending_stop_exit_date = fill.execution_date
         if self.shares == 0:
             holding = max(0, index - self._entry_index)
             self.round_trips.append(CompletedRoundTrip(
@@ -653,8 +714,8 @@ class BacktestAccount:
                 net_pnl=self._cycle_cash_flow,
                 holding_days=holding,
             ))
-            if fill.reason in {"GAP_THROUGH_STOP", "STOP_EXIT"}:
-                self._last_stop_date = fill.execution_date
+            if self._pending_stop_exit_date is not None:
+                self._last_stop_date = self._pending_stop_exit_date
             self._average_cost_adjusted = 0.0
             self._initial_risk_adjusted = 0.0
             self._entry_date = None
@@ -663,6 +724,7 @@ class BacktestAccount:
             self._hard_stop_adjusted = 0.0
             self._first_reduction_completed = False
             self._cycle_cash_flow = 0.0
+            self._pending_stop_exit_date = None
         elif fill.reason == "REDUCE":
             self._first_reduction_completed = True
 
@@ -700,7 +762,12 @@ class BacktestAccount:
             and bar.open < execution_stop
         ):
             return "GAP_THROUGH_STOP"
-        return "STOP_EXIT" if decision.evidence.get("exit_any") else "EXIT_SIGNAL"
+        if (
+            decision.evidence.get("exit_hard_stop") is True
+            or decision.evidence.get("exit_trailing_stop") is True
+        ):
+            return "STOP_EXIT"
+        return "EXIT_SIGNAL"
 
     def _reject(
         self,
@@ -757,8 +824,11 @@ class SwingBacktester:
         bars: Sequence[DailyBar],
         initial_cash: float,
     ) -> SwingBacktestResult:
-        normalized = self._validate_bars(bars)
         cash = _finite(initial_cash, "initial_cash", positive=True)
+        try:
+            normalized = self._validate_bars(bars)
+        except _CorporateActionUnsupported as error:
+            return self._unavailable_result(error.bars, cash)
         account = BacktestAccount(cash, self.trading, self.config, **self.costs)
         first_execution_index = self.config.minimum_daily_bars
         first_execution = normalized[first_execution_index]
@@ -775,23 +845,40 @@ class SwingBacktester:
                 execution_index=execution_index,
             )
             decision = evaluate_swing(normalized[: index + 1], self.config, context)
-            account.record_blocked_decision(decision)
-            account.execute(decision, execution_bar, execution_index=execution_index)
+            protected = account.execute_protective_gap(
+                decision, execution_bar, execution_index=execution_index,
+            )
+            if not protected:
+                account.record_blocked_decision(decision)
+                account.execute(
+                    decision, execution_bar, execution_index=execution_index,
+                )
             account.mark(execution_bar, execution_index)
         ending_equity = account.cash + account.shares * normalized[-1].close
         benchmark = self._benchmark(normalized, cash, first_execution_index)
         metrics = self._metrics(account, cash, ending_equity)
         completed = len(account.round_trips)
-        status = "OK" if completed else "INSUFFICIENT_SAMPLE"
+        status = (
+            "OK" if completed and benchmark is not None
+            else "INSUFFICIENT_SAMPLE"
+        )
+        reason = (
+            None if status == "OK"
+            else (
+                "BENCHMARK_UNAVAILABLE" if benchmark is None
+                else "NO_COMPLETED_ROUND_TRIP"
+            )
+        )
         outperformance = (
             metrics.cumulative_return - benchmark.cumulative_return
-            if completed else None
+            if completed and benchmark is not None else None
         )
         return SwingBacktestResult(
             schema_version=1,
             strategy_version=self.config.strategy_version,
             symbol=normalized[0].symbol,
             status=status,
+            reason=reason,
             initial_cash=cash,
             cash=account.cash,
             ending_equity=ending_equity,
@@ -807,19 +894,81 @@ class SwingBacktester:
             metrics=metrics,
         )
 
+    def _unavailable_result(
+        self,
+        bars: tuple[DailyBar, ...],
+        initial_cash: float,
+    ) -> SwingBacktestResult:
+        first_execution_index = self.config.minimum_daily_bars
+        return SwingBacktestResult(
+            schema_version=1,
+            strategy_version=self.config.strategy_version,
+            symbol=bars[0].symbol,
+            status="DATA_UNAVAILABLE",
+            reason="CORPORATE_ACTION_UNSUPPORTED",
+            initial_cash=initial_cash,
+            cash=initial_cash,
+            ending_equity=None,
+            start_date=bars[first_execution_index].trading_date,
+            end_date=bars[-1].trading_date,
+            trades=(),
+            rejections=(),
+            round_trips=(),
+            open_position_shares=0,
+            uncompleted_leg_count=0,
+            benchmark=None,
+            outperformance=None,
+            metrics=None,
+        )
+
     def _validate_bars(self, bars: Sequence[DailyBar]) -> tuple[DailyBar, ...]:
         if isinstance(bars, (str, bytes)):
             raise SwingBacktestError("bars must be a sequence of DailyBar")
         try:
-            result = tuple(bars)
+            supplied = tuple(bars)
         except Exception as error:
             raise SwingBacktestError("bars must be materializable") from error
         minimum = self.config.minimum_daily_bars + 1
-        if len(result) < minimum:
+        if len(supplied) < minimum:
             raise SwingBacktestError(f"at least {minimum} daily bars are required")
-        if any(type(bar) is not DailyBar for bar in result):
+        if any(type(bar) is not DailyBar for bar in supplied):
             raise SwingBacktestError("bars must contain only DailyBar")
+        try:
+            result = tuple(
+                DailyBar.from_mapping(bar.to_dict()) for bar in supplied
+            )
+        except SwingDataError as error:
+            raise SwingBacktestError(f"invalid daily bar: {error}") from error
+
+        scales = tuple(bar.close / bar.adjusted_close for bar in result)
+        uncertainties = tuple(
+            self.trading.price_tick / bar.adjusted_close
+            + (
+                bar.close * self.trading.price_tick
+                / (bar.adjusted_close * bar.adjusted_close)
+            )
+            for bar in result
+        )
+        for scale_index, (prior_scale, current_scale) in enumerate(
+            zip(scales, scales[1:]), start=1,
+        ):
+            tolerance = max(
+                1e-15,
+                math.ulp(prior_scale) * 8,
+                math.ulp(current_scale) * 8,
+                uncertainties[scale_index - 1] + uncertainties[scale_index],
+            )
+            if abs(current_scale - prior_scale) > tolerance:
+                raise _CorporateActionUnsupported(result)
+
         symbol = result[0].symbol
+        validator = DailyBarValidator(set())
+        metadata = EtfMetadata(
+            symbol=symbol,
+            name=symbol,
+            index=IndexMetadata("000000", "BACKTEST", "LOCAL"),
+            trading=self.trading,
+        )
         previous_date: date | None = None
         for bar in result:
             if (
@@ -874,6 +1023,12 @@ class SwingBacktester:
             )
             if max(scales) - min(scales) > max(1e-10, abs(scales[0]) * 1e-9):
                 raise SwingBacktestError("adjusted/raw scale is inconsistent")
+            try:
+                validator.validate(bar, metadata)
+            except SwingDataError as error:
+                raise SwingBacktestError(
+                    f"invalid daily bar: {error}",
+                ) from error
         for prior, current in zip(result, result[1:]):
             tolerance = max(
                 self.trading.price_tick,
@@ -882,26 +1037,21 @@ class SwingBacktester:
             )
             if abs(current.previous_close - prior.close) > tolerance:
                 raise SwingBacktestError("previous_close does not match prior raw close")
-            prior_scale = prior.close / prior.adjusted_close
-            current_scale = current.close / current.adjusted_close
-            if math.isclose(
-                current_scale, prior_scale, rel_tol=1e-9, abs_tol=1e-12,
+            lower = current.previous_close * (
+                1.0 - self.trading.price_limit_pct
+            )
+            upper = current.previous_close * (
+                1.0 + self.trading.price_limit_pct
+            )
+            if any(
+                value < lower - tolerance or value > upper + tolerance
+                for value in (
+                    current.open, current.high, current.low, current.close,
+                )
             ):
-                lower = current.previous_close * (
-                    1.0 - self.trading.price_limit_pct
+                raise SwingBacktestError(
+                    "raw price exceeds configured price limit",
                 )
-                upper = current.previous_close * (
-                    1.0 + self.trading.price_limit_pct
-                )
-                if any(
-                    value < lower - tolerance or value > upper + tolerance
-                    for value in (
-                        current.open, current.high, current.low, current.close,
-                    )
-                ):
-                    raise SwingBacktestError(
-                        "raw price exceeds configured price limit",
-                    )
         return result
 
     def _benchmark(
@@ -909,57 +1059,64 @@ class SwingBacktester:
         bars: tuple[DailyBar, ...],
         initial_cash: float,
         index: int,
-    ) -> SwingBenchmarkResult:
-        bar = bars[index]
-        price = _adverse_tick_price(
-            bar.open, self.costs["slippage_rate"], self.trading.price_tick, "BUY",
-        )
-        limit_account = BacktestAccount(
-            initial_cash, self.trading, self.config, **self.costs,
-        )
-        if index > 0:
-            limit_account._last_mark_price = bars[index - 1].close
-            limit_account._last_adjusted_close = bars[index - 1].adjusted_close
-        price = min(price, bar.high)
-        if not limit_account._is_scale_transition(bar):
+    ) -> SwingBenchmarkResult | None:
+        for candidate_index in range(index, len(bars)):
+            bar = bars[candidate_index]
+            limit_account = BacktestAccount(
+                initial_cash, self.trading, self.config, **self.costs,
+            )
+            if candidate_index > 0:
+                limit_account._last_mark_price = bars[candidate_index - 1].close
+                limit_account._last_adjusted_close = (
+                    bars[candidate_index - 1].adjusted_close
+                )
+            if bar.volume <= 0.0 or limit_account._limit_locked(bar, "BUY"):
+                continue
+            price = _adverse_tick_price(
+                bar.open,
+                self.costs["slippage_rate"],
+                self.trading.price_tick,
+                "BUY",
+            )
             price = min(
                 price,
+                bar.high,
                 bar.previous_close * (1.0 + self.trading.price_limit_pct),
             )
-        maximum = _lot_floor(initial_cash / price, self.trading.lot_size)
-        while maximum > 0:
-            notional = maximum * price
-            fee = max(
-                notional * self.costs["buy_fee_rate"],
-                self.costs["minimum_fee"],
-            )
-            if notional + fee <= initial_cash + 1e-9:
-                break
-            maximum -= self.trading.lot_size
-        if bar.volume <= 0.0 or limit_account._limit_locked(bar, "BUY"):
-            maximum = 0
-        else:
+            maximum = _lot_floor(initial_cash / price, self.trading.lot_size)
+            while maximum > 0:
+                notional = maximum * price
+                fee = max(
+                    notional * self.costs["buy_fee_rate"],
+                    self.costs["minimum_fee"],
+                )
+                if notional + fee <= initial_cash + 1e-9:
+                    break
+                maximum -= self.trading.lot_size
             capacity = _lot_floor(
                 bar.volume * self.trading.volume_unit_shares
                 * self.config.max_volume_participation,
                 self.trading.lot_size,
             )
             maximum = min(maximum, capacity)
-        fee = (
-            max(maximum * price * self.costs["buy_fee_rate"], self.costs["minimum_fee"])
-            if maximum else 0.0
-        )
-        cash = initial_cash - maximum * price - fee
-        ending = cash + maximum * bars[-1].close
-        return SwingBenchmarkResult(
-            start_date=bar.trading_date,
-            shares=maximum,
-            cash=cash,
-            ending_equity=ending,
-            cumulative_return=ending / initial_cash - 1.0,
-            fee=fee,
-            slippage=abs(price - bar.open) * maximum,
-        )
+            if maximum <= 0:
+                continue
+            fee = max(
+                maximum * price * self.costs["buy_fee_rate"],
+                self.costs["minimum_fee"],
+            )
+            cash = initial_cash - maximum * price - fee
+            ending = cash + maximum * bars[-1].close
+            return SwingBenchmarkResult(
+                start_date=bar.trading_date,
+                shares=maximum,
+                cash=cash,
+                ending_equity=ending,
+                cumulative_return=ending / initial_cash - 1.0,
+                fee=fee,
+                slippage=abs(price - bar.open) * maximum,
+            )
+        return None
 
     @staticmethod
     def _metrics(
