@@ -16,7 +16,7 @@ from urllib.request import Request, urlopen
 from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
 from etf_rotation.quote_collector import (
     SOURCE_NAME, TRENDS2_ENDPOINT, TRENDS2_FALLBACK_ENDPOINT,
-    Trends2QuoteCollector, market_for_symbol,
+    Trends2QuoteCollector, market_for_symbol, source_label,
 )
 from etf_rotation.t_monitor import (
     AlertHistoryStore, JsonQuoteAdapter, MarketDataError, QuoteHistoryStore,
@@ -136,6 +136,18 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
         self.assertEqual(market_for_symbol("510300"), 1)
         with self.assertRaisesRegex(MarketDataError, "无法映射"):
             market_for_symbol("400001")
+
+    def test_market_mapping_requires_exact_ascii_six_digit_string(self) -> None:
+        for symbol in ("51030", "5103000", "５１０３００", 510300, True):
+            with self.subTest(symbol=symbol):
+                with self.assertRaisesRegex(MarketDataError, "6位数字"):
+                    market_for_symbol(symbol)
+
+    def test_primary_source_label_remains_public_and_exact(self) -> None:
+        self.assertEqual(
+            source_label(TRENDS2_ENDPOINT),
+            "东方财富 trends2 (push2his.eastmoney.com)",
+        )
 
     def test_collects_all_enabled_quotes_and_parses_trends2_fields(self) -> None:
         requests = []

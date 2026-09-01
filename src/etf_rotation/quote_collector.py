@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-import base64
 from datetime import datetime
 import json
 import os
 from pathlib import Path
-import shutil
-import subprocess
 import tempfile
-import time
 from typing import Any
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from zoneinfo import ZoneInfo
 
+from .eastmoney_client import (
+    Transport,
+    _default_transport,
+    market_for_symbol as _shared_market_for_symbol,
+)
 from .t_monitor import JsonQuoteAdapter, MarketDataError, WatchItem
 
 
@@ -24,7 +25,6 @@ TRENDS2_ENDPOINT = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
 TRENDS2_FALLBACK_ENDPOINT = "https://push2delay.eastmoney.com/api/qt/stock/trends2/get"
 _FIELDS1 = "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"
 _FIELDS2 = "f51,f52,f53,f54,f55,f56,f57,f58"
-Transport = Callable[[Request, float], bytes]
 
 
 class _RequestFailure(Exception):
@@ -41,78 +41,7 @@ def source_label(endpoint: str) -> str:
 
 
 def market_for_symbol(symbol: str) -> int:
-    if len(symbol) != 6 or not symbol.isdigit():
-        raise MarketDataError(f"证券代码必须是6位数字: {symbol}")
-    if symbol[0] in "0123":
-        return 0
-    if symbol[0] in "5679":
-        return 1
-    raise MarketDataError(f"无法映射证券市场: {symbol}")
-
-
-def _powershell_transport(request: Request, timeout: float) -> bytes:
-    encoded_url = base64.b64encode(request.full_url.encode("utf-8")).decode("ascii")
-    script = (
-        "$u=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"
-        + encoded_url
-        + "'));$r=Invoke-WebRequest -UseBasicParsing -Uri $u -TimeoutSec "
-        + str(max(1, int(timeout)))
-        + ";[Convert]::ToBase64String($r.Content)"
-    )
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        check=True,
-        capture_output=True,
-        timeout=timeout + 3,
-    )
-    return base64.b64decode(result.stdout.strip(), validate=True)
-
-
-def _default_transport(request: Request, timeout: float) -> bytes:
-    curl = shutil.which("curl.exe") or shutil.which("curl")
-    if curl is None:
-        with urlopen(request, timeout=timeout) as response:
-            return response.read()
-    command = [
-        curl,
-        "--fail",
-        "--silent",
-        "--show-error",
-        "--location",
-        "--connect-timeout",
-        str(timeout),
-        "--max-time",
-        str(timeout),
-    ]
-    for name, value in request.header_items():
-        command.extend(("--header", f"{name}: {value}"))
-    command.append(request.full_url)
-    last_error = "行情请求失败"
-    for attempt in range(3):
-        try:
-            result = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                timeout=timeout + 2,
-            )
-        except subprocess.TimeoutExpired as error:
-            last_error = str(error)
-        else:
-            if result.stdout:
-                try:
-                    json.loads(result.stdout.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    pass
-                else:
-                    return result.stdout
-            last_error = result.stderr.decode("utf-8", errors="replace").strip() or f"curl 退出码 {result.returncode}"
-        if attempt < 2:
-            time.sleep(0.2 * (attempt + 1))
-    try:
-        return _powershell_transport(request, timeout)
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
-        raise OSError(last_error)
+    return _shared_market_for_symbol(symbol, error_type=MarketDataError)
 
 
 class Trends2QuoteCollector:
