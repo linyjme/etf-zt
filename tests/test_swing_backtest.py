@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import date
 import json
 import math
@@ -645,6 +645,132 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
             self.assertIsNone(first.metrics.average_loss)
             self.assertEqual(first.metrics.longest_losing_streak, 0)
 
+    def test_result_serializes_complete_reproducible_parameters(self) -> None:
+        bars = swing_strategy_bars(72, pattern="falling_ma60")
+        result = self.backtester.run_symbol(bars, 100_000.0)
+        payload = result.to_dict()
+        expected_parameters = {
+            field.name: getattr(self.config, field.name)
+            for field in fields(type(self.config))
+        }
+        self.assertEqual(
+            list(payload["strategy_parameters"]),
+            sorted(expected_parameters),
+        )
+        self.assertEqual(payload["strategy_parameters"], dict(
+            sorted(expected_parameters.items()),
+        ))
+        self.assertEqual(payload["execution_assumptions"], {
+            "asset_type": "DOMESTIC_EQUITY_ETF",
+            "benchmark_liquidated_at_end": False,
+            "benchmark_policy": (
+                "same_initial_cash_first_executable_buy_and_hold_to_end"
+            ),
+            "buy_fill_price_formula": (
+                "ceil_to_tick((reference_price+half_spread_ticks*price_tick)"
+                "*(1+slippage_rate))"
+            ),
+            "buy_fee_rate": self.backtester.costs["buy_fee_rate"],
+            "corporate_action_policy": (
+                "fail_closed_on_adjusted_raw_scale_change"
+            ),
+            "default_half_spread_ticks": 1.0,
+            "default_half_spread_ticks_rationale": (
+                "conservative_one_tick_per_side"
+            ),
+            "entry_execution_policy": (
+                "reject_open_at_or_below_stop_or_above_entry_high_plus_one_tick"
+            ),
+            "exchange": "SSE",
+            "execution_cost_order": (
+                "half_spread_then_percentage_slippage_then_single_adverse_"
+                "tick_rounding"
+            ),
+            "execution_timing": "next_trading_day_raw_open",
+            "fee_formula": (
+                "max(shares*fill_price*side_fee_rate,minimum_fee)"
+            ),
+            "fill_cap_policy": (
+                "buy_min_model_high_upper_limit;sell_max_model_low_lower_limit"
+            ),
+            "financing_policy": "cash_only_no_negative_balance",
+            "half_spread_ticks": 1.0,
+            "intraday_turnaround": False,
+            "lot_size": 100,
+            "mark_to_market_policy": (
+                "final_raw_close_without_forced_liquidation"
+            ),
+            "max_volume_participation": self.config.max_volume_participation,
+            "minimum_fee": self.backtester.costs["minimum_fee"],
+            "price_limit_pct": 0.20,
+            "price_limit_policy": (
+                "reject_locked_side_and_cap_fill_to_daily_limit"
+            ),
+            "price_tick": 0.001,
+            "raw_adjusted_policy": (
+                "signals_on_adjusted_prices_execution_on_raw_prices"
+            ),
+            "sell_fee_rate": self.backtester.costs["sell_fee_rate"],
+            "sell_fill_price_formula": (
+                "max(price_tick,floor_to_tick((reference_price-half_spread_ticks"
+                "*price_tick)*(1-slippage_rate)))"
+            ),
+            "sellability_policy": (
+                "metadata_intraday_turnaround_and_sellable_delay_days"
+            ),
+            "sellable_delay_days": 1,
+            "signal_bar_policy": "completed_daily_bars_through_signal_date",
+            "slippage_rate": self.backtester.costs["slippage_rate"],
+            "spread_slippage_attribution": (
+                "if_half_spread_ticks_zero_spread_cost_zero;otherwise_spread_"
+                "is_zero_slippage_effective_fill_cost_capped_by_total_adverse_"
+                "cost;slippage_is_residual_adverse_cost"
+            ),
+            "stop_execution_policy": (
+                "raw_open_on_gap_else_stop_on_intraday_touch"
+            ),
+            "volume_policy": "metadata_units_participation_then_lot_floor",
+            "volume_unit_shares": 100,
+        })
+
+        varied_config = replace(
+            self.config,
+            walk_forward_step_days=self.config.walk_forward_step_days + 1,
+        )
+        varied = SwingBacktester(varied_config, self.trading).run_symbol(
+            bars, 100_000.0,
+        )
+        self.assertNotEqual(result.to_json(), varied.to_json())
+        self.assertNotEqual(
+            payload["strategy_parameters"],
+            varied.to_dict()["strategy_parameters"],
+        )
+        varied_cost = SwingBacktester(
+            self.config, self.trading, half_spread_ticks=0.5,
+        ).run_symbol(bars, 100_000.0)
+        self.assertEqual(
+            varied_cost.execution_assumptions["half_spread_ticks"], 0.5,
+        )
+        self.assertNotEqual(result.to_json(), varied_cost.to_json())
+        with self.assertRaises(TypeError):
+            result.strategy_parameters["risk_per_trade"] = 0.5
+        with self.assertRaises(TypeError):
+            result.execution_assumptions["half_spread_ticks"] = 0.0
+
+        adjusted = swing_strategy_bars(72, pattern="pullback_reclaim")
+        corporate_action = with_raw_scales(
+            adjusted, [1.0] * 70 + [0.5, 0.5],
+        )
+        unavailable = self.backtester.run_symbol(corporate_action, 100_000.0)
+        self.assertEqual(
+            unavailable.to_dict()["execution_assumptions"],
+            payload["execution_assumptions"],
+        )
+        self.assertEqual(
+            unavailable.to_dict()["strategy_parameters"],
+            payload["strategy_parameters"],
+        )
+
     def test_strategy_evaluation_uses_bounded_equivalent_window(self) -> None:
         bars = swing_strategy_bars(800, pattern="rising")
         limit = strategy_lookback(self.config)
@@ -681,11 +807,85 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
             self.config,
             context,
         )
-        full_dict = full.to_dict()
-        bounded_dict = bounded.to_dict()
-        full_dict["evidence"].pop("bar_count")
-        bounded_dict["evidence"].pop("bar_count")
-        self.assertEqual(full_dict, bounded_dict)
+        restored = self.backtester._restore_full_history_evidence(
+            bounded,
+            full_bar_count=signal_index + 1,
+            signal_index=signal_index,
+            trading_date_indices={
+                bar.trading_date: index for index, bar in enumerate(bars)
+            },
+            last_stop_trading_date=None,
+        )
+        self.assertEqual(full.to_dict(), restored.to_dict())
+
+    def test_bounded_history_restores_exact_full_cooldown_evidence(self) -> None:
+        bars = swing_strategy_bars(242, pattern="rising")
+        signal_index = 240
+        lookback = strategy_lookback(self.config)
+        context = PortfolioContext.empty(
+            100_000.0,
+            lot_size=self.trading.lot_size,
+            next_trading_date=bars[signal_index + 1].trading_date,
+            last_stop_trading_date=bars[0].trading_date,
+        )
+        full = evaluate_swing(
+            bars[:signal_index + 1], self.config, context,
+        )
+        bounded = evaluate_swing(
+            bars[signal_index + 1 - lookback:signal_index + 1],
+            self.config,
+            context,
+        )
+        restored = self.backtester._restore_full_history_evidence(
+            bounded,
+            full_bar_count=signal_index + 1,
+            signal_index=signal_index,
+            trading_date_indices={
+                bar.trading_date: index for index, bar in enumerate(bars)
+            },
+            last_stop_trading_date=context.last_stop_trading_date,
+        )
+
+        self.assertNotEqual(full.to_dict(), bounded.to_dict())
+        self.assertEqual(restored.to_dict(), full.to_dict())
+        self.assertEqual(restored.evidence["bar_count"], 241)
+        self.assertEqual(restored.evidence["cooldown_sessions_elapsed"], 240)
+
+    def test_bounded_unavailable_does_not_invent_cooldown_evidence(self) -> None:
+        bars = swing_strategy_bars(242, pattern="rising")
+        signal_index = 240
+        overflowing = replace(
+            self.config, pullback_atr_distance=1.7e308,
+        )
+        backtester = SwingBacktester(overflowing, self.trading)
+        context = PortfolioContext.empty(
+            100_000.0,
+            lot_size=self.trading.lot_size,
+            next_trading_date=bars[signal_index + 1].trading_date,
+            last_stop_trading_date=bars[0].trading_date,
+        )
+        full = evaluate_swing(
+            bars[:signal_index + 1], overflowing, context,
+        )
+        lookback = strategy_lookback(overflowing)
+        bounded = evaluate_swing(
+            bars[signal_index + 1 - lookback:signal_index + 1],
+            overflowing,
+            context,
+        )
+        restored = backtester._restore_full_history_evidence(
+            bounded,
+            full_bar_count=signal_index + 1,
+            signal_index=signal_index,
+            trading_date_indices={
+                bar.trading_date: index for index, bar in enumerate(bars)
+            },
+            last_stop_trading_date=context.last_stop_trading_date,
+        )
+
+        self.assertEqual(full.state, SwingState.DATA_UNAVAILABLE)
+        self.assertEqual(restored.to_dict(), full.to_dict())
+        self.assertNotIn("cooldown_sessions_elapsed", restored.evidence)
 
     def test_spread_cost_is_separate_for_strategy_and_benchmark(self) -> None:
         bars = swing_strategy_bars(73, pattern="rising")
@@ -741,6 +941,31 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         self.assertGreaterEqual(with_spread.benchmark.cash, 0.0)
         self.assertLess(with_spread.ending_equity, without_spread.ending_equity)
         self.assertIn('"spread_cost":', with_spread.to_json())
+
+        off_tick = replace(
+            bars[1], open=100.0055, adjusted_open=100.0055,
+        )
+        account = BacktestAccount(
+            100_000.0,
+            self.trading,
+            self.config,
+            buy_fee_rate=0.0,
+            minimum_fee=0.0,
+            slippage_rate=0.0,
+            half_spread_ticks=0.0,
+        )
+        fill = account.execute(
+            _decision(
+                SwingState.TRIAL_ENTRY_CANDIDATE,
+                bars[0].trading_date,
+                off_tick.trading_date,
+                shares=100,
+            ),
+            off_tick,
+            execution_index=1,
+        )
+        self.assertEqual(fill.spread_cost, 0.0)
+        self.assertGreater(fill.slippage, 0.0)
 
     def test_invalid_inputs_are_rejected_without_mutating_sequence(self) -> None:
         bars = list(swing_strategy_bars(72, pattern="rising"))

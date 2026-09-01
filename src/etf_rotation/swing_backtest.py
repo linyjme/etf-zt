@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from datetime import date, datetime
 import json
 import math
@@ -63,6 +63,25 @@ def _finite(value: object, field: str, *, positive: bool = False) -> float:
 def _clean(value: float) -> float:
     rounded = round(float(value), 12)
     return 0.0 if rounded == 0.0 else rounded
+
+
+def _freeze_audit_mapping(
+    values: Mapping[str, object], field: str,
+) -> Mapping[str, object]:
+    normalized: dict[str, object] = {}
+    for key in sorted(values):
+        if type(key) is not str or not key:
+            raise SwingBacktestError(f"{field} keys must be nonempty strings")
+        value = values[key]
+        if type(value) is float:
+            if not math.isfinite(value):
+                raise SwingBacktestError(f"{field} values must be JSON-safe")
+            normalized[key] = float(value)
+        elif type(value) in (str, int, bool):
+            normalized[key] = value
+        else:
+            raise SwingBacktestError(f"{field} values must be JSON-safe scalars")
+    return MappingProxyType(normalized)
 
 
 def _lot_floor(shares: int | float, lot_size: int) -> int:
@@ -323,6 +342,8 @@ class SwingBenchmarkResult:
 class SwingBacktestResult:
     schema_version: int
     strategy_version: str
+    strategy_parameters: Mapping[str, object]
+    execution_assumptions: Mapping[str, object]
     symbol: str
     status: str
     reason: str | None
@@ -340,6 +361,22 @@ class SwingBacktestResult:
     outperformance: float | None
     metrics: SwingBacktestMetrics | None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "strategy_parameters",
+            _freeze_audit_mapping(
+                self.strategy_parameters, "strategy_parameters",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "execution_assumptions",
+            _freeze_audit_mapping(
+                self.execution_assumptions, "execution_assumptions",
+            ),
+        )
+
     @property
     def completed_round_trips(self) -> int:
         return len(self.round_trips)
@@ -348,6 +385,8 @@ class SwingBacktestResult:
         return {
             "schema_version": self.schema_version,
             "strategy_version": self.strategy_version,
+            "strategy_parameters": dict(self.strategy_parameters),
+            "execution_assumptions": dict(self.execution_assumptions),
             "symbol": self.symbol,
             "status": self.status,
             "reason": self.reason,
@@ -992,6 +1031,122 @@ class SwingBacktester:
         )):
             raise SwingBacktestError("rates must not exceed 1")
 
+    def _strategy_parameters(self) -> dict[str, object]:
+        return {
+            field.name: getattr(self.config, field.name)
+            for field in sorted(
+                fields(SwingStrategyConfig), key=lambda item: item.name,
+            )
+        }
+
+    def _execution_assumptions(self) -> dict[str, object]:
+        return {
+            "asset_type": self.trading.asset_type,
+            "benchmark_liquidated_at_end": False,
+            "benchmark_policy": (
+                "same_initial_cash_first_executable_buy_and_hold_to_end"
+            ),
+            "buy_fill_price_formula": (
+                "ceil_to_tick((reference_price+half_spread_ticks*price_tick)"
+                "*(1+slippage_rate))"
+            ),
+            "buy_fee_rate": self.costs["buy_fee_rate"],
+            "corporate_action_policy": (
+                "fail_closed_on_adjusted_raw_scale_change"
+            ),
+            "default_half_spread_ticks": constants.DEFAULT_HALF_SPREAD_TICKS,
+            "default_half_spread_ticks_rationale": (
+                "conservative_one_tick_per_side"
+            ),
+            "entry_execution_policy": (
+                "reject_open_at_or_below_stop_or_above_entry_high_plus_one_tick"
+            ),
+            "exchange": self.trading.exchange,
+            "execution_cost_order": (
+                "half_spread_then_percentage_slippage_then_single_adverse_"
+                "tick_rounding"
+            ),
+            "execution_timing": "next_trading_day_raw_open",
+            "fee_formula": (
+                "max(shares*fill_price*side_fee_rate,minimum_fee)"
+            ),
+            "fill_cap_policy": (
+                "buy_min_model_high_upper_limit;sell_max_model_low_lower_limit"
+            ),
+            "financing_policy": "cash_only_no_negative_balance",
+            "half_spread_ticks": self.costs["half_spread_ticks"],
+            "intraday_turnaround": self.trading.intraday_turnaround,
+            "lot_size": self.trading.lot_size,
+            "mark_to_market_policy": (
+                "final_raw_close_without_forced_liquidation"
+            ),
+            "max_volume_participation": self.config.max_volume_participation,
+            "minimum_fee": self.costs["minimum_fee"],
+            "price_limit_pct": self.trading.price_limit_pct,
+            "price_limit_policy": (
+                "reject_locked_side_and_cap_fill_to_daily_limit"
+            ),
+            "price_tick": self.trading.price_tick,
+            "raw_adjusted_policy": (
+                "signals_on_adjusted_prices_execution_on_raw_prices"
+            ),
+            "sell_fee_rate": self.costs["sell_fee_rate"],
+            "sell_fill_price_formula": (
+                "max(price_tick,floor_to_tick((reference_price-half_spread_ticks"
+                "*price_tick)*(1-slippage_rate)))"
+            ),
+            "sellability_policy": (
+                "metadata_intraday_turnaround_and_sellable_delay_days"
+            ),
+            "sellable_delay_days": self.trading.sellable_delay_days,
+            "signal_bar_policy": "completed_daily_bars_through_signal_date",
+            "slippage_rate": self.costs["slippage_rate"],
+            "spread_slippage_attribution": (
+                "if_half_spread_ticks_zero_spread_cost_zero;otherwise_spread_"
+                "is_zero_slippage_effective_fill_cost_capped_by_total_adverse_"
+                "cost;slippage_is_residual_adverse_cost"
+            ),
+            "stop_execution_policy": (
+                "raw_open_on_gap_else_stop_on_intraday_touch"
+            ),
+            "volume_policy": "metadata_units_participation_then_lot_floor",
+            "volume_unit_shares": self.trading.volume_unit_shares,
+        }
+
+    def _restore_full_history_evidence(
+        self,
+        decision: SwingDecision,
+        *,
+        full_bar_count: int,
+        signal_index: int,
+        trading_date_indices: Mapping[date, int],
+        last_stop_trading_date: date | None,
+        has_position: bool = False,
+    ) -> SwingDecision:
+        evidence = dict(decision.evidence)
+        evidence["bar_count"] = full_bar_count
+        if (
+            last_stop_trading_date is not None
+            and not has_position
+            and "cooldown_sessions_elapsed" in evidence
+            and "cooldown_ok" in evidence
+        ):
+            stop_index = trading_date_indices.get(last_stop_trading_date)
+            if stop_index is None:
+                raise SwingBacktestError(
+                    "last stop date is absent from validated backtest history",
+                )
+            elapsed = max(0, signal_index - stop_index)
+            cooldown_ok = elapsed > self.config.cooldown_days
+            evidence["cooldown_sessions_elapsed"] = elapsed
+            evidence["cooldown_ok"] = cooldown_ok
+            evidence["entry_hard_gates_ok"] = bool(
+                evidence.get("entry_sizing_gates_ok")
+                and cooldown_ok
+                and evidence.get("calendar_validity_ok")
+            )
+        return replace(decision, evidence=evidence)
+
     def run_symbol(
         self,
         bars: Sequence[DailyBar],
@@ -1011,6 +1166,9 @@ class SwingBacktester:
         ].adjusted_close
         account._last_index = first_execution_index - 1
         lookback = strategy_lookback(self.config)
+        trading_date_indices = {
+            bar.trading_date: index for index, bar in enumerate(normalized)
+        }
         for index in range(self.config.minimum_daily_bars - 1, len(normalized) - 1):
             execution_index = index + 1
             execution_bar = normalized[execution_index]
@@ -1021,6 +1179,14 @@ class SwingBacktester:
             signal_start = max(0, index + 1 - lookback)
             decision = evaluate_swing(
                 normalized[signal_start: index + 1], self.config, context,
+            )
+            decision = self._restore_full_history_evidence(
+                decision,
+                full_bar_count=index + 1,
+                signal_index=index,
+                trading_date_indices=trading_date_indices,
+                last_stop_trading_date=context.last_stop_trading_date,
+                has_position=context.position is not None,
             )
             protected = account.execute_protective_stop(
                 decision, execution_bar, execution_index=execution_index,
@@ -1053,6 +1219,8 @@ class SwingBacktester:
         return SwingBacktestResult(
             schema_version=1,
             strategy_version=self.config.strategy_version,
+            strategy_parameters=self._strategy_parameters(),
+            execution_assumptions=self._execution_assumptions(),
             symbol=normalized[0].symbol,
             status=status,
             reason=reason,
@@ -1080,6 +1248,8 @@ class SwingBacktester:
         return SwingBacktestResult(
             schema_version=1,
             strategy_version=self.config.strategy_version,
+            strategy_parameters=self._strategy_parameters(),
+            execution_assumptions=self._execution_assumptions(),
             symbol=bars[0].symbol,
             status="DATA_UNAVAILABLE",
             reason="CORPORATE_ACTION_UNSUPPORTED",
