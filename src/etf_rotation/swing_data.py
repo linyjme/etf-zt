@@ -5,12 +5,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+import errno
 import json
 import math
 import os
 from pathlib import Path
 import tempfile
 import threading
+import time as _time
 from types import MappingProxyType
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -52,6 +54,9 @@ _DAILY_BAR_KEYS = frozenset((
 ))
 _FILE_LOCKS_GUARD = threading.Lock()
 _FILE_LOCKS: dict[str, threading.RLock] = {}
+_WINDOWS_LOCK_RETRY_SECONDS = 0.01
+_WINDOWS_LOCK_CONTENTION_ERRNOS = frozenset((errno.EACCES, errno.EAGAIN))
+_WINDOWS_LOCK_CONTENTION_WINERRORS = frozenset((32, 33))
 
 
 class SwingDataError(ValueError):
@@ -446,14 +451,28 @@ class _SiblingFileLock:
             if os.fstat(handle.fileno()).st_size == 0:
                 handle.write(b"\0")
                 handle.flush()
-            handle.seek(0)
-            mode = msvcrt.LK_RLCK if self.shared else msvcrt.LK_LOCK
-            msvcrt.locking(handle.fileno(), mode, 1)
+            mode = msvcrt.LK_NBRLCK if self.shared else msvcrt.LK_NBLCK
+            while True:
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), mode, 1)
+                    return
+                except OSError as error:
+                    if not self._windows_lock_contended(error):
+                        raise
+                _time.sleep(_WINDOWS_LOCK_RETRY_SECONDS)
         else:
             import fcntl
 
             mode = fcntl.LOCK_SH if self.shared else fcntl.LOCK_EX
             fcntl.flock(handle.fileno(), mode)
+
+    @staticmethod
+    def _windows_lock_contended(error: OSError) -> bool:
+        return (
+            error.errno in _WINDOWS_LOCK_CONTENTION_ERRNOS
+            or getattr(error, "winerror", None) in _WINDOWS_LOCK_CONTENTION_WINERRORS
+        )
 
     @staticmethod
     def _release_platform_lock(handle: Any) -> None:

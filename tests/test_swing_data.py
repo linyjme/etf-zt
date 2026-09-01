@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError, replace
 from datetime import date, datetime, timedelta, timezone
+import errno
 import json
 import math
 import os
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -21,6 +23,7 @@ from etf_rotation.swing_data import (
     DailyHistoryStore,
     DailyBarValidator,
     SwingDataError,
+    _SiblingFileLock,
     _safe_product,
 )
 from tests.swing_helpers import daily_bar_mapping, metadata_fixture
@@ -782,6 +785,14 @@ class DailyHistoryStoreTests(unittest.TestCase):
     def temp_artifacts(self) -> list[Path]:
         return list(self.root.glob(f".{self.path.name}.*.tmp"))
 
+    def assert_history_rejected_without_rewrite(self, content: bytes) -> None:
+        self.path.write_bytes(content)
+        with self.assertRaises(SwingDataError):
+            self.store.load()
+        with self.assertRaises(SwingDataError):
+            self.store.upsert((self.bar(source="NEW"),))
+        self.assertEqual(self.path.read_bytes(), content)
+
     def test_absent_empty_and_query_validation(self) -> None:
         self.assertEqual(self.store.load(), ())
         self.assertEqual(self.store.query("510300"), ())
@@ -881,17 +892,122 @@ class DailyHistoryStoreTests(unittest.TestCase):
         self.assertEqual(self.store.upsert((record,)), (record,))
         self.assertEqual(self.store.load(), (record,))
 
-    def test_load_rejects_noncanonical_json_encoding_without_rewriting(self) -> None:
+    def test_load_rejects_spaces_and_unsorted_key_order_without_rewriting(self) -> None:
         payload = self.bar().to_dict()
         noncanonical = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-        self.path.write_bytes(noncanonical)
+        self.assert_history_rejected_without_rewrite(noncanonical)
 
-        with self.assertRaises(SwingDataError):
-            self.store.load()
-        with self.assertRaises(SwingDataError):
-            self.store.upsert((self.bar(source="NEW"),))
+    def test_load_rejects_crlf_without_rewriting(self) -> None:
+        canonical = json.dumps(
+            self.bar().to_dict(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        self.assert_history_rejected_without_rewrite((canonical + "\r\n").encode("utf-8"))
 
-        self.assertEqual(self.path.read_bytes(), noncanonical)
+    def test_load_rejects_duplicate_json_key_without_rewriting(self) -> None:
+        canonical = json.dumps(
+            self.bar().to_dict(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        duplicate = '{"source":"DUPLICATE",' + canonical[1:] + "\n"
+        self.assert_history_rejected_without_rewrite(duplicate.encode("utf-8"))
+
+    def test_load_rejects_alternate_numeric_spelling_without_rewriting(self) -> None:
+        record = self.bar(
+            previous_close=4.6,
+            open=4.6,
+            high=4.7,
+            low=4.5,
+            close=4.6,
+            amount=460_000.0,
+        )
+        canonical = json.dumps(
+            record.to_dict(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        alternate = canonical.replace('"close":4.6', '"close":4.6000', 1) + "\n"
+        self.assertNotEqual(alternate, canonical + "\n")
+        self.assert_history_rejected_without_rewrite(alternate.encode("utf-8"))
+
+    def test_windows_lock_retries_more_than_ten_contentions_then_succeeds(self) -> None:
+        calls: list[tuple[int, int, int]] = []
+        positions: list[int] = []
+        sleeps: list[float] = []
+
+        def locking(file_descriptor: int, mode: int, count: int) -> None:
+            calls.append((file_descriptor, mode, count))
+            positions.append(os.lseek(file_descriptor, 0, os.SEEK_CUR))
+            if len(calls) <= 12:
+                os.lseek(file_descriptor, 1, os.SEEK_SET)
+                raise OSError(errno.EACCES, "lock busy")
+
+        fake_msvcrt = SimpleNamespace(
+            LK_NBLCK=100,
+            LK_NBRLCK=101,
+            LK_UNLCK=102,
+            LK_LOCK=103,
+            LK_RLCK=104,
+            locking=locking,
+        )
+        lock = _SiblingFileLock.__new__(_SiblingFileLock)
+        lock.shared = False
+        with tempfile.TemporaryFile("w+b") as handle:
+            handle.write(b"\0")
+            handle.flush()
+            lock._handle = handle
+            with (
+                patch.object(os, "name", "nt"),
+                patch.dict(sys.modules, {"msvcrt": fake_msvcrt}),
+                patch(
+                    "etf_rotation.swing_data._time",
+                    SimpleNamespace(sleep=sleeps.append),
+                    create=True,
+                ),
+            ):
+                lock._acquire_platform_lock()
+
+        self.assertEqual(len(calls), 13)
+        self.assertTrue(all(mode == fake_msvcrt.LK_NBLCK for _, mode, _ in calls))
+        self.assertEqual(positions, [0] * 13)
+        self.assertEqual(sleeps, [0.01] * 12)
+
+    def test_windows_lock_immediately_propagates_unrelated_oserror(self) -> None:
+        unrelated = OSError(errno.EINVAL, "bad descriptor")
+        sleeps: list[float] = []
+        fake_msvcrt = SimpleNamespace(
+            LK_NBLCK=100,
+            LK_NBRLCK=101,
+            LK_UNLCK=102,
+            LK_LOCK=103,
+            LK_RLCK=104,
+            locking=lambda *_: (_ for _ in ()).throw(unrelated),
+        )
+        lock = _SiblingFileLock.__new__(_SiblingFileLock)
+        lock.shared = True
+        with tempfile.TemporaryFile("w+b") as handle:
+            handle.write(b"\0")
+            handle.flush()
+            lock._handle = handle
+            with (
+                patch.object(os, "name", "nt"),
+                patch.dict(sys.modules, {"msvcrt": fake_msvcrt}),
+                patch(
+                    "etf_rotation.swing_data._time",
+                    SimpleNamespace(sleep=sleeps.append),
+                    create=True,
+                ),
+            ):
+                with self.assertRaises(OSError) as raised:
+                    lock._acquire_platform_lock()
+
+        self.assertIs(raised.exception, unrelated)
+        self.assertEqual(sleeps, [])
 
     def test_replace_and_fsync_failures_preserve_history_and_clean_temp(self) -> None:
         original = self.store.upsert((self.bar(source="ORIGINAL"),))
@@ -1110,6 +1226,53 @@ DailyHistoryStore(Path(history), metadata, ()).upsert((record,))
 
         self.assertTrue(reader_done.is_set())
         self.assertEqual(observed[0][0].source, "NEW")
+
+    def test_subprocess_writer_lock_blocks_reader_until_release(self) -> None:
+        expected = self.store.upsert((self.bar(source="ORIGINAL"),))
+        ready = self.root / "writer-ready"
+        release = self.root / "writer-release"
+        child = """
+import sys
+import time
+from pathlib import Path
+from etf_rotation.swing_data import _SiblingFileLock
+
+history, ready, release = map(Path, sys.argv[1:])
+with _SiblingFileLock(history, shared=False):
+    ready.write_text("ready", encoding="ascii")
+    while not release.exists():
+        time.sleep(0.005)
+"""
+        process = subprocess.Popen(
+            [sys.executable, "-c", child, str(self.path), str(ready), str(release)],
+            cwd=Path(__file__).resolve().parents[1],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertTrue(ready.exists())
+
+        finished = threading.Event()
+        observed: list[tuple[DailyBar, ...]] = []
+
+        def read() -> None:
+            observed.append(self.store.load())
+            finished.set()
+
+        reader = threading.Thread(target=read)
+        reader.start()
+        time.sleep(0.05)
+        self.assertFalse(finished.is_set())
+        release.touch()
+        stdout, stderr = process.communicate(timeout=5)
+        reader.join(5)
+
+        self.assertEqual(process.returncode, 0, stdout + stderr)
+        self.assertTrue(finished.is_set())
+        self.assertEqual(observed, [expected])
 
     def test_lock_is_released_after_exception(self) -> None:
         self.store.upsert((self.bar(source="ORIGINAL"),))
