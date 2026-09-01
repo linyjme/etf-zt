@@ -824,10 +824,23 @@ class PortfolioLedger:
         current = legacy | {"effective_planned_risk_per_share"}
         if set(event.payload) not in (legacy, current):
             raise PortfolioLedgerError("trade event payload is invalid")
-        effective_risk = event.payload.get(
-            "effective_planned_risk_per_share",
+        requested_risk = _finite_decimal(
             event.payload["planned_risk_per_share"],
+            "planned_risk_per_share",
+            positive=False,
         )
+        effective_risk = _finite_decimal(
+            event.payload.get(
+                "effective_planned_risk_per_share",
+                event.payload["planned_risk_per_share"],
+            ),
+            "effective_planned_risk_per_share",
+            positive=False,
+        )
+        if requested_risk > 0 and effective_risk != requested_risk:
+            raise PortfolioLedgerError(
+                "trade event requested and effective risk fields are inconsistent",
+            )
         trade = TradeInput(
             symbol=event.payload["symbol"],
             side=event.payload["side"],
@@ -835,7 +848,7 @@ class PortfolioLedger:
             price=event.payload["price"],
             fee=event.payload["fee"],
             executed_at=_parse_datetime(event.payload["executed_at"], "executed_at"),
-            planned_risk_per_share=effective_risk,
+            planned_risk_per_share=float(effective_risk),
         )
         normalized = self._validate_trade_input(trade)
         expected_type = (

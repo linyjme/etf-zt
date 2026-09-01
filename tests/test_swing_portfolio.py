@@ -339,6 +339,60 @@ class SwingPortfolioTests(unittest.TestCase):
         with self.assertRaisesRegex(PortfolioLedgerError, "available cash"):
             self.ledger.load_events()
 
+    def test_trade_log_rejects_invalid_requested_risk_even_with_valid_effective_risk(
+        self,
+    ) -> None:
+        self.initialize()
+        self.ledger.record_trade(
+            TradeInput(
+                "510300", "BUY", 100, 4.0, 0.0, self.tuesday,
+                planned_risk_per_share=1.0,
+            ),
+            "risk-event",
+        )
+        canonical = self.path.read_bytes()
+        for invalid in ("1.0", float("nan")):
+            with self.subTest(invalid=invalid):
+                lines = canonical.decode("utf-8").splitlines()
+                event = json.loads(lines[1])
+                event["payload"]["planned_risk_per_share"] = invalid
+                lines[1] = json.dumps(
+                    event,
+                    ensure_ascii=False,
+                    allow_nan=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                self.path.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+                with self.assertRaises(PortfolioLedgerError):
+                    self.ledger.load_events()
+                self.path.write_bytes(canonical)
+
+    def test_trade_log_rejects_explicit_requested_and_effective_risk_mismatch(
+        self,
+    ) -> None:
+        self.initialize()
+        self.ledger.record_trade(
+            TradeInput(
+                "510300", "BUY", 100, 4.0, 0.0, self.tuesday,
+                planned_risk_per_share=1.0,
+            ),
+            "risk-event",
+        )
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        event = json.loads(lines[1])
+        event["payload"]["effective_planned_risk_per_share"] = 2.0
+        lines[1] = json.dumps(
+            event,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self.path.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+        with self.assertRaisesRegex(PortfolioLedgerError, "risk fields"):
+            self.ledger.load_events()
+
     def test_rejects_buy_beyond_cash_sell_beyond_sellable_and_same_day_sell(self) -> None:
         self.initialize(cash=5_000.0)
         with self.assertRaisesRegex(PortfolioLedgerError, "cash"):
