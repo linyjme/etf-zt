@@ -947,6 +947,11 @@ class EtfMetadataTests(unittest.TestCase):
 
 
 class MonitorWebTests(unittest.TestCase):
+    def test_t_page_links_to_standalone_swing_monitor_without_changing_mode(self) -> None:
+        self.assertIn('href="/swing"', PAGE)
+        self.assertIn("本地做T监控", PAGE)
+        self.assertIn("候选观察 · 增量行情 · 只读交易", PAGE)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)

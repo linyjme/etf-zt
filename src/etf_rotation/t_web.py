@@ -41,19 +41,10 @@ from .t_monitor import (
 )
 from .t_page import PAGE
 from .swing_alerts import AlertStoreError
+from .swing_page import SWING_PAGE
 from .swing_portfolio import PortfolioLedgerError, TradeInput
 from .swing_service import SwingPaths, SwingService, SwingServiceError
 from .valuation import ValuationStore
-
-try:
-    from .swing_page import SWING_PAGE
-except ModuleNotFoundError as error:
-    if error.name != f"{__package__}.swing_page":
-        raise
-    SWING_PAGE = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>指数ETF波段监控</title></head>
-<body><main><h1>指数ETF波段监控</h1><p>仅监控，不自动交易</p></main></body></html>
-"""
 
 
 _DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "monitor"
