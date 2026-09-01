@@ -386,6 +386,91 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
                 ).collect((SwingWatchItem("510300", True),), last_completed)
                 self.assertEqual(tuple(bar.trading_date for bar in bars), expected)
 
+    def test_accepts_one_sided_dates_excluded_by_completion_filters(self) -> None:
+        cases = (
+            (
+                "raw-only future",
+                ("2026-08-27", "2026-08-28", "2026-09-01"),
+                ("2026-08-27", "2026-08-28"),
+                "2026-08-31T15:10:00+08:00",
+                date(2026, 9, 1),
+            ),
+            (
+                "adjusted-only current incomplete",
+                ("2026-08-27", "2026-08-28"),
+                ("2026-08-27", "2026-08-28", "2026-08-31"),
+                "2026-08-31T15:09:59+08:00",
+                date(2026, 8, 31),
+            ),
+        )
+        for label, raw_dates, adjusted_dates, now_text, last_completed in cases:
+            with self.subTest(label=label):
+                def transport(request: Request, timeout: float) -> bytes:
+                    query = parse_qs(urlsplit(request.full_url).query)
+                    adjusted = query["fqt"] == ["1"]
+                    return payload_bytes(kline_payload(
+                        "510300",
+                        1,
+                        adjusted=adjusted,
+                        dates=adjusted_dates if adjusted else raw_dates,
+                    ))
+
+                bars = self.collector(
+                    transport,
+                    now=lambda value=now_text: datetime.fromisoformat(value),
+                ).collect((SwingWatchItem("510300", True),), last_completed)
+
+                self.assertEqual(
+                    tuple(bar.trading_date for bar in bars),
+                    (date(2026, 8, 27), date(2026, 8, 28)),
+                )
+                self.assertEqual(
+                    tuple(bar.previous_close for bar in bars),
+                    (9.5, 10.5),
+                )
+
+    def test_rejects_one_sided_retained_dates(self) -> None:
+        cases = (
+            (
+                ("2026-08-27", "2026-08-28"),
+                ("2026-08-27",),
+            ),
+            (
+                ("2026-08-27",),
+                ("2026-08-27", "2026-08-28"),
+            ),
+        )
+        for raw_dates, adjusted_dates in cases:
+            with self.subTest(raw_dates=raw_dates, adjusted_dates=adjusted_dates):
+                def transport(request: Request, timeout: float) -> bytes:
+                    query = parse_qs(urlsplit(request.full_url).query)
+                    adjusted = query["fqt"] == ["1"]
+                    return payload_bytes(kline_payload(
+                        "510300",
+                        1,
+                        adjusted=adjusted,
+                        dates=adjusted_dates if adjusted else raw_dates,
+                    ))
+
+                with self.assertRaisesRegex(SwingDataError, "日期不匹配"):
+                    self.collector(transport).collect(
+                        (SwingWatchItem("510300", True),), date(2026, 8, 28),
+                    )
+
+    def test_adjusted_response_does_not_require_previous_close(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            query = parse_qs(urlsplit(request.full_url).query)
+            adjusted = query["fqt"] == ["1"]
+            payload = kline_payload("510300", 1, adjusted=adjusted)
+            if adjusted:
+                del payload["data"]["preKPrice"]
+            return payload_bytes(payload)
+
+        bars = self.collector(transport).collect(
+            (SwingWatchItem("510300", True),), date(2026, 8, 28),
+        )
+        self.assertEqual(len(bars), 2)
+
     def test_previous_close_uses_response_continuity_when_future_suffix_is_filtered(self) -> None:
         dates = ("2026-08-27", "2026-08-28", "2026-08-31")
 
@@ -403,6 +488,30 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
             [(bar.trading_date, bar.previous_close) for bar in bars],
             [(date(2026, 8, 27), 9.5), (date(2026, 8, 28), 10.5)],
         )
+
+    def test_first_retained_previous_close_uses_filtered_preceding_raw_row(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            query = parse_qs(urlsplit(request.full_url).query)
+            adjusted = query["fqt"] == ["1"]
+            payload = kline_payload("510300", 1, adjusted=adjusted)
+            if adjusted:
+                payload["data"]["klines"] = [
+                    "2026-08-28,5,5.25,5.5,4.9,1000,10000,0,0,0,0",
+                ]
+            else:
+                payload["data"]["klines"] = [
+                    "2026-09-01,9,9.75,10,8.5,900,9000,0,0,0,0",
+                    "2026-08-28,10,10.5,11,9.8,1000,10000,0,0,0,0",
+                ]
+            return payload_bytes(payload)
+
+        bars = self.collector(transport).collect(
+            (SwingWatchItem("510300", True),), date(2026, 9, 1),
+        )
+
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0].trading_date, date(2026, 8, 28))
+        self.assertEqual(bars[0].previous_close, 9.75)
 
     def test_normalizes_aware_clock_to_shanghai_for_all_bars(self) -> None:
         utc_now = datetime(2026, 8, 31, 7, 10, tzinfo=timezone.utc)

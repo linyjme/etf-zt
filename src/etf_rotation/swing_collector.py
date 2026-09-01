@@ -279,11 +279,6 @@ class EastmoneyDailyCollector:
         if type(klines) is not list or not klines:
             raise SwingDataError(f"{symbol} kline缺少日线")
         bars = tuple(self._parse_line(symbol, line) for line in klines)
-        dates = [bar.trading_date for bar in bars]
-        if len(set(dates)) != len(dates):
-            raise SwingDataError(f"{symbol} kline日期重复")
-        if any(left >= right for left, right in zip(dates, dates[1:])):
-            raise SwingDataError(f"{symbol} kline日期必须严格递增")
         return _Response(pre_close, bars)
 
     def _parse_line(self, symbol: str, value: Any) -> _ParsedKline:
@@ -358,10 +353,6 @@ class EastmoneyDailyCollector:
                 raw_response, adjusted_response = responses[item.symbol]
             except (KeyError, TypeError, ValueError) as error:
                 raise SwingDataError(f"{item.symbol} kline批次结果缺失") from error
-            raw_by_date = {bar.trading_date: bar for bar in raw_response.bars}
-            adjusted_by_date = {bar.trading_date: bar for bar in adjusted_response.bars}
-            if set(raw_by_date) != set(adjusted_by_date):
-                raise SwingDataError(f"{item.symbol}原始与复权日期不匹配")
             previous_close_by_date: dict[date, float] = {}
             previous_close = raw_response.pre_close
             if previous_close is None:
@@ -370,24 +361,29 @@ class EastmoneyDailyCollector:
                 previous_close_by_date[raw.trading_date] = previous_close
                 previous_close = raw.close
 
-            retained_dates = [
-                trading_day
-                for trading_day in raw_by_date
-                if trading_day <= last_completed_date
-                and trading_day <= today
-                and (trading_day != today or current_day_complete)
-            ]
+            def retained(bar: _ParsedKline) -> bool:
+                return (
+                    bar.trading_date <= last_completed_date
+                    and bar.trading_date <= today
+                    and (bar.trading_date != today or current_day_complete)
+                )
+
+            raw_retained = tuple(filter(retained, raw_response.bars))
+            adjusted_retained = tuple(filter(retained, adjusted_response.bars))
+            retained_dates = [bar.trading_date for bar in raw_retained]
             adjusted_retained_dates = [
-                trading_day
-                for trading_day in adjusted_by_date
-                if trading_day <= last_completed_date
-                and trading_day <= today
-                and (trading_day != today or current_day_complete)
+                bar.trading_date for bar in adjusted_retained
             ]
+            self._validate_retained_dates(item.symbol, retained_dates)
+            self._validate_retained_dates(item.symbol, adjusted_retained_dates)
             if set(retained_dates) != set(adjusted_retained_dates):
                 raise SwingDataError(f"{item.symbol}过滤后原始与复权日期不匹配")
             if not retained_dates:
                 raise SwingDataError(f"{item.symbol}没有可保留的已完成日线")
+            raw_by_date = {bar.trading_date: bar for bar in raw_retained}
+            adjusted_by_date = {
+                bar.trading_date: bar for bar in adjusted_retained
+            }
             for trading_day in retained_dates:
                 raw = raw_by_date[trading_day]
                 adjusted = adjusted_by_date[trading_day]
@@ -411,3 +407,10 @@ class EastmoneyDailyCollector:
                     "is_final": True,
                 }))
         return tuple(sorted(result, key=lambda bar: (bar.symbol, bar.trading_date)))
+
+    @staticmethod
+    def _validate_retained_dates(symbol: str, dates: list[date]) -> None:
+        if len(set(dates)) != len(dates):
+            raise SwingDataError(f"{symbol} kline日期重复")
+        if any(left >= right for left, right in zip(dates, dates[1:])):
+            raise SwingDataError(f"{symbol} kline日期必须严格递增")
