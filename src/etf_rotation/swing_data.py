@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-import errno
 import json
 import math
 import os
@@ -15,6 +14,7 @@ import threading
 import time as _time
 from types import MappingProxyType
 from typing import Any, Callable
+import weakref
 from zoneinfo import ZoneInfo
 
 from .etf_metadata import EtfMetadata
@@ -53,10 +53,92 @@ _DAILY_BAR_KEYS = frozenset((
     "is_final",
 ))
 _FILE_LOCKS_GUARD = threading.Lock()
-_FILE_LOCKS: dict[str, threading.RLock] = {}
-_WINDOWS_LOCK_RETRY_SECONDS = 0.01
-_WINDOWS_LOCK_CONTENTION_ERRNOS = frozenset((errno.EACCES, errno.EAGAIN))
-_WINDOWS_LOCK_CONTENTION_WINERRORS = frozenset((32, 33))
+_WINDOWS_REPLACE_RETRY_SECONDS = 0.005
+_WINDOWS_REPLACE_MAX_ATTEMPTS = 20
+_WINDOWS_REPLACE_TRANSIENT_ERRORS = frozenset((5, 32, 33))
+
+
+class _ReaderWriterLock:
+    """Writer-preferring in-process reader/writer lock."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._readers = 0
+        self._writer = False
+        self._waiting_writers = 0
+
+    def acquire(self, shared: bool) -> None:
+        with self._condition:
+            if shared:
+                while self._writer or self._waiting_writers:
+                    self._condition.wait()
+                self._readers += 1
+                return
+            self._waiting_writers += 1
+            acquired = False
+            try:
+                while self._writer or self._readers:
+                    self._condition.wait()
+                self._writer = True
+                acquired = True
+            finally:
+                self._waiting_writers -= 1
+                if not acquired:
+                    self._condition.notify_all()
+
+    def release(self, shared: bool) -> None:
+        with self._condition:
+            if shared:
+                if self._readers <= 0:
+                    raise RuntimeError("shared process lock is not held")
+                self._readers -= 1
+            else:
+                if not self._writer:
+                    raise RuntimeError("exclusive process lock is not held")
+                self._writer = False
+            self._condition.notify_all()
+
+
+_FILE_LOCKS: weakref.WeakValueDictionary[str, _ReaderWriterLock] = (
+    weakref.WeakValueDictionary()
+)
+
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    _LOCKFILE_EXCLUSIVE_LOCK = 0x00000002
+
+    class _WindowsOverlapped(ctypes.Structure):
+        _fields_ = (
+            ("Internal", ctypes.c_size_t),
+            ("InternalHigh", ctypes.c_size_t),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        )
+
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _LOCK_FILE_EX = _KERNEL32.LockFileEx
+    _LOCK_FILE_EX.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_WindowsOverlapped),
+    )
+    _LOCK_FILE_EX.restype = wintypes.BOOL
+    _UNLOCK_FILE_EX = _KERNEL32.UnlockFileEx
+    _UNLOCK_FILE_EX.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_WindowsOverlapped),
+    )
+    _UNLOCK_FILE_EX.restype = wintypes.BOOL
 
 
 class SwingDataError(ValueError):
@@ -382,12 +464,12 @@ class DailyBarValidator:
         return metadata.trading
 
 
-def _process_file_lock(path: Path) -> threading.RLock:
+def _process_file_lock(path: Path) -> _ReaderWriterLock:
     key = os.path.normcase(str(path.resolve(strict=False)))
     with _FILE_LOCKS_GUARD:
         lock = _FILE_LOCKS.get(key)
         if lock is None:
-            lock = threading.RLock()
+            lock = _ReaderWriterLock()
             _FILE_LOCKS[key] = lock
         return lock
 
@@ -401,9 +483,11 @@ class _SiblingFileLock:
         self.shared = bool(shared)
         self._process_lock = _process_file_lock(self.path)
         self._handle: Any | None = None
+        self._windows_handle: Any | None = None
+        self._windows_overlapped: Any | None = None
 
     def __enter__(self) -> _SiblingFileLock:
-        self._process_lock.acquire()
+        self._process_lock.acquire(self.shared)
         try:
             self._handle = self.path.open("a+b")
             self._acquire_platform_lock()
@@ -415,7 +499,7 @@ class _SiblingFileLock:
                     handle.close()
                 except BaseException:
                     pass
-            self._process_lock.release()
+            self._process_lock.release(self.shared)
             raise
         return self
 
@@ -435,7 +519,7 @@ class _SiblingFileLock:
                     if release_error is None:
                         release_error = error
         finally:
-            self._process_lock.release()
+            self._process_lock.release(self.shared)
         if release_error is not None and exc_type is None:
             raise release_error
         return False
@@ -444,46 +528,54 @@ class _SiblingFileLock:
         handle = self._handle
         if handle is None:
             raise RuntimeError("lock file is not open")
-        handle.seek(0)
         if os.name == "nt":
             import msvcrt
 
-            if os.fstat(handle.fileno()).st_size == 0:
-                handle.write(b"\0")
-                handle.flush()
-            mode = msvcrt.LK_NBRLCK if self.shared else msvcrt.LK_NBLCK
-            while True:
-                handle.seek(0)
-                try:
-                    msvcrt.locking(handle.fileno(), mode, 1)
-                    return
-                except OSError as error:
-                    if not self._windows_lock_contended(error):
-                        raise
-                _time.sleep(_WINDOWS_LOCK_RETRY_SECONDS)
+            os_handle_value = msvcrt.get_osfhandle(handle.fileno())
+            windows_handle = wintypes.HANDLE(os_handle_value)
+            overlapped = _WindowsOverlapped()
+            flags = 0 if self.shared else _LOCKFILE_EXCLUSIVE_LOCK
+            if not _LOCK_FILE_EX(
+                windows_handle,
+                flags,
+                0,
+                1,
+                0,
+                ctypes.byref(overlapped),
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            self._windows_handle = windows_handle
+            self._windows_overlapped = overlapped
+            return
         else:
             import fcntl
 
+            handle.seek(0)
             mode = fcntl.LOCK_SH if self.shared else fcntl.LOCK_EX
             fcntl.flock(handle.fileno(), mode)
 
-    @staticmethod
-    def _windows_lock_contended(error: OSError) -> bool:
-        return (
-            error.errno in _WINDOWS_LOCK_CONTENTION_ERRNOS
-            or getattr(error, "winerror", None) in _WINDOWS_LOCK_CONTENTION_WINERRORS
-        )
-
-    @staticmethod
-    def _release_platform_lock(handle: Any) -> None:
-        handle.seek(0)
+    def _release_platform_lock(self, handle: Any) -> None:
         if os.name == "nt":
-            import msvcrt
-
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            windows_handle = self._windows_handle
+            overlapped = self._windows_overlapped
+            try:
+                if windows_handle is None or overlapped is None:
+                    raise RuntimeError("Windows file lock is not held")
+                if not _UNLOCK_FILE_EX(
+                    windows_handle,
+                    0,
+                    1,
+                    0,
+                    ctypes.byref(overlapped),
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            finally:
+                self._windows_handle = None
+                self._windows_overlapped = None
         else:
             import fcntl
 
+            handle.seek(0)
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
@@ -496,7 +588,7 @@ class DailyHistoryStore:
         metadata: Mapping[str, EtfMetadata],
         closed_dates: Iterable[date],
     ):
-        self.path = Path(path)
+        self.path = Path(path).resolve(strict=False)
         self.metadata = self._snapshot_metadata(metadata)
         self.validator = DailyBarValidator(closed_dates)
 
@@ -570,16 +662,23 @@ class DailyHistoryStore:
             if type(record) is not DailyBar:
                 raise SwingDataError("日线record必须是DailyBar")
             try:
-                metadata = self.metadata.get(record.symbol)
+                normalized = DailyBar.from_mapping(record.to_dict())
+            except SwingDataError:
+                raise
+            except Exception as error:
+                raise SwingDataError("日线record规范化失败") from error
+            self._validate_utf8_text(normalized)
+            try:
+                metadata = self.metadata.get(normalized.symbol)
             except Exception as error:
                 raise SwingDataError("ETF元数据映射读取失败") from error
             if metadata is None:
-                raise SwingDataError(f"缺少ETF元数据: {record.symbol}")
-            self.validator.validate(record, metadata)
-            key = (record.symbol, record.trading_date)
+                raise SwingDataError(f"缺少ETF元数据: {normalized.symbol}")
+            self.validator.validate(normalized, metadata)
+            key = (normalized.symbol, normalized.trading_date)
             existing = reduced.get(key)
-            if existing is None or record.observed_at >= existing.observed_at:
-                reduced[key] = record
+            if existing is None or normalized.observed_at >= existing.observed_at:
+                reduced[key] = normalized
         return tuple(reduced[key] for key in sorted(reduced))
 
     def _load_unlocked(self) -> tuple[DailyBar, ...]:
@@ -602,7 +701,7 @@ class DailyHistoryStore:
                 raise SwingDataError(f"日线历史第{line_number}行为空")
             try:
                 value = json.loads(line)
-            except json.JSONDecodeError as error:
+            except (json.JSONDecodeError, RecursionError) as error:
                 raise SwingDataError(f"日线历史第{line_number}行JSON无效") from error
             if type(value) is not dict:
                 raise SwingDataError(f"日线历史第{line_number}行必须是对象")
@@ -610,6 +709,7 @@ class DailyHistoryStore:
                 record = DailyBar.from_mapping(value)
             except SwingDataError as error:
                 raise SwingDataError(f"日线历史第{line_number}行无效") from error
+            self._validate_utf8_text(record)
             if line != self._encode_record(record):
                 raise SwingDataError(f"日线历史第{line_number}行不是规范JSON")
             records.append(record)
@@ -635,7 +735,7 @@ class DailyHistoryStore:
                     handle.write(line)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary_path, self.path)
+            self._replace_file(temporary_path, self.path)
             temporary_path = None
         except BaseException:
             if temporary_path is not None:
@@ -651,6 +751,31 @@ class DailyHistoryStore:
             separators=(",", ":"),
             sort_keys=True,
         )
+
+    @staticmethod
+    def _validate_utf8_text(record: DailyBar) -> None:
+        for field in ("symbol", "source"):
+            try:
+                getattr(record, field).encode("utf-8", errors="strict")
+            except UnicodeEncodeError as error:
+                raise SwingDataError(f"日线{field}必须可编码为UTF-8") from error
+
+    @staticmethod
+    def _replace_file(source: Path, destination: Path) -> None:
+        for attempt in range(_WINDOWS_REPLACE_MAX_ATTEMPTS):
+            try:
+                os.replace(source, destination)
+                return
+            except OSError as error:
+                retryable = (
+                    os.name == "nt"
+                    and getattr(error, "winerror", None)
+                    in _WINDOWS_REPLACE_TRANSIENT_ERRORS
+                    and attempt + 1 < _WINDOWS_REPLACE_MAX_ATTEMPTS
+                )
+                if not retryable:
+                    raise
+            _time.sleep(_WINDOWS_REPLACE_RETRY_SECONDS)
 
     @staticmethod
     def _safe_unlink(path: Path) -> None:

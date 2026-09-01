@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError, replace
 from datetime import date, datetime, timedelta, timezone
-import errno
+import gc
 import json
 import math
 import os
@@ -13,9 +13,9 @@ import sys
 import tempfile
 import threading
 import time
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import weakref
 
 from etf_rotation.etf_metadata import EtfMetadata, EtfMetadataStore
 from etf_rotation.swing_data import (
@@ -857,6 +857,44 @@ class DailyHistoryStoreTests(unittest.TestCase):
 
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_direct_valid_integer_fields_are_retained_in_normalized_form(self) -> None:
+        valid = self.bar()
+        direct = replace(
+            valid,
+            open=10,
+            high=10,
+            low=10,
+            close=10,
+            previous_close=10,
+            volume=0,
+            amount=0,
+            adjusted_open=11,
+            adjusted_high=11,
+            adjusted_low=11,
+            adjusted_close=11,
+        )
+
+        result = self.store.upsert((direct,))
+
+        self.assertIs(type(result[0].open), float)
+        self.assertIs(type(result[0].volume), float)
+        self.assertEqual(self.store.load(), result)
+
+    def test_lone_surrogate_source_is_rejected_before_persistence(self) -> None:
+        original = self.store.upsert((self.bar(source="ORIGINAL"),))
+        before = self.path.read_bytes()
+        invalid = self.bar(
+            observed_at="2026-08-28T15:11:00+08:00",
+            source="BROKEN\ud800SOURCE",
+        )
+
+        with self.assertRaises(SwingDataError):
+            self.store.upsert((invalid,))
+
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.temp_artifacts(), [])
+        self.assertEqual(self.store.load(), original)
+
     def test_corrupt_or_noncanonical_existing_history_is_never_overwritten(self) -> None:
         bad_histories = (
             b"{not json}\n",
@@ -871,6 +909,10 @@ class DailyHistoryStoreTests(unittest.TestCase):
                 with self.assertRaises(SwingDataError):
                     self.store.upsert((self.bar(source="NEW"),))
                 self.assertEqual(self.path.read_bytes(), content)
+
+    def test_deeply_nested_json_recursion_is_wrapped_without_rewriting(self) -> None:
+        nested = b'{"nested":' + (b"[" * 10_000) + b"0" + (b"]" * 10_000) + b"}\n"
+        self.assert_history_rejected_without_rewrite(nested)
 
     def test_round_trip_load_validates_every_line(self) -> None:
         records = self.store.upsert((
@@ -935,79 +977,14 @@ class DailyHistoryStoreTests(unittest.TestCase):
         self.assertNotEqual(alternate, canonical + "\n")
         self.assert_history_rejected_without_rewrite(alternate.encode("utf-8"))
 
-    def test_windows_lock_retries_more_than_ten_contentions_then_succeeds(self) -> None:
-        calls: list[tuple[int, int, int]] = []
-        positions: list[int] = []
-        sleeps: list[float] = []
+    def test_process_lock_registry_releases_unused_entries(self) -> None:
+        lock = _SiblingFileLock(self.root / "lifecycle.jsonl", shared=True)
+        process_lock = weakref.ref(lock._process_lock)
 
-        def locking(file_descriptor: int, mode: int, count: int) -> None:
-            calls.append((file_descriptor, mode, count))
-            positions.append(os.lseek(file_descriptor, 0, os.SEEK_CUR))
-            if len(calls) <= 12:
-                os.lseek(file_descriptor, 1, os.SEEK_SET)
-                raise OSError(errno.EACCES, "lock busy")
+        del lock
+        gc.collect()
 
-        fake_msvcrt = SimpleNamespace(
-            LK_NBLCK=100,
-            LK_NBRLCK=101,
-            LK_UNLCK=102,
-            LK_LOCK=103,
-            LK_RLCK=104,
-            locking=locking,
-        )
-        lock = _SiblingFileLock.__new__(_SiblingFileLock)
-        lock.shared = False
-        with tempfile.TemporaryFile("w+b") as handle:
-            handle.write(b"\0")
-            handle.flush()
-            lock._handle = handle
-            with (
-                patch.object(os, "name", "nt"),
-                patch.dict(sys.modules, {"msvcrt": fake_msvcrt}),
-                patch(
-                    "etf_rotation.swing_data._time",
-                    SimpleNamespace(sleep=sleeps.append),
-                    create=True,
-                ),
-            ):
-                lock._acquire_platform_lock()
-
-        self.assertEqual(len(calls), 13)
-        self.assertTrue(all(mode == fake_msvcrt.LK_NBLCK for _, mode, _ in calls))
-        self.assertEqual(positions, [0] * 13)
-        self.assertEqual(sleeps, [0.01] * 12)
-
-    def test_windows_lock_immediately_propagates_unrelated_oserror(self) -> None:
-        unrelated = OSError(errno.EINVAL, "bad descriptor")
-        sleeps: list[float] = []
-        fake_msvcrt = SimpleNamespace(
-            LK_NBLCK=100,
-            LK_NBRLCK=101,
-            LK_UNLCK=102,
-            LK_LOCK=103,
-            LK_RLCK=104,
-            locking=lambda *_: (_ for _ in ()).throw(unrelated),
-        )
-        lock = _SiblingFileLock.__new__(_SiblingFileLock)
-        lock.shared = True
-        with tempfile.TemporaryFile("w+b") as handle:
-            handle.write(b"\0")
-            handle.flush()
-            lock._handle = handle
-            with (
-                patch.object(os, "name", "nt"),
-                patch.dict(sys.modules, {"msvcrt": fake_msvcrt}),
-                patch(
-                    "etf_rotation.swing_data._time",
-                    SimpleNamespace(sleep=sleeps.append),
-                    create=True,
-                ),
-            ):
-                with self.assertRaises(OSError) as raised:
-                    lock._acquire_platform_lock()
-
-        self.assertIs(raised.exception, unrelated)
-        self.assertEqual(sleeps, [])
+        self.assertIsNone(process_lock())
 
     def test_replace_and_fsync_failures_preserve_history_and_clean_temp(self) -> None:
         original = self.store.upsert((self.bar(source="ORIGINAL"),))
@@ -1023,6 +1000,32 @@ class DailyHistoryStoreTests(unittest.TestCase):
             self.assertEqual(self.path.read_bytes(), before)
             self.assertEqual(self.temp_artifacts(), [])
             self.assertEqual(self.store.load(), original)
+
+    @unittest.skipUnless(os.name == "nt", "Windows replace sharing semantics")
+    def test_transient_windows_replace_sharing_error_is_retried(self) -> None:
+        self.store.upsert((self.bar(source="ORIGINAL"),))
+        replacement = self.bar(
+            observed_at="2026-08-28T15:11:00+08:00",
+            source="REPLACEMENT",
+        )
+        real_replace = os.replace
+        attempts = 0
+
+        def transient_replace(source: object, destination: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                error = PermissionError(13, "transient sharing denial")
+                error.winerror = 5  # type: ignore[attr-defined]
+                raise error
+            real_replace(source, destination)
+
+        with patch("etf_rotation.swing_data.os.replace", side_effect=transient_replace):
+            result = self.store.upsert((replacement,))
+
+        self.assertEqual(result, (replacement,))
+        self.assertEqual(self.store.load(), (replacement,))
+        self.assertEqual(attempts, 2)
 
     def test_write_flush_and_close_failures_preserve_history_and_clean_temp(self) -> None:
         self.store.upsert((self.bar(source="ORIGINAL"),))
@@ -1227,6 +1230,104 @@ DailyHistoryStore(Path(history), metadata, ()).upsert((record,))
         self.assertTrue(reader_done.is_set())
         self.assertEqual(observed[0][0].source, "NEW")
 
+    def test_same_process_shared_readers_overlap(self) -> None:
+        first_entered = threading.Event()
+        second_entered = threading.Event()
+        release = threading.Event()
+
+        def read(entered: threading.Event) -> None:
+            with _SiblingFileLock(self.path, shared=True):
+                entered.set()
+                release.wait(5)
+
+        first = threading.Thread(target=read, args=(first_entered,))
+        second = threading.Thread(target=read, args=(second_entered,))
+        first.start()
+        self.assertTrue(first_entered.wait(5))
+        second.start()
+        overlap = second_entered.wait(0.5)
+        release.set()
+        first.join(5)
+        second.join(5)
+
+        self.assertTrue(overlap)
+
+    def test_same_process_waiting_writer_blocks_new_readers(self) -> None:
+        first_reader = _SiblingFileLock(self.path, shared=True)
+        first_reader.__enter__()
+        writer_entered = threading.Event()
+        release_writer = threading.Event()
+        later_reader_entered = threading.Event()
+
+        def write() -> None:
+            with _SiblingFileLock(self.path, shared=False):
+                writer_entered.set()
+                release_writer.wait(5)
+
+        def read() -> None:
+            with _SiblingFileLock(self.path, shared=True):
+                later_reader_entered.set()
+
+        writer = threading.Thread(target=write)
+        writer.start()
+        deadline = time.monotonic() + 5
+        while (
+            first_reader._process_lock._waiting_writers == 0
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.005)
+        later_reader = threading.Thread(target=read)
+        later_reader.start()
+        time.sleep(0.05)
+        reader_bypassed_writer = later_reader_entered.is_set()
+        first_reader.__exit__(None, None, None)
+        writer_acquired = writer_entered.wait(5)
+        reader_entered_during_writer = later_reader_entered.is_set()
+        release_writer.set()
+        writer.join(5)
+        later_reader.join(5)
+
+        self.assertFalse(reader_bypassed_writer)
+        self.assertTrue(writer_acquired)
+        self.assertFalse(reader_entered_during_writer)
+        self.assertTrue(later_reader_entered.is_set())
+
+    def test_subprocess_shared_readers_acquire_concurrently(self) -> None:
+        ready_paths = (self.root / "reader-one", self.root / "reader-two")
+        release = self.root / "readers-release"
+        child = """
+import sys
+import time
+from pathlib import Path
+from etf_rotation.swing_data import _SiblingFileLock
+
+history, ready, release = map(Path, sys.argv[1:])
+with _SiblingFileLock(history, shared=True):
+    ready.write_text("ready", encoding="ascii")
+    while not release.exists():
+        time.sleep(0.005)
+"""
+        processes = [
+            subprocess.Popen(
+                [sys.executable, "-c", child, str(self.path), str(ready), str(release)],
+                cwd=Path(__file__).resolve().parents[1],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for ready in ready_paths
+        ]
+        deadline = time.monotonic() + 2
+        while not all(path.exists() for path in ready_paths) and time.monotonic() < deadline:
+            time.sleep(0.005)
+        concurrent = all(path.exists() for path in ready_paths)
+        release.touch()
+        results = [process.communicate(timeout=5) for process in processes]
+
+        for process, (stdout, stderr) in zip(processes, results):
+            self.assertEqual(process.returncode, 0, stdout + stderr)
+        self.assertTrue(concurrent)
+
     def test_subprocess_writer_lock_blocks_reader_until_release(self) -> None:
         expected = self.store.upsert((self.bar(source="ORIGINAL"),))
         ready = self.root / "writer-ready"
@@ -1297,6 +1398,25 @@ with _SiblingFileLock(history, shared=False):
         self.assertTrue(finished.is_set())
         self.assertEqual(failure, [])
         self.assertEqual(self.store.load()[0].source, "RECOVERED")
+
+    def test_resolves_final_symlink_alias_to_one_operational_history(self) -> None:
+        expected = self.store.upsert((self.bar(source="ORIGINAL"),))
+        alias = self.root / "daily-alias.jsonl"
+        try:
+            alias.symlink_to(self.path.name)
+        except OSError as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+
+        alias_store = DailyHistoryStore(alias, self.metadata, ())
+        self.assertEqual(alias_store.path, self.path.resolve(strict=False))
+        self.assertEqual(alias_store.load(), expected)
+
+        newer = self.bar(
+            observed_at="2026-08-28T15:11:00+08:00",
+            source="ALIAS",
+        )
+        alias_store.upsert((newer,))
+        self.assertEqual(self.store.load(), (newer,))
 
 
 if __name__ == "__main__":
