@@ -16,7 +16,6 @@ from .swing_data import DailyBar
 
 EvidenceScalar: TypeAlias = float | int | bool | str | None
 _LOT_BOUNDARY_ULPS = 16.0
-_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 class SwingStrategyError(ValueError):
@@ -79,14 +78,14 @@ def _strict_text(value: object, field: str, *, allow_empty: bool = False) -> str
 
 
 def _immutable_evidence(value: object) -> Mapping[str, EvidenceScalar]:
-    if type(value) not in (dict, _MAPPING_PROXY_TYPE):
+    if not isinstance(value, Mapping):
         raise SwingStrategyError("evidence must be a scalar mapping")
-    items = tuple(value.items())
+    try:
+        materialized = dict(value)
+    except Exception as error:
+        raise SwingStrategyError("evidence must be a scalar mapping") from error
     copied: dict[str, EvidenceScalar] = {}
-    for item in items:
-        if type(item) is not tuple or len(item) != 2:
-            raise SwingStrategyError("evidence must be a scalar mapping")
-        key, scalar = item
+    for key, scalar in materialized.items():
         if type(key) is not str or type(scalar) not in (
             float, int, bool, str, type(None),
         ):

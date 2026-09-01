@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 import json
 import math
 from pathlib import Path
+from types import MappingProxyType
 import unittest
 
 from etf_rotation.swing_config import load_strategy
@@ -64,6 +65,10 @@ class HostileMapping(Mapping[str, object]):
     def __len__(self) -> int:
         type(self).hooks_called += 1
         raise AssertionError("hostile mapping length invoked")
+
+    def items(self):
+        type(self).hooks_called += 1
+        raise AssertionError("hostile mapping items invoked")
 
 
 class SwingStrategyTests(unittest.TestCase):
@@ -1061,6 +1066,17 @@ class SwingStrategyTests(unittest.TestCase):
                 with self.assertRaises(SwingStrategyError):
                     replace(formal, **changes)
 
+    def test_swing_decision_wraps_hostile_mappingproxy_evidence_failure(self) -> None:
+        formal = evaluate_swing(swing_strategy_bars(), self.config, self.portfolio())
+        HostileMapping.hooks_called = 0
+        hostile_proxy = MappingProxyType(HostileMapping())
+        with self.assertRaisesRegex(
+            SwingStrategyError, "^evidence must be a scalar mapping$",
+        ) as raised:
+            replace(formal, evidence=hostile_proxy)
+        self.assertIsInstance(raised.exception.__cause__, AssertionError)
+        self.assertGreater(HostileMapping.hooks_called, 0)
+
     def test_direct_decision_copies_mutable_inputs(self) -> None:
         formal = evaluate_swing(swing_strategy_bars(), self.config, self.portfolio())
         source_evidence: dict[str, object] = {"gate": True}
@@ -1096,7 +1112,7 @@ class SwingStrategyTests(unittest.TestCase):
             with self.subTest(changes=tuple(changes)):
                 with self.assertRaises(SwingStrategyError):
                     replace(intraday, **changes)
-        self.assertEqual(HostileMapping.hooks_called, 0)
+        self.assertGreater(HostileMapping.hooks_called, 0)
 
         source = {"near": True}
         copied = replace(intraday, evidence=source)
@@ -1104,6 +1120,20 @@ class SwingStrategyTests(unittest.TestCase):
         self.assertEqual(dict(copied.evidence), {"near": True})
         with self.assertRaises(TypeError):
             copied.evidence["near"] = False
+
+    def test_intraday_decision_wraps_hostile_mappingproxy_evidence_failure(self) -> None:
+        formal = evaluate_swing(swing_strategy_bars(), self.config, self.portfolio())
+        intraday = evaluate_intraday_overlay(
+            formal, formal.planned_entry_low, has_position=False,
+        )
+        HostileMapping.hooks_called = 0
+        hostile_proxy = MappingProxyType(HostileMapping())
+        with self.assertRaisesRegex(
+            SwingStrategyError, "^evidence must be a scalar mapping$",
+        ) as raised:
+            replace(intraday, evidence=hostile_proxy)
+        self.assertIsInstance(raised.exception.__cause__, AssertionError)
+        self.assertGreater(HostileMapping.hooks_called, 0)
 
     def test_invalid_supplied_next_trading_date_suppresses_candidate(self) -> None:
         bars = swing_strategy_bars()
