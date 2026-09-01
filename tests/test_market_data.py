@@ -666,6 +666,18 @@ class FinalizedPointTests(unittest.TestCase):
 
 
 class MarketSessionStateTests(unittest.TestCase):
+    def test_utc_time_is_converted_to_shanghai_session_boundary(self) -> None:
+        state = market_session_state(datetime.fromisoformat("2026-08-28T01:30:00+00:00"))
+
+        self.assertEqual(
+            (state.phase, state.health_status, state.active, state.catch_up_allowed),
+            ("MORNING", "REALTIME", True, False),
+        )
+
+    def test_naive_datetime_is_rejected(self) -> None:
+        with self.assertRaisesRegex(MarketDataError, "当前时间必须带时区"):
+            market_session_state(datetime.fromisoformat("2026-08-28T09:30:00"))
+
     def test_trading_day_boundaries_control_collection(self) -> None:
         expected = {
             "2026-08-28T09:29:59+08:00": ("PRE_OPEN", "CLOSED", False, False),

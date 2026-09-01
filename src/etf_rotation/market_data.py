@@ -56,11 +56,12 @@ class MarketSessionState:
 
 def market_session_state(
     now: datetime,
-    closed_dates: set[date] | None = None,
+    closed_dates: set[date] | frozenset[date] | None = None,
 ) -> MarketSessionState:
     local = _aware_time(now, "当前时间").astimezone(SHANGHAI)
     local_time = local.time().replace(tzinfo=None)
-    if local.weekday() >= 5 or local.date() in frozenset(closed_dates or ()):
+    closures = frozenset(closed_dates or ())
+    if local.weekday() >= 5 or local.date() in closures:
         return MarketSessionState("CLOSED", "CLOSED", False, False)
     if local_time < _MORNING_START:
         return MarketSessionState("PRE_OPEN", "CLOSED", False, False)
@@ -96,7 +97,7 @@ class MarketHealthClassifier:
         error: str | None,
     ) -> MarketHealth:
         local = _aware_time(now, "当前时间").astimezone(SHANGHAI)
-        session = market_session_state(local, closed_dates=set(self.closed_dates))
+        session = market_session_state(local, closed_dates=self.closed_dates)
         if session.health_status == "CLOSED":
             return MarketHealth("CLOSED", None, "非连续交易时段")
         if session.health_status == "LUNCH_BREAK":
