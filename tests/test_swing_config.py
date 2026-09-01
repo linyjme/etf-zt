@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError, asdict
 import json
 from pathlib import Path
 import tempfile
 import unittest
 
+from etf_rotation.etf_metadata import MetadataError
 from etf_rotation.swing_config import (
+    SwingConfigError,
     SwingStrategyConfig,
     SwingWatchItem,
     load_strategy,
@@ -95,13 +98,53 @@ class SwingConfigurationTests(unittest.TestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
+    def configuration_error_from(
+        self, action: Callable[[], object],
+    ) -> SwingConfigError:
+        try:
+            action()
+        except Exception as error:
+            self.assertIsInstance(error, SwingConfigError)
+            return error  # type: ignore[return-value]
+        self.fail("SwingConfigError not raised")
+
     def assert_watchlist_rejected(self, payload: object) -> None:
-        with self.assertRaises(ValueError):
-            load_watchlist(self.write("watchlist.json", payload), self.metadata_path)
+        self.configuration_error_from(lambda: load_watchlist(
+            self.write("watchlist.json", payload), self.metadata_path,
+        ))
 
     def assert_strategy_rejected(self, payload: object) -> None:
-        with self.assertRaises(ValueError):
-            load_strategy(self.write("strategy.json", payload))
+        self.configuration_error_from(
+            lambda: load_strategy(self.write("strategy.json", payload)),
+        )
+
+    def test_public_configuration_error_is_a_value_error(self) -> None:
+        self.assertTrue(issubclass(SwingConfigError, ValueError))
+
+    def test_loaders_normalize_json_decode_errors_with_cause(self) -> None:
+        for loader, arguments in (
+            (load_strategy, (self.root / "strategy.json",)),
+            (load_watchlist, (self.root / "watchlist.json", self.metadata_path)),
+        ):
+            path = arguments[0]
+            path.write_text("{", encoding="utf-8")
+            with self.subTest(loader=loader.__name__):
+                error = self.configuration_error_from(lambda: loader(*arguments))
+                self.assertIsInstance(error.__cause__, json.JSONDecodeError)
+
+    def test_watchlist_normalizes_metadata_validation_errors_with_cause(self) -> None:
+        watchlist_path = self.write("watchlist.json", {
+            "schema_version": 1,
+            "items": [{"symbol": "510300", "enabled": True}],
+        })
+        self.metadata_path.write_text("{", encoding="utf-8")
+
+        error = self.configuration_error_from(
+            lambda: load_watchlist(watchlist_path, self.metadata_path),
+        )
+
+        self.assertIn("ETF元数据", str(error))
+        self.assertIsInstance(error.__cause__, MetadataError)
 
     def test_repository_defaults_are_exact_and_independent(self) -> None:
         watchlist_path = PROJECT_ROOT / "data" / "swing" / "watchlist.json"
@@ -240,6 +283,70 @@ class SwingConfigurationTests(unittest.TestCase):
             **SWING_V1_DEFAULTS,
             "risk_per_trade": 0.03,
             "max_portfolio_risk": 0.02,
+        })
+
+    def test_minimum_history_covers_long_ma_slope_at_boundary(self) -> None:
+        accepted = load_strategy(self.write("strategy.json", {
+            **SWING_V1_DEFAULTS,
+            "minimum_daily_bars": 70,
+            "long_ma_days": 60,
+            "long_ma_slope_lookback": 10,
+        }))
+        self.assertEqual(accepted.minimum_daily_bars, 70)
+        self.assert_strategy_rejected({
+            **SWING_V1_DEFAULTS,
+            "minimum_daily_bars": 69,
+            "long_ma_days": 60,
+            "long_ma_slope_lookback": 10,
+        })
+
+    def test_minimum_history_covers_breakout_window_at_boundary(self) -> None:
+        accepted = load_strategy(self.write("strategy.json", {
+            **SWING_V1_DEFAULTS,
+            "minimum_daily_bars": 70,
+            "breakout_days": 69,
+        }))
+        self.assertEqual(accepted.breakout_days, 69)
+        self.assert_strategy_rejected({
+            **SWING_V1_DEFAULTS,
+            "minimum_daily_bars": 70,
+            "breakout_days": 70,
+        })
+
+    def test_minimum_history_covers_true_range_at_boundary(self) -> None:
+        accepted = load_strategy(self.write("strategy.json", {
+            **SWING_V1_DEFAULTS,
+            "minimum_daily_bars": 70,
+            "atr_days": 69,
+        }))
+        self.assertEqual(accepted.atr_days, 69)
+        self.assert_strategy_rejected({
+            **SWING_V1_DEFAULTS,
+            "minimum_daily_bars": 70,
+            "atr_days": 70,
+        })
+
+    def test_walk_forward_training_covers_minimum_history_at_boundary(self) -> None:
+        boundary = {
+            **SWING_V1_DEFAULTS,
+            "minimum_daily_bars": 70,
+            "walk_forward_test_days": 60,
+            "walk_forward_step_days": 60,
+        }
+        accepted = load_strategy(self.write("strategy.json", {
+            **boundary,
+            "walk_forward_train_days": 70,
+        }))
+        self.assertEqual(accepted.walk_forward_train_days, 70)
+        self.assert_strategy_rejected({
+            **boundary,
+            "walk_forward_train_days": 69,
+        })
+
+    def test_huge_json_integer_is_a_configuration_error(self) -> None:
+        self.assert_strategy_rejected({
+            **SWING_V1_DEFAULTS,
+            "risk_per_trade": 10**400,
         })
 
     def test_daily_bar_fixture_is_deterministic_and_timezone_aware(self) -> None:
