@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -45,7 +46,7 @@ from .valuation import ValuationStore
 _DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "monitor"
 _DEFAULT_METADATA_PATH = _DATA_ROOT / "etf_metadata.json"
 _DEFAULT_CALENDAR_PATH = _DATA_ROOT / "market_calendar.json"
-_EXPECTED_SSE_DISCONNECTS = (
+_EXPECTED_CLIENT_DISCONNECTS = (
     BrokenPipeError,
     ConnectionResetError,
     ConnectionAbortedError,
@@ -986,6 +987,13 @@ class MonitorServer(ThreadingHTTPServer):
         self.application.stop_refresh()
         super().server_close()
 
+    def handle_error(
+        self, request: object, client_address: tuple[str, int],
+    ) -> None:
+        if isinstance(sys.exc_info()[1], _EXPECTED_CLIENT_DISCONNECTS):
+            return
+        super().handle_error(request, client_address)
+
 
 class MonitorRequestHandler(BaseHTTPRequestHandler):
     server: MonitorServer
@@ -1163,7 +1171,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         try:
             self.end_headers()
-        except _EXPECTED_SSE_DISCONNECTS:
+        except _EXPECTED_CLIENT_DISCONNECTS:
             return
         application = self.server.application
         header = self.headers.get("Last-Event-ID")
@@ -1208,7 +1216,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         try:
             self.wfile.write(value)
             self.wfile.flush()
-        except _EXPECTED_SSE_DISCONNECTS:
+        except _EXPECTED_CLIENT_DISCONNECTS:
             return False
         return True
 
@@ -1223,8 +1231,14 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+        except _EXPECTED_CLIENT_DISCONNECTS:
+            return
+        try:
+            self.wfile.write(body)
+        except _EXPECTED_CLIENT_DISCONNECTS:
+            return
 
 
 def create_server(

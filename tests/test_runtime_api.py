@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import copy
 from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
+from http.server import ThreadingHTTPServer
 import io
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from etf_rotation.t_monitor import MarketDataError
-from etf_rotation.t_web import MonitorApplication, MonitorRequestHandler
+from etf_rotation.t_web import MonitorApplication, MonitorRequestHandler, MonitorServer
 from tests.regime_fixtures import confirmed_range_quote
 
 
@@ -1380,6 +1381,76 @@ class RuntimeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ConnectionAbortedError, "application failure"):
             handler._events()
+
+    def test_http_send_ignores_windows_connection_abort_while_ending_headers(self) -> None:
+        handler = object.__new__(MonitorRequestHandler)
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+
+        def abort_headers() -> None:
+            raise ConnectionAbortedError(10053, "header connection aborted")
+
+        handler.end_headers = abort_headers
+
+        handler._send(HTTPStatus.OK, b"payload", "application/json")
+
+        self.assertEqual(handler.wfile.getvalue(), b"")
+
+    def test_http_send_ignores_windows_connection_abort_while_writing_body(self) -> None:
+        handler = object.__new__(MonitorRequestHandler)
+        handler.wfile = AbortedStream()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+
+        handler._send(HTTPStatus.OK, b"payload", "application/json")
+
+        self.assertEqual(handler.wfile.flush_calls, 0)
+
+    def test_http_send_propagates_unexpected_header_and_body_errors(self) -> None:
+        handler = object.__new__(MonitorRequestHandler)
+        handler.wfile = ExplodingStream()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected stream failure"):
+            handler._send(HTTPStatus.OK, b"payload", "application/json")
+
+        def explode_headers() -> None:
+            raise RuntimeError("unexpected header failure")
+
+        handler.end_headers = explode_headers
+        with self.assertRaisesRegex(RuntimeError, "unexpected header failure"):
+            handler._send(HTTPStatus.OK, b"payload", "application/json")
+
+    def test_server_quiets_expected_client_disconnect_at_request_boundary(self) -> None:
+        server = object.__new__(MonitorServer)
+        request = object()
+        address = ("127.0.0.1", 12345)
+
+        with patch.object(ThreadingHTTPServer, "handle_error") as parent_handle:
+            try:
+                raise ConnectionAbortedError(10053, "request connection aborted")
+            except ConnectionAbortedError:
+                server.handle_error(request, address)
+
+        parent_handle.assert_not_called()
+
+    def test_server_delegates_unexpected_request_errors_to_parent(self) -> None:
+        server = object.__new__(MonitorServer)
+        request = object()
+        address = ("127.0.0.1", 12345)
+
+        with patch.object(ThreadingHTTPServer, "handle_error") as parent_handle:
+            try:
+                raise RuntimeError("unexpected request failure")
+            except RuntimeError:
+                server.handle_error(request, address)
+
+        parent_handle.assert_called_once()
+        self.assertEqual(parent_handle.call_args.args[-2:], (request, address))
 
     def test_health_summary_tracks_latest_outage_revision(self) -> None:
         app = self.make_runtime_fixture()
