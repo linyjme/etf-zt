@@ -215,6 +215,21 @@ console.log(JSON.stringify({good,bad}));
         self.assertIn("initial_positions", SWING_PAGE)
         self.assertIn("limit=179", SWING_PAGE)
 
+    def test_pointer_index_uses_plot_bounds_not_whole_svg(self) -> None:
+        result = run_swing_helpers(
+            """
+console.log(JSON.stringify({
+  left:pointerIndex(162,162,780,120),
+  middle:pointerIndex(552,162,780,120),
+  right:pointerIndex(942,162,780,120),
+  before:pointerIndex(100,162,780,120),
+  after:pointerIndex(1000,162,780,120)
+}));
+""",
+        )
+        self.assertEqual(result, {"left": 0, "middle": 60, "right": 119, "before": 0, "after": 119})
+        self.assertIn("hit.getBoundingClientRect()", SWING_PAGE)
+
 
 if __name__ == "__main__":
     unittest.main()
