@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import copy
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 import io
 import json
@@ -64,6 +64,22 @@ def valid_completed_quote_payload() -> dict[str, object]:
             } for point in quote.points],
         }],
     }
+
+
+def quote_payload_for_date(value: date | str) -> dict[str, object]:
+    payload = copy.deepcopy(valid_completed_quote_payload())
+    target_date = value if isinstance(value, date) else date.fromisoformat(value)
+    quote = payload["quotes"][0]
+    source_date = datetime.fromisoformat(quote["timestamp"]).date()
+    offset = target_date - source_date
+    for field in ("timestamp", "observed_at"):
+        quote[field] = (datetime.fromisoformat(quote[field]) + offset).isoformat()
+    for point in quote["points"]:
+        point["timestamp"] = (
+            datetime.fromisoformat(point["timestamp"]) + offset
+        ).isoformat()
+    payload["collected_at"] = quote["observed_at"]
+    return payload
 
 
 def mixed_health_quote_payload() -> dict[str, object]:
@@ -546,6 +562,52 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.paths.history.read_bytes(), history_before)
         self.assertEqual(self.paths.alerts.read_bytes(), alerts_before)
 
+    def test_collector_free_bootstrap_hides_quotes_from_an_older_trading_day(self) -> None:
+        self.paths.quotes.write_text(
+            json.dumps(quote_payload_for_date("2026-08-28"), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        app = MonitorApplication(
+            quotes_path=self.paths.quotes,
+            watchlist_path=self.paths.watchlist,
+            history_path=self.paths.history,
+            collector=None,
+            alert_history_path=self.paths.alerts,
+            metadata_path=self.paths.metadata,
+            calendar_path=self.paths.calendar,
+            clock=lambda: datetime.fromisoformat("2026-08-31T10:02:00+08:00"),
+        )
+
+        item = app.snapshot()["items"][0]
+        self.assertEqual(item["status"], "MISSING_QUOTE")
+        self.assertIsNone(item["price"])
+        self.assertIsNone(item["timestamp"])
+        quotes = app.quotes("510300", since=0)
+        self.assertTrue(quotes["reset"])
+        self.assertEqual(quotes["upserts"], [])
+
+    def test_bootstrap_quote_cursor_uses_generated_day_not_latest_point_day(self) -> None:
+        now = [datetime.fromisoformat("2026-08-28T10:02:00+08:00")]
+        app = MonitorApplication(
+            quotes_path=self.paths.quotes,
+            watchlist_path=self.paths.watchlist,
+            history_path=self.paths.history,
+            collector=StaticCollector(quote_payload_for_date("2026-08-28")),
+            alert_history_path=self.paths.alerts,
+            metadata_path=self.paths.metadata,
+            calendar_path=self.paths.calendar,
+            clock=lambda: now[0],
+        )
+        self.assertTrue(app.refresh_once())
+        self.assertTrue(app.quotes("510300", since=0)["upserts"])
+
+        now[0] = datetime.fromisoformat("2026-08-31T10:02:00+08:00")
+        app._bootstrap(increment_revision=True)
+
+        quotes = app.quotes("510300", since=0)
+        self.assertTrue(quotes["reset"])
+        self.assertEqual(quotes["upserts"], [])
+
     def test_collector_free_add_rebuilds_published_watchlist_without_data_writes(self) -> None:
         self.paths.quotes.write_text(
             json.dumps(valid_completed_quote_payload(), ensure_ascii=False),
@@ -752,6 +814,7 @@ class RuntimeTests(unittest.TestCase):
             datetime.fromisoformat(next_day["collected_at"]) + timedelta(days=3)
         ).isoformat()
         collector.payload = next_day
+        app.clock = lambda: datetime.fromisoformat("2026-08-31T10:02:00+08:00")
         self.assertTrue(app.refresh_once())
 
         result = app.quotes("510300", since=1)

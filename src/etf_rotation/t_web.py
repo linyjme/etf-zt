@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -27,7 +27,15 @@ from .market_data import (
     load_closed_dates,
 )
 from .t_backtest import TBacktester
-from .t_monitor import AlertHistoryStore, JsonQuoteAdapter, QuoteHistoryStore, TMonitorEngine, load_watchlist, snapshot_to_dict
+from .t_monitor import (
+    AlertHistoryStore,
+    JsonQuoteAdapter,
+    Quote,
+    QuoteHistoryStore,
+    TMonitorEngine,
+    load_watchlist,
+    snapshot_to_dict,
+)
 from .t_page import PAGE
 from .valuation import ValuationStore
 
@@ -251,11 +259,11 @@ class MonitorApplication:
                 payload = json.loads(staging.read_text(encoding="utf-8"))
                 if not isinstance(payload, Mapping):
                     raise ValueError("行情文件必须是对象")
-                quotes = JsonQuoteAdapter().parse(payload)
+                all_quotes = JsonQuoteAdapter().parse(payload)
                 metadata: Mapping[str, Any] = {}
                 if self.history_store is not None:
                     metadata = self.metadata_store.load()
-                    self._validate_quotes(quotes, metadata)
+                    self._validate_quotes(all_quotes, metadata)
             except Exception as error:
                 if staging is not None:
                     staging.unlink(missing_ok=True)
@@ -271,6 +279,7 @@ class MonitorApplication:
                         return False
                     try:
                         now = self.clock()
+                        quotes = self._quotes_for_now(all_quotes, now)
                         health = self._health_by_symbol(quotes, now)
                         published = snapshot_to_dict(self.engine.evaluate(
                             watchlist, quotes, generated_at=now, health=health,
@@ -288,7 +297,7 @@ class MonitorApplication:
                     persistence_errors: list[str] = []
                     if self.history_store is not None:
                         try:
-                            self.history_store.upsert(quotes, metadata)
+                            self.history_store.upsert(all_quotes, metadata)
                         except Exception as error:
                             persistence_errors.append(str(error))
                     if self.alert_store is not None:
@@ -333,18 +342,19 @@ class MonitorApplication:
         error: str | None = None
         try:
             raw = json.loads(self.quotes_path.read_text(encoding="utf-8"))
-            quotes = JsonQuoteAdapter().parse(raw)
+            all_quotes = JsonQuoteAdapter().parse(raw)
             payload = raw if isinstance(raw, dict) else {}
         except (ValueError, OSError) as failure:
-            quotes = {}
+            all_quotes = {}
             payload = {}
             error = str(failure)
         if error is None and self.history_store is not None:
             try:
-                self._validate_quotes(quotes, self.metadata_store.load())
+                self._validate_quotes(all_quotes, self.metadata_store.load())
             except (ValueError, OSError) as failure:
                 error = str(failure)
         now = self.clock()
+        quotes = self._quotes_for_now(all_quotes, now)
         health = self._health_by_symbol(quotes, now, error)
         published = snapshot_to_dict(self.engine.evaluate(
             watchlist, quotes, generated_at=now, health=health,
@@ -354,6 +364,39 @@ class MonitorApplication:
         self._publish(
             published, payload, error=error, increment_revision=increment_revision,
         )
+
+    @staticmethod
+    def _quote_for_date(quote: Quote, trading_date: date) -> Quote | None:
+        points = tuple(
+            point for point in quote.points
+            if point.timestamp.astimezone(SHANGHAI).date() == trading_date
+        )
+        if not points:
+            return None
+        latest = points[-1]
+        return Quote(
+            symbol=quote.symbol,
+            name=quote.name,
+            price=latest.price,
+            average_price=latest.average_price,
+            previous_close=quote.previous_close,
+            timestamp=latest.timestamp,
+            points=points,
+            observed_at=quote.observed_at,
+            source=quote.source,
+        )
+
+    @classmethod
+    def _quotes_for_now(
+        cls, quotes: Mapping[str, Quote], now: datetime,
+    ) -> dict[str, Quote]:
+        trading_date = now.astimezone(SHANGHAI).date()
+        result: dict[str, Quote] = {}
+        for symbol, quote in quotes.items():
+            current = cls._quote_for_date(quote, trading_date)
+            if current is not None:
+                result[symbol] = current
+        return result
 
     def _health_by_symbol(
         self,
@@ -445,21 +488,25 @@ class MonitorApplication:
     def _current_day_points(
         cls, published: Mapping[str, Any], symbol: str,
     ) -> list[dict[str, Any]]:
+        try:
+            generated_at = datetime.fromisoformat(
+                str(published.get("generated_at", "")),
+            )
+        except ValueError:
+            return []
+        if generated_at.tzinfo is None or generated_at.utcoffset() is None:
+            return []
+        current_date = generated_at.astimezone(SHANGHAI).date().isoformat()
         for item in published.get("items", []):
             if item.get("symbol") != symbol:
                 continue
             points = [
                 cls._normalize_point(point)
                 for point in item.get("points") or []
+                if str(point.get("trading_date") or "") == current_date
             ]
             points.sort(key=lambda point: point["timestamp"])
-            trading_date = cls._points_trading_date(points)
-            if trading_date is None:
-                return []
-            return [
-                point for point in points
-                if str(point.get("timestamp", "")).startswith(trading_date)
-            ]
+            return points
         return []
 
     @classmethod

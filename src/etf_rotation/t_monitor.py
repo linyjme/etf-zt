@@ -496,12 +496,15 @@ class TMonitorEngine:
                 continue
             quote = quotes.get(item.symbol)
             if quote is None:
+                item_health = self.health_classifier.classify(
+                    current, None, None,
+                )
                 signals.append(MonitorSignal(
                     item.symbol, item.name, "MISSING_QUOTE", "UNAVAILABLE",
-                    "缺少行情", None, None, None, None, None,
+                    "缺少当日行情", None, None, None, None, None,
                     item.grid_width_pct, None, None, None, None, None,
-                    health_status="OUTAGE",
-                    health_reason="缺少行情",
+                    health_status=item_health.status,
+                    health_reason=item_health.reason,
                     blocked_reasons=("MISSING_QUOTE",),
                 ))
                 continue

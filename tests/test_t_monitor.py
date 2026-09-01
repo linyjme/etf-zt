@@ -605,13 +605,17 @@ class TMonitorEngineTests(unittest.TestCase):
             WatchItem("missing", "缺行情", 0.02),
             WatchItem("disabled", "已禁用", 0.02, False),
         )
-        payload = snapshot_to_dict(TMonitorEngine().evaluate(watchlist, {}))
+        payload = snapshot_to_dict(TMonitorEngine().evaluate(
+            watchlist, {}, datetime.fromisoformat("2026-08-28T16:00:00+08:00"),
+        ))
         self.assertEqual(payload["errors"], [])
         self.assertEqual(len(payload["items"]), 1)
         item = payload["items"][0]
         self.assertEqual(item["symbol"], "missing")
         self.assertEqual(item["status"], "MISSING_QUOTE")
         self.assertEqual(item["action"], "UNAVAILABLE")
+        self.assertEqual(item["label"], "缺少当日行情")
+        self.assertEqual(item["health_status"], "CLOSED")
         for field in (
             "price", "average_price", "previous_close", "upper_grid_price",
             "lower_grid_price", "change_pct", "white_yellow_deviation_grids",
@@ -642,6 +646,9 @@ class MonitorRefreshTests(unittest.TestCase):
             original = quotes_path.read_bytes()
             application = MonitorApplication(
                 quotes_path, watchlist_path, collector=FailingCollector(),
+                clock=lambda: datetime.fromisoformat(
+                    "2026-08-28T10:00:30+08:00",
+                ),
             )
             self.assertFalse(application.refresh_once())
             payload = application.snapshot()
@@ -834,6 +841,7 @@ const rows=[
   {health_status:'LUNCH_BREAK',status:'OK',action:'BUY_CANDIDATE',timestamp},
   {health_status:'CLOSED',status:'OK',action:'SELL_CANDIDATE',timestamp},
   {health_status:'OUTAGE',status:'MISSING_QUOTE',action:'BUY_CANDIDATE',timestamp},
+  {health_status:'CLOSED',status:'MISSING_QUOTE',action:'BUY_CANDIDATE',timestamp:null},
 ];
 console.log(JSON.stringify(rows.map(item=>marketPresentation(item,now))));
 """)
@@ -845,6 +853,7 @@ console.log(JSON.stringify(rows.map(item=>marketPresentation(item,now))));
             ("午间休市", "paused"),
             ("已收盘", "closed"),
             ("行情缺失", "missing"),
+            ("已收盘", "closed"),
         )
         for state, status in zip(cases[1:], expected):
             self.assertFalse(state["candidate"])
@@ -1047,7 +1056,7 @@ console.log(JSON.stringify({failedState,quotesOnly,summarized,sseRecovered,pollR
         self.assertIn('id="show-missing" type="checkbox" checked', PAGE)
         self.assertIn("showMissing.checked?allItems:allItems.filter", PAGE)
         self.assertIn("item.status!=='MISSING_QUOTE'", PAGE)
-        self.assertIn("行情缺失，指标不可用", PAGE)
+        self.assertIn("暂无当日行情，历史数据请从日期选择器查看", PAGE)
         self.assertIn("无可显示行情，请开启“显示无行情”", PAGE)
         self.assertIn("showMissing.addEventListener('change'", PAGE)
 
@@ -1174,7 +1183,10 @@ console.log(JSON.stringify({failedState,quotesOnly,summarized,sseRecovered,pollR
             "source": "FULL_DAY_FIXTURE",
             "points": points,
         }], ensure_ascii=False), encoding="utf-8")
-        application = MonitorApplication(self.quotes, self.watchlist)
+        application = MonitorApplication(
+            self.quotes, self.watchlist,
+            clock=lambda: datetime.fromisoformat("2026-08-28T13:32:00+08:00"),
+        )
 
         summary_size = len(json.dumps(application.snapshot(), separators=(",", ":")))
         full_size = len(json.dumps(application._published, separators=(",", ":")))
