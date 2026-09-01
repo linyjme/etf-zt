@@ -6,6 +6,7 @@ from http.server import ThreadingHTTPServer
 import io
 import json
 from pathlib import Path
+import socket
 from types import SimpleNamespace
 import tempfile
 import threading
@@ -234,6 +235,35 @@ class SequenceClock:
         return self.values[index]
 
 
+class MutableClock:
+    def __init__(self, value: str):
+        self.current = datetime.fromisoformat(value)
+
+    def __call__(self) -> datetime:
+        return self.current
+
+
+class AdvancingWaitEvent(RecordingWaitEvent):
+    def __init__(self, clock: MutableClock, *, stop_after: int):
+        super().__init__(stop_after=stop_after)
+        self.clock = clock
+
+    def wait(self, timeout: float) -> bool:
+        result = super().wait(timeout)
+        self.clock.current += timedelta(seconds=timeout)
+        return result
+
+
+class AbortingRequestLine(io.BytesIO):
+    def __init__(self, entered: threading.Event):
+        super().__init__()
+        self.entered = entered
+
+    def readline(self, size: int = -1) -> bytes:
+        self.entered.set()
+        raise ConnectionAbortedError(10053, "request-line connection aborted")
+
+
 class FailingStore:
     def __init__(self, message: str, method: str):
         self.message = message
@@ -409,6 +439,110 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.paths.history.read_bytes(), history_before)
         self.assertEqual(self.paths.alerts.read_bytes(), alerts_before)
         self.assertEqual(collector.calls, 1)
+
+    def test_read_paths_never_expose_a_previous_market_date(self) -> None:
+        cases = (
+            ("2026-08-29T10:02:00+08:00", [], "CLOSED"),
+            ("2026-08-31T09:00:00+08:00", [], "CLOSED"),
+            ("2026-08-31T10:02:00+08:00", ["2026-08-31"], "CLOSED"),
+        )
+        for collector in (StaticCollector(quote_payload_for_date("2026-08-28")), None):
+            for current_time, closed_dates, expected_health in cases:
+                with self.subTest(
+                    collector=type(collector).__name__, current_time=current_time,
+                ):
+                    self.paths.quotes.write_text(
+                        json.dumps(quote_payload_for_date("2026-08-28")),
+                        encoding="utf-8",
+                    )
+                    self.paths.calendar.write_text(json.dumps({
+                        "schema_version": 1, "closed_dates": closed_dates,
+                    }), encoding="utf-8")
+                    clock = MutableClock("2026-08-28T10:02:00+08:00")
+                    app = self.make_runtime_fixture(collector)
+                    app.clock = clock
+                    app._bootstrap(increment_revision=True)
+                    revision = app._revision
+                    history_before = self.paths.history.read_bytes()
+                    quotes_before = self.paths.quotes.read_bytes()
+
+                    clock.current = datetime.fromisoformat(current_time)
+                    self.assertFalse(app.collection_due())
+                    snapshot = app.snapshot()
+                    delta = app.quotes("510300", since=0)
+
+                    self.assertEqual(app._revision, revision)
+                    self.assertEqual(snapshot["revision"], revision)
+                    self.assertEqual(snapshot["generated_at"], current_time)
+                    self.assertEqual(snapshot["items"][0]["status"], "MISSING_QUOTE")
+                    self.assertEqual(
+                        snapshot["items"][0]["health_status"], expected_health,
+                    )
+                    for key in (
+                        "price", "average_price", "previous_close", "timestamp",
+                        "path_efficiency", "one_side_ratio", "vwap_slope",
+                    ):
+                        self.assertIsNone(snapshot["items"][0][key], key)
+                    self.assertEqual(snapshot["items"][0]["trade_markers"], [])
+                    self.assertTrue(delta["reset"])
+                    self.assertEqual(delta["revision"], revision)
+                    self.assertEqual(delta["upserts"], [])
+                    self.assertEqual(self.paths.history.read_bytes(), history_before)
+                    self.assertEqual(self.paths.quotes.read_bytes(), quotes_before)
+
+    def test_producer_publishes_exactly_one_authoritative_cross_date_reset(self) -> None:
+        cases = (
+            ("2026-08-29T10:02:00+08:00", []),
+            ("2026-08-31T09:00:00+08:00", []),
+            ("2026-08-31T10:02:00+08:00", ["2026-08-31"]),
+        )
+        for current_time, closed_dates in cases:
+            with self.subTest(current_time=current_time):
+                payload = quote_payload_for_date("2026-08-28")
+                self.paths.quotes.write_text(json.dumps(payload), encoding="utf-8")
+                self.paths.calendar.write_text(json.dumps({
+                    "schema_version": 1, "closed_dates": closed_dates,
+                }), encoding="utf-8")
+                collector = StaticCollector(payload)
+                clock = MutableClock("2026-08-28T10:02:00+08:00")
+                app = self.make_runtime_fixture(collector)
+                app.clock = clock
+                app._bootstrap(increment_revision=False)
+                clock.current = datetime.fromisoformat(current_time)
+                history_before = self.paths.history.read_bytes()
+                quotes_before = self.paths.quotes.read_bytes()
+                waits = RecordingWaitEvent(stop_after=2)
+                app._stop_event = waits
+                app._generation = 1
+                app._refresh_thread = threading.current_thread()
+
+                app._refresh_loop(1)
+
+                self.assertEqual(collector.calls, 0)
+                self.assertEqual(app._revision, 1)
+                self.assertEqual(app._published["generated_at"], current_time)
+                self.assertEqual(
+                    app._published["items"][0]["status"], "MISSING_QUOTE",
+                )
+                self.assertEqual(app._revision_events[-1]["resets"], ["510300"])
+                self.assertEqual(self.paths.history.read_bytes(), history_before)
+                self.assertEqual(self.paths.quotes.read_bytes(), quotes_before)
+
+    def test_cancelled_generation_cannot_publish_a_cross_date_reset(self) -> None:
+        payload = quote_payload_for_date("2026-08-28")
+        self.paths.quotes.write_text(json.dumps(payload), encoding="utf-8")
+        app = self.make_runtime_fixture(StaticCollector(payload))
+        before = copy.deepcopy(app._published)
+        app._generation = 2
+        app._refresh_thread = threading.current_thread()
+
+        published = app._publish_cross_date_reset(
+            datetime.fromisoformat("2026-08-29T10:02:00+08:00"), generation=1,
+        )
+
+        self.assertFalse(published)
+        self.assertEqual(app._revision, 0)
+        self.assertEqual(app._published, before)
 
     def test_successful_refresh_persists_each_minute_and_candidate_once(self) -> None:
         app = self.make_runtime_fixture()
@@ -653,13 +787,14 @@ class RuntimeTests(unittest.TestCase):
                 app.clock = clock
 
                 app._publish_collection_failure("采集失败")
+                self.assertEqual(clock.calls, 1)
 
                 snapshot = app.snapshot()
                 self.assertEqual(snapshot["generated_at"], clock_values[0])
                 self.assertEqual(
                     snapshot["items"][0]["health_status"], expected_health,
                 )
-                self.assertEqual(clock.calls, 1)
+                self.assertEqual(clock.calls, 2)
 
     def test_refresh_delay_is_bounded_and_success_resets_loop_backoff(self) -> None:
         app = self.make_runtime_fixture()
@@ -680,6 +815,42 @@ class RuntimeTests(unittest.TestCase):
         app._refresh_loop(1)
 
         self.assertEqual(waits.waits, [60.0, 60.0])
+
+    def test_delay_until_next_minute_uses_completion_time(self) -> None:
+        cases = (
+            ("2026-08-28T10:02:05+08:00", 55.0),
+            ("2026-08-28T10:03:00+08:00", 60.0),
+            ("2026-08-28T10:03:59.500000+08:00", 0.5),
+        )
+        for completed_at, expected in cases:
+            with self.subTest(completed_at=completed_at):
+                self.assertEqual(
+                    MonitorApplication.delay_until_next_minute(
+                        datetime.fromisoformat(completed_at),
+                    ),
+                    expected,
+                )
+
+    def test_successful_five_second_batches_do_not_drift_from_minute_boundaries(self) -> None:
+        app = self.make_runtime_fixture()
+        clock = MutableClock("2026-08-28T10:02:00+08:00")
+        waits = AdvancingWaitEvent(clock, stop_after=3)
+        app.clock = clock
+        app._stop_event = waits
+        app._generation = 1
+        app._refresh_thread = threading.current_thread()
+        app.collection_due = lambda: True
+
+        def collect(generation: int) -> bool:
+            clock.current += timedelta(seconds=5)
+            return True
+
+        app._refresh_once = collect
+
+        app._refresh_loop(1)
+
+        self.assertEqual(waits.waits, [55.0, 55.0, 55.0])
+        self.assertEqual(clock.current.second, 0)
 
     def test_scheduling_error_publishes_outage_without_stopping_producer(self) -> None:
         app = self.make_runtime_fixture()
@@ -1425,32 +1596,58 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unexpected header failure"):
             handler._send(HTTPStatus.OK, b"payload", "application/json")
 
-    def test_server_quiets_expected_client_disconnect_at_request_boundary(self) -> None:
-        server = object.__new__(MonitorServer)
-        request = object()
-        address = ("127.0.0.1", 12345)
+    def test_real_server_quiets_abort_only_while_reading_request_line(self) -> None:
+        application = SimpleNamespace(stop_refresh=lambda: None)
+        server = MonitorServer(("127.0.0.1", 0), application)
+        server.timeout = 0.5
+        entered = threading.Event()
 
-        with patch.object(ThreadingHTTPServer, "handle_error") as parent_handle:
-            try:
-                raise ConnectionAbortedError(10053, "request connection aborted")
-            except ConnectionAbortedError:
-                server.handle_error(request, address)
+        def aborting_setup(handler: MonitorRequestHandler) -> None:
+            handler.connection = handler.request
+            handler.rfile = AbortingRequestLine(entered)
+            handler.wfile = handler.request.makefile("wb")
 
-        parent_handle.assert_not_called()
+        try:
+            with patch.object(MonitorRequestHandler, "setup", aborting_setup), patch.object(
+                ThreadingHTTPServer, "handle_error",
+            ) as parent_handle:
+                client = socket.create_connection(server.server_address, timeout=1)
+                try:
+                    server.handle_request()
+                    self.assertTrue(entered.wait(1))
+                    threading.Event().wait(0.05)
+                finally:
+                    client.close()
+            parent_handle.assert_not_called()
+        finally:
+            server.server_close()
 
-    def test_server_delegates_unexpected_request_errors_to_parent(self) -> None:
-        server = object.__new__(MonitorServer)
-        request = object()
-        address = ("127.0.0.1", 12345)
+    def test_real_server_delegates_application_connection_abort_to_parent(self) -> None:
+        application = SnapshotAbortedApplication()
+        application.stop_refresh = lambda: None
+        server = MonitorServer(("127.0.0.1", 0), application)
+        server.timeout = 0.5
+        handled = threading.Event()
 
-        with patch.object(ThreadingHTTPServer, "handle_error") as parent_handle:
-            try:
-                raise RuntimeError("unexpected request failure")
-            except RuntimeError:
-                server.handle_error(request, address)
+        def record_error(*args: object, **kwargs: object) -> None:
+            handled.set()
 
-        parent_handle.assert_called_once()
-        self.assertEqual(parent_handle.call_args.args[-2:], (request, address))
+        try:
+            with patch.object(
+                ThreadingHTTPServer, "handle_error", side_effect=record_error,
+            ) as parent_handle:
+                client = socket.create_connection(server.server_address, timeout=1)
+                try:
+                    client.sendall(
+                        b"GET /api/snapshot HTTP/1.1\r\nHost: localhost\r\n\r\n"
+                    )
+                    server.handle_request()
+                    self.assertTrue(handled.wait(1))
+                finally:
+                    client.close()
+            parent_handle.assert_called_once()
+        finally:
+            server.server_close()
 
     def test_health_summary_tracks_latest_outage_revision(self) -> None:
         app = self.make_runtime_fixture()

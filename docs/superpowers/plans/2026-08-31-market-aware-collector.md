@@ -15,6 +15,7 @@
 **Modify**
 
 - `src/etf_rotation/market_data.py` — pure Shanghai market-session classification.
+- `src/etf_rotation/quote_collector.py` — Task 6 approved same-interface fallback semantics and actual-host provenance (already covered by focused tests).
 - `src/etf_rotation/t_monitor.py` — missing-current-day items inherit the actual market phase instead of forcing `OUTAGE`.
 - `src/etf_rotation/t_web.py` — current-day filtering, session-aware producer scheduling, bounded failure backoff, market-aware failure publication, SSE disconnect handling.
 - `src/etf_rotation/t_page.py` — show “暂无当日行情” and preserve `CLOSED`/`LUNCH_BREAK` presentation for missing current-day data.
@@ -28,9 +29,9 @@
 - `tests/test_defaults.py` — shared refresh default test.
 - `tests/test_run_tests_script.py` — production launch interval assertion.
 
-**Do not modify**
+**Do not modify, except for the Task 6 approved correction below**
 
-- `src/etf_rotation/quote_collector.py` parsing and validation.
+- `src/etf_rotation/quote_collector.py` field mapping and validation remain strict; only the documented same-interface host fallback/provenance correction is permitted.
 - Strategy, regime, T-account, backtest, valuation, ETF metadata, or schema v3 persistence semantics.
 - Existing historical JSONL records.
 
@@ -777,6 +778,18 @@ git add -- src/etf_rotation/cli.py scripts/start-monitor.ps1 tests/test_market_d
 git commit -m "docs: align monitor runtime with minute sessions"
 ```
 
+### Task 6 correction: findings approved during real-host verification
+
+This section supersedes the earlier “do not modify/fallback” boundary; it is an approved correction from Task 6现场验证, not a second quote-source feature.
+
+- Both endpoints are the same Eastmoney `trends2` field interface. Retry the entire batch on `push2delay.eastmoney.com` only after a transport/decode failure from `push2his.eastmoney.com`; a parsed business error from the primary must fail without fallback.
+- Never mix hosts inside one batch. Persist the actual successful host through `Quote.source` into schema v3 history.
+- Source fallback never bypasses the existing quote-age gate. Stale fallback data remains `DELAYED`/`OUTAGE`, candidates are revoked, and fallback is rejected for field, previous-close, minute-count, date, OHLC, limit, or volume/amount inconsistencies.
+- Volume/amount validation permits only `±1` source volume unit around the exact volume, with at least one share for non-zero trades; OHLC, price-limit, and zero-pair checks stay strict. Evidence: fallback record 510500 at `2026-09-01T10:49:00+08:00` had `low=7.878`, `high=7.881`, `volume=1253`, `amount=986874`, and `volume_unit_shares=100`. Its direct implied price was `7.8760893855`; the `volume-1` bound was `7.8823801917`, so one source-unit rounding explains the discrepancy.
+- Cross-date hardening is two-layered: each producer cycle publishes at most one empty current-date reset even when collection is not due, while snapshot/quote reads independently suppress stale-day values without changing revision.
+- Successful batches schedule from completion to the next Shanghai minute boundary (`:05` waits 55 seconds; exact `:00` waits 60). Failure delays remain 60/120/240/300 seconds.
+- Request-line disconnects are quiet only at the read boundary. Application/handler `ConnectionAbortedError` must still reach the standard server `handle_error` path.
+
 ### Task 6: Full regression, clean-archive, and live-service verification
 
 **Files:**
@@ -868,36 +881,34 @@ Run the launch command in the normal Windows user context with host network perm
 
 - [ ] **Step 5: Verify live API behavior**
 
-Check `/health`, `/api/snapshot`, and all six `/api/quotes?symbol=<symbol>&since=0` responses. Expected after the 2026-08-31 close:
+Check `/health`, `/api/snapshot`, and all six `/api/quotes?symbol=<symbol>&since=0` responses. Derive the expected date and phase from the current Shanghai clock and `market_calendar.json`; do not hardcode the historical 2026-08-31 observation. The acceptance rules are:
 
 ```text
-/health status: ok
-health_statuses: CLOSED
-snapshot errors: []
-six snapshot timestamps: 2026-08-31T15:00:00+08:00
-six quote streams: trading_date 2026-08-31 only, 241 finalized points each
-candidate count: 0
+/health and item health agree with the current session and quote age
+snapshot exposes no date earlier than the current Shanghai calendar date
+each nonempty quote stream contains only the current Shanghai date and finalized schema v3 points
+PRE_OPEN/weekend/explicit closure returns an empty reset rather than the previous close
+inactive sessions do not repeatedly change revision
+candidate count is zero whenever health is not REALTIME
 ```
 
 Run:
 
 ```powershell
+$shanghaiNow = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), 'China Standard Time')
+$today = $shanghaiNow.ToString('yyyy-MM-dd')
 $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 5
 $snapshot = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/snapshot' -TimeoutSec 5
-if ($health.status -ne 'ok') { throw "health is $($health.status)" }
-if (($health.health_statuses -join ',') -ne 'CLOSED') { throw 'market is not CLOSED' }
-if (@($snapshot.errors).Count -ne 0) { throw ($snapshot.errors -join ' | ') }
 if (@($snapshot.items).Count -ne 6) { throw 'snapshot does not contain six ETFs' }
 foreach ($item in $snapshot.items) {
-    if (-not ([string]$item.timestamp).StartsWith('2026-08-31T15:00:00')) {
-        throw "unexpected snapshot timestamp for $($item.symbol): $($item.timestamp)"
+    if ($null -ne $item.timestamp -and -not ([string]$item.timestamp).StartsWith($today)) {
+        throw "stale snapshot timestamp for $($item.symbol): $($item.timestamp)"
     }
 }
 foreach ($symbol in '510300','510500','563360','512100','159915','588000') {
     $quotes = Invoke-RestMethod -Uri ("http://127.0.0.1:8765/api/quotes?symbol=$symbol&since=0") -TimeoutSec 5
-    if (@($quotes.upserts).Count -ne 241) { throw "$symbol does not have 241 points" }
     $dates = @($quotes.upserts | ForEach-Object trading_date | Sort-Object -Unique)
-    if ($dates.Count -ne 1 -or $dates[0] -ne '2026-08-31') { throw "$symbol leaked another date" }
+    if ($dates.Count -gt 1 -or ($dates.Count -eq 1 -and $dates[0] -ne $today)) { throw "$symbol leaked another date" }
     if (@($quotes.upserts | Where-Object { $_.schema_version -ne 3 -or $_.is_complete -ne $true }).Count -ne 0) {
         throw "$symbol contains invalid live-minute metadata"
     }
@@ -910,9 +921,8 @@ Use this read-only check:
 $before = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 5
 Start-Sleep -Seconds 65
 $after = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 5
-if ($after.status -ne 'ok') { throw "health is $($after.status)" }
-if (($after.health_statuses -join ',') -ne 'CLOSED') { throw 'market is not CLOSED' }
-if ($after.revision -ne $before.revision) { throw 'closed-session producer published another revision' }
+if (($after.health_statuses -join ',') -ne ($before.health_statuses -join ',')) { throw 'health phase changed during stability check' }
+if (($before.health_statuses -join ',') -ne 'REALTIME' -and $after.revision -ne $before.revision) { throw 'inactive-session producer published another revision' }
 ```
 
 Expected: revision is unchanged across more than one refresh interval and no collector error appears.

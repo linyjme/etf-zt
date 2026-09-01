@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
-import sys
+import socket
 import tempfile
 import threading
 import time
@@ -116,8 +116,10 @@ class MonitorApplication:
         self._bootstrap(increment_revision=self.collector is None)
 
     def snapshot(self) -> dict[str, Any]:
+        now = self.clock()
         with self.refresh_lock:
-            published = self._published
+            published = copy.deepcopy(self._published)
+        published, _ = self._current_date_view(published, now)
         return self._summary_snapshot(published)
 
     def quotes(self, symbol: str, since: int) -> dict[str, Any]:
@@ -135,9 +137,11 @@ class MonitorApplication:
             revision = self._revision
             published = copy.deepcopy(self._published)
             events = copy.deepcopy(tuple(self._revision_events))
+        published, crossed_date = self._current_date_view(published, self.clock())
         all_points = self._current_day_points(published, symbol)
         reset = (
-            since == 0
+            crossed_date
+            or since == 0
             or since > revision
             or (since < revision and not events)
             or (
@@ -310,6 +314,12 @@ class MonitorApplication:
             constants.MAX_REFRESH_BACKOFF_SECONDS,
         )
 
+    @staticmethod
+    def delay_until_next_minute(now: datetime) -> float:
+        local = now.astimezone(SHANGHAI)
+        elapsed = local.second + local.microsecond / 1_000_000
+        return 60.0 if elapsed == 0 else 60.0 - elapsed
+
     def _refresh_once(self, generation: int | None) -> bool:
         with self.producer_lock:
             if self.collector is None:
@@ -401,6 +411,7 @@ class MonitorApplication:
                     if self._generation_cancelled(generation):
                         break
                 try:
+                    self._publish_cross_date_reset(self.clock(), generation)
                     attempted = self.collection_due()
                 except Exception as error:
                     with self.lifecycle_gate:
@@ -416,7 +427,11 @@ class MonitorApplication:
                     failure_count = 0 if succeeded else failure_count + 1
                 else:
                     failure_count = 0
-                delay = self.refresh_delay(failure_count if attempted else 0)
+                delay = (
+                    self.delay_until_next_minute(self.clock())
+                    if attempted and succeeded
+                    else self.refresh_delay(failure_count if attempted else 0)
+                )
                 self._stop_event.wait(delay)
         finally:
             with self.lifecycle_gate:
@@ -541,6 +556,58 @@ class MonitorApplication:
             "persistence_errors": [],
             "last_refresh_at": None,
         }
+
+    @staticmethod
+    def _published_date_matches(
+        published: Mapping[str, Any], now: datetime,
+    ) -> bool:
+        try:
+            generated = datetime.fromisoformat(str(published.get("generated_at", "")))
+        except ValueError:
+            return False
+        return (
+            generated.tzinfo is not None
+            and generated.utcoffset() is not None
+            and generated.astimezone(SHANGHAI).date()
+            == now.astimezone(SHANGHAI).date()
+        )
+
+    def _empty_current_date_view(
+        self, published: Mapping[str, Any], now: datetime,
+    ) -> dict[str, Any]:
+        result = snapshot_to_dict(self.engine.evaluate(
+            load_watchlist(self.watchlist_path), {}, generated_at=now,
+        ))
+        result.update({
+            "revision": int(published.get("revision", self._revision)),
+            "source": None,
+            "refresh_error": None,
+            "persistence_errors": [],
+            "last_refresh_at": None,
+        })
+        return result
+
+    def _current_date_view(
+        self, published: Mapping[str, Any], now: datetime,
+    ) -> tuple[dict[str, Any], bool]:
+        if self._published_date_matches(published, now):
+            return copy.deepcopy(dict(published)), False
+        return self._empty_current_date_view(published, now), True
+
+    def _publish_cross_date_reset(
+        self, now: datetime, generation: int | None,
+    ) -> bool:
+        with self.producer_lock:
+            with self.lifecycle_gate:
+                if self._generation_cancelled(generation):
+                    return False
+                with self.refresh_lock:
+                    previous = copy.deepcopy(self._published)
+                if self._published_date_matches(previous, now):
+                    return False
+                current = self._empty_current_date_view(previous, now)
+                self._publish(current, {})
+                return True
 
     @staticmethod
     def _summary_snapshot(published: Mapping[str, Any]) -> dict[str, Any]:
@@ -987,17 +1054,44 @@ class MonitorServer(ThreadingHTTPServer):
         self.application.stop_refresh()
         super().server_close()
 
-    def handle_error(
-        self, request: object, client_address: tuple[str, int],
-    ) -> None:
-        if isinstance(sys.exc_info()[1], _EXPECTED_CLIENT_DISCONNECTS):
-            return
-        super().handle_error(request, client_address)
-
 
 class MonitorRequestHandler(BaseHTTPRequestHandler):
     server: MonitorServer
     protocol_version = "HTTP/1.1"
+
+    def handle_one_request(self) -> None:
+        """Handle one request, quieting only an aborted request-line read."""
+        try:
+            try:
+                self.raw_requestline = self.rfile.readline(65537)
+            except _EXPECTED_CLIENT_DISCONNECTS:
+                self.close_connection = True
+                return
+            if len(self.raw_requestline) > 65536:
+                self.requestline = ""
+                self.request_version = ""
+                self.command = ""
+                self.send_error(HTTPStatus.REQUEST_URI_TOO_LONG)
+                return
+            if not self.raw_requestline:
+                self.close_connection = True
+                return
+            if not self.parse_request():
+                return
+            method_name = "do_" + self.command
+            if not hasattr(self, method_name):
+                self.send_error(
+                    HTTPStatus.NOT_IMPLEMENTED,
+                    "Unsupported method (%r)" % self.command,
+                )
+                return
+            method = getattr(self, method_name)
+            method()
+            self.wfile.flush()
+        except socket.timeout as error:
+            self.log_error("Request timed out: %r", error)
+            self.close_connection = True
+            return
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
@@ -1041,6 +1135,11 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         return
 
+    @staticmethod
+    def _propagate_disconnect(error: BaseException) -> None:
+        if isinstance(error, _EXPECTED_CLIENT_DISCONNECTS):
+            raise error
+
     def _add_watch_item(self) -> None:
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -1058,12 +1157,14 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
             self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_request", "message": str(error)})
         except OSError as error:
+            self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
 
     def _snapshot(self) -> None:
         try:
             self._json(HTTPStatus.OK, self.server.application.snapshot())
         except (ValueError, OSError) as error:
+            self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
 
     def _quotes(self) -> None:
@@ -1089,6 +1190,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             })
             return
         except OSError as error:
+            self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
             return
         self._json(HTTPStatus.OK, payload)
@@ -1097,12 +1199,14 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         try:
             self._json(HTTPStatus.OK, self.server.application.t_backtest())
         except (ValueError, OSError) as error:
+            self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
 
     def _signal_replay(self) -> None:
         try:
             self._json(HTTPStatus.OK, self.server.application.signal_replay())
         except (ValueError, OSError) as error:
+            self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
 
     def _backtest(self) -> None:
@@ -1111,12 +1215,14 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             payload["deprecated_alias"] = True
             self._json(HTTPStatus.OK, payload)
         except (ValueError, OSError) as error:
+            self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
 
     def _valuation(self, symbol: str) -> None:
         try:
             self._json(HTTPStatus.OK, self.server.application.valuation(symbol))
         except (ValueError, OSError) as error:
+            self._propagate_disconnect(error)
             self._json(HTTPStatus.OK, {"symbol": symbol, "status": "UNKNOWN", "index": None, "valuation": None, "error": str(error), "read_only": True})
 
     def _history_dates(self) -> None:
@@ -1124,6 +1230,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         try:
             dates = QuoteHistoryStore(path).available_dates() if path is not None else []
         except (ValueError, OSError) as error:
+            self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
             return
         self._json(HTTPStatus.OK, {"dates": dates, "read_only": True})
@@ -1139,6 +1246,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         try:
             records = QuoteHistoryStore(path).query(trading_date, symbol)
         except (ValueError, OSError) as error:
+            self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
             return
         self._json(HTTPStatus.OK, {"date": trading_date, "symbol": symbol, "records": records, "read_only": True})
@@ -1159,6 +1267,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
                 query.get("action", [None])[0], limit,
             )
         except (ValueError, OSError) as error:
+            self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
             return
         self._json(HTTPStatus.OK, {"items": items, "read_only": True})
