@@ -15,6 +15,8 @@ from .swing_data import DailyBar
 
 
 EvidenceScalar: TypeAlias = float | int | bool | str | None
+_LOT_BOUNDARY_ULPS = 16.0
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 class SwingStrategyError(ValueError):
@@ -42,7 +44,7 @@ class IntradayOverlay(StrEnum):
 
 
 def _finite_number(value: object, field: str, *, positive: bool = False) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         raise SwingStrategyError(f"{field} must be a finite number")
     try:
         number = float(value)
@@ -55,6 +57,53 @@ def _finite_number(value: object, field: str, *, positive: bool = False) -> floa
     if not positive and number < 0.0:
         raise SwingStrategyError(f"{field} must be nonnegative")
     return number
+
+
+def _optional_number(
+    value: object,
+    field: str,
+    *,
+    positive: bool = False,
+) -> float | None:
+    if value is None:
+        return None
+    return _finite_number(value, field, positive=positive)
+
+
+def _strict_text(value: object, field: str, *, allow_empty: bool = False) -> str:
+    if type(value) is not str:
+        raise SwingStrategyError(f"{field} must be a built-in string")
+    if not value.strip() and not (allow_empty and value == ""):
+        raise SwingStrategyError(f"{field} must not be blank")
+    return value
+
+
+def _immutable_evidence(value: object) -> Mapping[str, EvidenceScalar]:
+    if type(value) not in (dict, _MAPPING_PROXY_TYPE):
+        raise SwingStrategyError("evidence must be a scalar mapping")
+    items = tuple(value.items())
+    copied: dict[str, EvidenceScalar] = {}
+    for item in items:
+        if type(item) is not tuple or len(item) != 2:
+            raise SwingStrategyError("evidence must be a scalar mapping")
+        key, scalar = item
+        if type(key) is not str or type(scalar) not in (
+            float, int, bool, str, type(None),
+        ):
+            raise SwingStrategyError("evidence must contain built-in JSON scalars")
+        if type(scalar) is float and not math.isfinite(scalar):
+            raise SwingStrategyError("evidence floats must be finite")
+        copied[key] = scalar
+    return MappingProxyType(copied)
+
+
+def _blocked_reason_tuple(value: object) -> tuple[str, ...]:
+    if type(value) not in (tuple, list):
+        raise SwingStrategyError("blocked_reasons must be a tuple or list")
+    reasons = tuple(value)
+    if any(type(reason) is not str or not reason.strip() for reason in reasons):
+        raise SwingStrategyError("blocked_reasons must contain built-in strings")
+    return reasons
 
 
 def _strict_date(value: object, field: str, *, optional: bool = False) -> date | None:
@@ -85,15 +134,21 @@ class PositionContext:
             or self.sellable_shares > self.shares
         ):
             raise SwingStrategyError("sellable_shares must be an integer within shares")
-        _finite_number(self.average_cost, "average_cost", positive=True)
-        _finite_number(
+        object.__setattr__(
+            self, "average_cost",
+            _finite_number(self.average_cost, "average_cost", positive=True),
+        )
+        object.__setattr__(self, "initial_risk_per_share", _finite_number(
             self.initial_risk_per_share, "initial_risk_per_share", positive=True,
-        )
+        ))
         _strict_date(self.entry_trading_date, "entry_trading_date")
-        _finite_number(
+        object.__setattr__(self, "highest_completed_close", _finite_number(
             self.highest_completed_close, "highest_completed_close", positive=True,
+        ))
+        object.__setattr__(
+            self, "hard_stop",
+            _finite_number(self.hard_stop, "hard_stop", positive=True),
         )
-        _finite_number(self.hard_stop, "hard_stop", positive=True)
         if type(self.first_reduction_completed) is not bool:
             raise SwingStrategyError("first_reduction_completed must be bool")
 
@@ -114,12 +169,16 @@ class PortfolioContext:
     position: PositionContext | None = None
 
     def __post_init__(self) -> None:
-        _finite_number(self.equity, "equity", positive=True)
-        _finite_number(self.cash, "cash")
-        _finite_number(self.current_etf_market_value, "current_etf_market_value")
-        _finite_number(
-            self.current_planned_risk_amount, "current_planned_risk_amount",
-        )
+        for field, positive in (
+            ("equity", True),
+            ("cash", False),
+            ("current_etf_market_value", False),
+            ("current_planned_risk_amount", False),
+        ):
+            object.__setattr__(
+                self, field,
+                _finite_number(getattr(self, field), field, positive=positive),
+            )
         if type(self.lot_size) is not int or self.lot_size <= 0:
             raise SwingStrategyError("lot_size must be a positive integer")
         for field in (
@@ -185,19 +244,55 @@ class SwingDecision:
     valid_for_trading_date: date | None
 
     def __post_init__(self) -> None:
-        try:
-            copied = dict(self.evidence)
-        except Exception as error:
-            raise SwingStrategyError("evidence must be a scalar mapping") from error
-        for key, value in copied.items():
-            if type(key) is not str or type(value) not in (
-                float, int, bool, str, type(None),
-            ):
-                raise SwingStrategyError("evidence must contain built-in JSON scalars")
-            if type(value) is float and not math.isfinite(value):
-                raise SwingStrategyError("evidence floats must be finite")
-        object.__setattr__(self, "evidence", MappingProxyType(copied))
-        object.__setattr__(self, "blocked_reasons", tuple(self.blocked_reasons))
+        if type(self.state) is not SwingState:
+            raise SwingStrategyError("state must be SwingState")
+        allow_empty_symbol = self.state is SwingState.DATA_UNAVAILABLE
+        _strict_text(self.symbol, "symbol", allow_empty=allow_empty_symbol)
+        _strict_text(self.strategy_version, "strategy_version")
+        _strict_date(
+            self.as_of_trading_date, "as_of_trading_date", optional=True,
+        )
+        _strict_date(
+            self.valid_for_trading_date, "valid_for_trading_date", optional=True,
+        )
+        if (
+            self.as_of_trading_date is not None
+            and self.valid_for_trading_date is not None
+            and self.valid_for_trading_date <= self.as_of_trading_date
+        ):
+            raise SwingStrategyError(
+                "valid_for_trading_date must be after as_of_trading_date",
+            )
+        entry_low = _optional_number(
+            self.planned_entry_low, "planned_entry_low", positive=True,
+        )
+        entry_high = _optional_number(
+            self.planned_entry_high, "planned_entry_high", positive=True,
+        )
+        if (entry_low is None) != (entry_high is None):
+            raise SwingStrategyError("planned entry bounds must both be present")
+        if entry_low is not None and entry_high is not None and entry_low > entry_high:
+            raise SwingStrategyError("planned_entry_low must not exceed high")
+        planned_stop = _optional_number(
+            self.planned_stop, "planned_stop", positive=True,
+        )
+        first_reduce_price = _optional_number(
+            self.first_reduce_price, "first_reduce_price", positive=True,
+        )
+        if type(self.planned_shares) is not int or self.planned_shares < 0:
+            raise SwingStrategyError("planned_shares must be a nonnegative integer")
+        planned_risk_rate = _finite_number(
+            self.planned_risk_rate, "planned_risk_rate",
+        )
+        object.__setattr__(self, "planned_entry_low", entry_low)
+        object.__setattr__(self, "planned_entry_high", entry_high)
+        object.__setattr__(self, "planned_stop", planned_stop)
+        object.__setattr__(self, "first_reduce_price", first_reduce_price)
+        object.__setattr__(self, "planned_risk_rate", planned_risk_rate)
+        object.__setattr__(self, "evidence", _immutable_evidence(self.evidence))
+        object.__setattr__(
+            self, "blocked_reasons", _blocked_reason_tuple(self.blocked_reasons),
+        )
 
 
 @dataclass(frozen=True)
@@ -211,7 +306,25 @@ class IntradayDecision:
     evidence: Mapping[str, EvidenceScalar]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "evidence", MappingProxyType(dict(self.evidence)))
+        if type(self.formal_state) is not SwingState:
+            raise SwingStrategyError("formal_state must be SwingState")
+        if type(self.overlay) is not IntradayOverlay:
+            raise SwingStrategyError("overlay must be IntradayOverlay")
+        normalized = {
+            field: _optional_number(getattr(self, field), field, positive=True)
+            for field in (
+                "price", "planned_entry_low", "planned_entry_high", "planned_stop",
+            )
+        }
+        low = normalized["planned_entry_low"]
+        high = normalized["planned_entry_high"]
+        if (low is None) != (high is None):
+            raise SwingStrategyError("planned entry bounds must both be present")
+        if low is not None and high is not None and low > high:
+            raise SwingStrategyError("planned_entry_low must not exceed high")
+        for field, value in normalized.items():
+            object.__setattr__(self, field, value)
+        object.__setattr__(self, "evidence", _immutable_evidence(self.evidence))
 
 
 @dataclass(frozen=True)
@@ -294,7 +407,11 @@ def _compute_metrics(
         entry_low_adjusted, entry_high_adjusted, entry_low_raw, entry_high_raw,
         planned_stop, per_share_risk, first_reduce_price,
     )
-    if any(not math.isfinite(value) for value in values) or per_share_risk <= 0.0:
+    if (
+        any(not math.isfinite(value) for value in values)
+        or planned_stop <= 0.0
+        or per_share_risk <= 0.0
+    ):
         raise ArithmeticError("unrepresentable strategy arithmetic")
     return _Metrics(
         ma20, ma60, ma60_prior, previous_ma20, atr, raw_scale,
@@ -310,7 +427,7 @@ def _candidate_symbol(values: tuple[object, ...]) -> str:
             symbol = value.symbol if isinstance(value, DailyBar) else value.get("symbol")
         except Exception:
             continue
-        if type(symbol) is str:
+        if type(symbol) is str and symbol.strip():
             return symbol
     return ""
 
@@ -395,11 +512,26 @@ def _health_reasons(portfolio: PortfolioContext) -> tuple[str, ...]:
     )
 
 
+def _local_ulp_tolerance(left: float, right: float) -> float:
+    return max(math.ulp(left), math.ulp(right)) * _LOT_BOUNDARY_ULPS
+
+
+def _snap_near_integer(value: float) -> float:
+    nearest = float(round(value))
+    if abs(value - nearest) <= _local_ulp_tolerance(value, nearest):
+        return nearest
+    return value
+
+
 def _lot_floor(shares: float, lot_size: int) -> int:
     if not math.isfinite(shares) or shares <= 0.0:
         return 0
-    lots = math.floor(shares / lot_size)
+    lots = math.floor(_snap_near_integer(shares / lot_size))
     return max(0, lots * lot_size)
+
+
+def _cap_allows_one_lot(shares: float, lot_size: int) -> bool:
+    return _lot_floor(shares, lot_size) >= lot_size
 
 
 def _entry_sizing(
@@ -445,7 +577,7 @@ def _entry_sizing(
         "portfolio_risk_cap_shares": "portfolio_risk_cap",
     }
     for key, value in caps.items():
-        if value < portfolio.lot_size:
+        if not _cap_allows_one_lot(value, portfolio.lot_size):
             reasons.append(reason_by_cap[key])
     if selected < portfolio.lot_size:
         reasons.append("minimum_lot")
@@ -456,18 +588,28 @@ def _entry_sizing(
         **caps,
         "selected_shares": selected,
         "planned_risk_rate": planned_risk_rate,
-        "cash_cap_ok": caps["cash_cap_shares"] >= portfolio.lot_size,
+        "cash_cap_ok": _cap_allows_one_lot(
+            caps["cash_cap_shares"], portfolio.lot_size,
+        ),
         "single_symbol_cap_ok": (
-            caps["single_symbol_cap_shares"] >= portfolio.lot_size
+            _cap_allows_one_lot(
+                caps["single_symbol_cap_shares"], portfolio.lot_size,
+            )
         ),
         "total_exposure_cap_ok": (
-            caps["total_exposure_cap_shares"] >= portfolio.lot_size
+            _cap_allows_one_lot(
+                caps["total_exposure_cap_shares"], portfolio.lot_size,
+            )
         ),
         "trade_risk_cap_ok": (
-            caps["trade_risk_cap_shares"] >= portfolio.lot_size
+            _cap_allows_one_lot(
+                caps["trade_risk_cap_shares"], portfolio.lot_size,
+            )
         ),
         "portfolio_risk_cap_ok": (
-            caps["portfolio_risk_cap_shares"] >= portfolio.lot_size
+            _cap_allows_one_lot(
+                caps["portfolio_risk_cap_shares"], portfolio.lot_size,
+            )
         ),
         "minimum_lot_ok": selected >= portfolio.lot_size,
         "health_gates_ok": not _health_reasons(portfolio),
@@ -535,6 +677,7 @@ def _base_evidence(
         "health_gates_ok": not _health_reasons(portfolio),
         "entry_hard_gates_ok": False,
         "calendar_fallback_used": False,
+        "invalid_next_trading_date": False,
         "cooldown_sessions_elapsed": 0,
         "exit_two_closes_below_ma20": False,
         "exit_close_below_ma60": False,
@@ -736,13 +879,23 @@ def _position_decision(
             "portfolio_risk_cap_shares": "portfolio_risk_cap",
         }
         for key, value in add_caps.items():
-            if value < portfolio.lot_size:
+            if not _cap_allows_one_lot(value, portfolio.lot_size):
                 blocked.append(reason_names[key])
-        evidence["cash_cap_ok"] = cash_cap >= portfolio.lot_size
-        evidence["single_symbol_cap_ok"] = symbol_cap >= portfolio.lot_size
-        evidence["total_exposure_cap_ok"] = total_cap >= portfolio.lot_size
-        evidence["trade_risk_cap_ok"] = trade_risk_cap >= portfolio.lot_size
-        evidence["portfolio_risk_cap_ok"] = risk_cap >= portfolio.lot_size
+        evidence["cash_cap_ok"] = _cap_allows_one_lot(
+            cash_cap, portfolio.lot_size,
+        )
+        evidence["single_symbol_cap_ok"] = _cap_allows_one_lot(
+            symbol_cap, portfolio.lot_size,
+        )
+        evidence["total_exposure_cap_ok"] = _cap_allows_one_lot(
+            total_cap, portfolio.lot_size,
+        )
+        evidence["trade_risk_cap_ok"] = _cap_allows_one_lot(
+            trade_risk_cap, portfolio.lot_size,
+        )
+        evidence["portfolio_risk_cap_ok"] = _cap_allows_one_lot(
+            risk_cap, portfolio.lot_size,
+        )
         if add_shares < portfolio.lot_size:
             blocked.append("minimum_lot")
         if not blocked:
@@ -908,6 +1061,19 @@ def evaluate_swing(
     )
     if technical_trial and not sizing_reasons and sizing_shares >= portfolio.lot_size:
         valid_for = portfolio.next_trading_date
+        if valid_for is not None and valid_for <= latest.trading_date:
+            evidence["invalid_next_trading_date"] = True
+            return SwingDecision(
+                **common,
+                state=(
+                    SwingState.PULLBACK_WATCH
+                    if pullback else SwingState.UPTREND_WATCH
+                ),
+                blocked_reasons=("invalid_next_trading_date",),
+                planned_shares=0,
+                planned_risk_rate=0.0,
+                valid_for_trading_date=None,
+            )
         if valid_for is None:
             valid_for = _next_weekday(latest.trading_date)
             evidence["calendar_fallback_used"] = True
@@ -947,11 +1113,13 @@ def evaluate_intraday_overlay(
         SwingState.EXIT_CANDIDATE,
     }
     valid_position_flag = has_position is None or type(has_position) is bool
-    actual_position = inferred_position if has_position is None else bool(has_position)
-    valid_price = (
-        not isinstance(price, bool)
-        and isinstance(price, (int, float))
-    )
+    if has_position is None:
+        actual_position = inferred_position
+    elif type(has_position) is bool:
+        actual_position = has_position
+    else:
+        actual_position = False
+    valid_price = type(price) in (int, float)
     normalized_price: float | None = None
     if valid_price:
         try:
@@ -972,14 +1140,14 @@ def evaluate_intraday_overlay(
         default=0.0,
     )
     supplied_tick = formal.evidence.get("price_tick")
-    tick = (
-        float(supplied_tick)
-        if type(supplied_tick) in (int, float)
-        and not isinstance(supplied_tick, bool)
-        and math.isfinite(float(supplied_tick))
-        and float(supplied_tick) > 0.0
-        else 0.0
-    )
+    tick = 0.0
+    if type(supplied_tick) in (int, float):
+        try:
+            normalized_tick = float(supplied_tick)
+        except (OverflowError, ValueError):
+            normalized_tick = 0.0
+        if math.isfinite(normalized_tick) and normalized_tick > 0.0:
+            tick = normalized_tick
     proximity = max(tick, local_ulp)
     overlay = IntradayOverlay.NONE
     stop_touched = False

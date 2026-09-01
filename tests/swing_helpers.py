@@ -215,15 +215,38 @@ def replace_latest_adjusted(
     close: float | None = None,
 ) -> tuple[DailyBar, ...]:
     """Replace the latest adjusted OHLC while retaining its raw scale."""
+    return replace_adjusted_bar(
+        bars,
+        -1,
+        open_price=open_price,
+        high=high,
+        low=low,
+        close=close,
+    )
+
+
+def replace_adjusted_bar(
+    bars: Sequence[DailyBar],
+    index: int,
+    *,
+    open_price: float | None = None,
+    high: float | None = None,
+    low: float | None = None,
+    close: float | None = None,
+) -> tuple[DailyBar, ...]:
+    """Replace one adjusted OHLC record while retaining its raw scale."""
     if not bars:
         raise ValueError("bars must not be empty")
-    latest = bars[-1]
-    scale = latest.close / latest.adjusted_close
-    adjusted_open = latest.adjusted_open if open_price is None else open_price
-    adjusted_high = latest.adjusted_high if high is None else high
-    adjusted_low = latest.adjusted_low if low is None else low
-    adjusted_close = latest.adjusted_close if close is None else close
-    payload = latest.to_dict()
+    resolved_index = index if index >= 0 else len(bars) + index
+    if not 0 <= resolved_index < len(bars):
+        raise IndexError("bar index out of range")
+    original = bars[resolved_index]
+    scale = original.close / original.adjusted_close
+    adjusted_open = original.adjusted_open if open_price is None else open_price
+    adjusted_high = original.adjusted_high if high is None else high
+    adjusted_low = original.adjusted_low if low is None else low
+    adjusted_close = original.adjusted_close if close is None else close
+    payload = original.to_dict()
     payload.update({
         "open": adjusted_open * scale,
         "high": adjusted_high * scale,
@@ -234,4 +257,11 @@ def replace_latest_adjusted(
         "adjusted_low": adjusted_low,
         "adjusted_close": adjusted_close,
     })
-    return (*bars[:-1], DailyBar.from_mapping(payload))
+    updated = list(bars)
+    updated[resolved_index] = DailyBar.from_mapping(payload)
+    if resolved_index + 1 < len(updated):
+        following = updated[resolved_index + 1]
+        following_payload = following.to_dict()
+        following_payload["previous_close"] = adjusted_close * scale
+        updated[resolved_index + 1] = DailyBar.from_mapping(following_payload)
+    return tuple(updated)

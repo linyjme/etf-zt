@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, fields, replace
-from datetime import date, timedelta
+from collections.abc import Iterator, Mapping
+from datetime import date, datetime, timedelta
 import json
 import math
 from pathlib import Path
@@ -9,6 +10,7 @@ import unittest
 
 from etf_rotation.swing_config import load_strategy
 from etf_rotation.swing_strategy import (
+    IntradayDecision,
     IntradayOverlay,
     PortfolioContext,
     PositionContext,
@@ -18,12 +20,50 @@ from etf_rotation.swing_strategy import (
     evaluate_swing,
 )
 from tests.swing_helpers import (
+    replace_adjusted_bar,
     replace_latest_adjusted,
     swing_strategy_bars,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+class HostileInt(int):
+    def __float__(self) -> float:
+        raise AssertionError("hostile int conversion invoked")
+
+    def __lt__(self, other: object) -> bool:
+        raise AssertionError("hostile int comparison invoked")
+
+
+class HostileFloat(float):
+    def __float__(self) -> float:
+        raise AssertionError("hostile float conversion invoked")
+
+    def __lt__(self, other: object) -> bool:
+        raise AssertionError("hostile float comparison invoked")
+
+
+class HostileString(str):
+    def strip(self, *args: object, **kwargs: object) -> str:
+        raise AssertionError("hostile string method invoked")
+
+
+class HostileMapping(Mapping[str, object]):
+    hooks_called = 0
+
+    def __getitem__(self, key: str) -> object:
+        type(self).hooks_called += 1
+        raise AssertionError("hostile mapping read invoked")
+
+    def __iter__(self) -> Iterator[str]:
+        type(self).hooks_called += 1
+        raise AssertionError("hostile mapping iteration invoked")
+
+    def __len__(self) -> int:
+        type(self).hooks_called += 1
+        raise AssertionError("hostile mapping length invoked")
 
 
 class SwingStrategyTests(unittest.TestCase):
@@ -93,6 +133,48 @@ class SwingStrategyTests(unittest.TestCase):
         self.assertFalse(decision.evidence["trend_ma20_above_ma60"])
         self.assertFalse(decision.evidence["trend_ma60_rising"])
 
+    def test_each_trend_gate_changes_only_above_its_local_ulp_boundary(self) -> None:
+        base = swing_strategy_bars(pattern="flat")
+
+        def at_close(close: float):
+            return evaluate_swing(
+                replace_latest_adjusted(
+                    base,
+                    close=close,
+                    high=max(base[-1].adjusted_high, close),
+                    low=min(base[-1].adjusted_low, close),
+                ),
+                self.config,
+                self.portfolio(),
+            )
+
+        gate_names = (
+            "trend_close_above_ma60",
+            "trend_ma20_above_ma60",
+            "trend_ma60_rising",
+        )
+        equality = 100.0
+        below = math.nextafter(equality, 0.0)
+        for gate in gate_names:
+            with self.subTest(gate=gate, side="below"):
+                self.assertFalse(at_close(below).evidence[gate])
+            with self.subTest(gate=gate, side="equal"):
+                self.assertFalse(at_close(equality).evidence[gate])
+
+        for gate in gate_names:
+            last_false = equality
+            for _ in range(128):
+                first_true = math.nextafter(last_false, math.inf)
+                if at_close(first_true).evidence[gate]:
+                    break
+                last_false = first_true
+            else:
+                self.fail(f"{gate} boundary was not crossed within 128 local ULPs")
+            with self.subTest(gate=gate, side="adjacent_false"):
+                self.assertFalse(at_close(last_false).evidence[gate])
+            with self.subTest(gate=gate, side="adjacent_true"):
+                self.assertTrue(at_close(first_true).evidence[gate])
+
     def test_pullback_distance_and_anti_chase_equalities_are_inclusive(self) -> None:
         bars = swing_strategy_bars()
         baseline = evaluate_swing(bars, self.config, self.portfolio())
@@ -131,6 +213,70 @@ class SwingStrategyTests(unittest.TestCase):
         self.assertFalse(evaluate_swing(
             bars, below_anti, self.portfolio(),
         ).evidence["anti_chase_ok"])
+
+        adjacent_pullback = math.nextafter(below_pullback_ratio, math.inf)
+        self.assertTrue(evaluate_swing(
+            bars,
+            replace(self.config, pullback_atr_distance=adjacent_pullback),
+            self.portfolio(),
+        ).evidence["pullback_distance_ok"])
+        adjacent_anti = math.nextafter(below_anti_ratio, math.inf)
+        self.assertTrue(evaluate_swing(
+            bars,
+            replace(self.config, anti_chase_atr_distance=adjacent_anti),
+            self.portfolio(),
+        ).evidence["anti_chase_ok"])
+
+    def test_reclaim_and_previous_high_adjacent_representable_boundaries(self) -> None:
+        base = swing_strategy_bars()
+        reclaim_equal = math.fsum(
+            bar.adjusted_close for bar in base[-20:-1]
+        ) / 19
+
+        def with_close(value: float):
+            return replace_latest_adjusted(
+                base,
+                close=value,
+                high=max(base[-1].adjusted_high, value),
+                low=min(base[-1].adjusted_low, value),
+            )
+
+        self.assertFalse(evaluate_swing(
+            with_close(reclaim_equal), self.config, self.portfolio(),
+        ).evidence["reclaim_close_above_ma20"])
+        reclaim_below = reclaim_equal
+        while True:
+            reclaim_above = math.nextafter(reclaim_below, math.inf)
+            if evaluate_swing(
+                with_close(reclaim_above), self.config, self.portfolio(),
+            ).evidence["reclaim_close_above_ma20"]:
+                break
+            reclaim_below = reclaim_above
+        for close, expected in (
+            (reclaim_below, False),
+            (reclaim_above, True),
+        ):
+            with self.subTest(gate="reclaim", close=close):
+                self.assertIs(
+                    evaluate_swing(
+                        with_close(close), self.config, self.portfolio(),
+                    ).evidence["reclaim_close_above_ma20"],
+                    expected,
+                )
+
+        previous_high = base[-2].adjusted_high
+        for close, expected in (
+            (math.nextafter(previous_high, 0.0), False),
+            (previous_high, False),
+            (math.nextafter(previous_high, math.inf), True),
+        ):
+            with self.subTest(gate="previous_high", close=close):
+                self.assertIs(
+                    evaluate_swing(
+                        with_close(close), self.config, self.portfolio(),
+                    ).evidence["confirmation_above_previous_high"],
+                    expected,
+                )
 
     def test_trial_gate_boundaries_are_exact(self) -> None:
         base = swing_strategy_bars()
@@ -216,6 +362,68 @@ class SwingStrategyTests(unittest.TestCase):
         ):
             self.assertIn(gate, trade_limited.evidence)
 
+    def test_entry_caps_snap_local_ulp_boundary_but_reject_meaningful_shortfall(self) -> None:
+        bars = swing_strategy_bars()
+        baseline = evaluate_swing(bars, self.config, self.portfolio())
+        entry = baseline.planned_entry_high
+        per_share_risk = float(baseline.evidence["per_share_risk_raw"])
+        equity = 1_000_000.0
+
+        def evaluate_cap(name: str, cap: float):
+            config = self.config
+            portfolio = self.portfolio()
+            if name == "cash_cap":
+                portfolio = self.portfolio(cash=entry * cap)
+            elif name == "single_symbol_cap":
+                config = replace(
+                    config, max_symbol_weight=entry * cap / equity,
+                )
+            elif name == "total_exposure_cap":
+                weight = entry * cap / equity
+                config = replace(
+                    config, max_symbol_weight=weight, max_equity_weight=weight,
+                )
+            elif name == "trade_risk_cap":
+                config = replace(
+                    config, risk_per_trade=per_share_risk * cap / equity,
+                )
+            elif name == "portfolio_risk_cap":
+                rate = per_share_risk * cap / equity
+                config = replace(
+                    config, risk_per_trade=rate, max_portfolio_risk=rate,
+                )
+            return evaluate_swing(bars, config, portfolio)
+
+        for reason in (
+            "cash_cap", "single_symbol_cap", "total_exposure_cap",
+            "trade_risk_cap", "portfolio_risk_cap",
+        ):
+            with self.subTest(reason=reason, boundary="local_ulp"):
+                exact = evaluate_cap(reason, 99.99999999999986)
+                self.assertEqual(exact.state, SwingState.TRIAL_ENTRY_CANDIDATE)
+                self.assertEqual(exact.planned_shares, 100)
+            with self.subTest(reason=reason, boundary="meaningfully_below"):
+                below = evaluate_cap(reason, 99.99)
+                self.assertEqual(below.state, SwingState.PULLBACK_WATCH)
+                self.assertIn(reason, below.blocked_reasons)
+
+    def test_reduce_half_lot_exact_and_just_below(self) -> None:
+        bars = swing_strategy_bars()
+        exact = evaluate_swing(
+            bars,
+            self.config,
+            self.with_position(self.position(shares=200, sellable_shares=200)),
+        )
+        self.assertEqual(exact.state, SwingState.REDUCE_CANDIDATE)
+        self.assertEqual(exact.planned_shares, 100)
+        below = evaluate_swing(
+            bars,
+            self.config,
+            self.with_position(self.position(shares=199, sellable_shares=199)),
+        )
+        self.assertEqual(below.state, SwingState.HOLDING)
+        self.assertIn("reduce_quantity_below_lot", below.blocked_reasons)
+
     def test_contexts_reject_bool_nonfinite_and_malformed_values(self) -> None:
         invalid = (
             lambda: PortfolioContext.empty(True),
@@ -229,6 +437,47 @@ class SwingStrategyTests(unittest.TestCase):
             with self.subTest(build=build):
                 with self.assertRaises(SwingStrategyError):
                     build()
+
+    def test_contexts_reject_hostile_numeric_subclasses_and_huge_integers(self) -> None:
+        invalid = (
+            lambda: PortfolioContext.empty(HostileInt(1_000)),
+            lambda: PortfolioContext.empty(HostileFloat(1_000.0)),
+            lambda: PortfolioContext.empty(10**400),
+            lambda: self.position(average_cost=HostileInt(100)),
+            lambda: self.position(hard_stop=HostileFloat(90.0)),
+            lambda: self.position(highest_completed_close=10**400),
+            lambda: self.position(shares=HostileInt(1_000)),
+            lambda: PortfolioContext.empty(1_000.0, lot_size=HostileInt(100)),
+        )
+        for build in invalid:
+            with self.subTest(build=build):
+                with self.assertRaises(SwingStrategyError):
+                    build()
+
+    def test_contexts_store_normalized_builtin_floats(self) -> None:
+        portfolio = PortfolioContext.empty(
+            1_000_000,
+            cash=500_000,
+            current_etf_market_value=100_000,
+            current_planned_risk_amount=5_000,
+        )
+        position = self.position(
+            average_cost=100,
+            initial_risk_per_share=2,
+            highest_completed_close=105,
+            hard_stop=95,
+        )
+        for value in (
+            portfolio.equity,
+            portfolio.cash,
+            portfolio.current_etf_market_value,
+            portfolio.current_planned_risk_amount,
+            position.average_cost,
+            position.initial_risk_per_share,
+            position.highest_completed_close,
+            position.hard_stop,
+        ):
+            self.assertIs(type(value), float)
 
     def test_portfolio_context_has_only_required_logical_fields(self) -> None:
         self.assertEqual(
@@ -300,6 +549,70 @@ class SwingStrategyTests(unittest.TestCase):
         self.assertIn("trade_risk_cap", result.blocked_reasons)
         self.assertFalse(result.evidence["trade_risk_cap_ok"])
 
+    def test_add_caps_snap_local_ulp_boundary_but_reject_meaningful_shortfall(self) -> None:
+        bars = swing_strategy_bars()
+        position = self.position(
+            shares=1_000,
+            sellable_shares=1_000,
+            average_cost=100.0,
+            initial_risk_per_share=5.0,
+            hard_stop=100.0,
+            first_reduction_completed=True,
+        )
+        baseline_portfolio = self.with_position(position)
+        baseline = evaluate_swing(bars, self.config, baseline_portfolio)
+        self.assertEqual(baseline.state, SwingState.ADD_CANDIDATE)
+        entry = bars[-1].close
+        equity = baseline_portfolio.equity
+        position_value = position.shares * entry
+        position_risk = float(baseline.evidence["position_risk_amount"])
+        per_share_risk = entry - baseline.planned_stop
+
+        def evaluate_cap(name: str, cap: float):
+            config = self.config
+            portfolio = baseline_portfolio
+            if name == "cash_cap":
+                portfolio = replace(portfolio, cash=entry * cap)
+            elif name == "single_symbol_cap":
+                config = replace(
+                    config,
+                    max_symbol_weight=(position_value + entry * cap) / equity,
+                )
+            elif name == "total_exposure_cap":
+                config = replace(
+                    config,
+                    max_equity_weight=(
+                        portfolio.current_etf_market_value + entry * cap
+                    ) / equity,
+                )
+            elif name == "trade_risk_cap":
+                config = replace(
+                    config,
+                    risk_per_trade=(position_risk + per_share_risk * cap) / equity,
+                )
+            elif name == "portfolio_risk_cap":
+                config = replace(
+                    config,
+                    max_portfolio_risk=(
+                        portfolio.current_planned_risk_amount
+                        + per_share_risk * cap
+                    ) / equity,
+                )
+            return evaluate_swing(bars, config, portfolio)
+
+        for reason in (
+            "cash_cap", "single_symbol_cap", "total_exposure_cap",
+            "trade_risk_cap", "portfolio_risk_cap",
+        ):
+            with self.subTest(reason=reason, boundary="local_ulp"):
+                exact = evaluate_cap(reason, 99.99999999999986)
+                self.assertEqual(exact.state, SwingState.ADD_CANDIDATE)
+                self.assertEqual(exact.planned_shares, 100)
+            with self.subTest(reason=reason, boundary="meaningfully_below"):
+                below = evaluate_cap(reason, 99.99)
+                self.assertEqual(below.state, SwingState.HOLDING)
+                self.assertIn(reason, below.blocked_reasons)
+
     def test_cooldown_counts_completed_sessions_and_day_six_is_eligible(self) -> None:
         bars = swing_strategy_bars(75)
         for elapsed in range(1, 6):
@@ -362,6 +675,104 @@ class SwingStrategyTests(unittest.TestCase):
         )
         self.assertNotEqual(too_small.state, SwingState.REDUCE_CANDIDATE)
 
+    def test_reduce_exact_two_r_and_adjacent_costs(self) -> None:
+        bars = swing_strategy_bars()
+        latest = bars[-1].close
+        initial_risk = 2.0
+        average_equal = latest - self.config.reduce_profit_r * initial_risk
+
+        def decision(average_cost: float):
+            return evaluate_swing(
+                bars,
+                self.config,
+                self.with_position(self.position(
+                    shares=200,
+                    sellable_shares=200,
+                    average_cost=average_cost,
+                    initial_risk_per_share=initial_risk,
+                    entry_trading_date=bars[-1].trading_date,
+                    highest_completed_close=latest,
+                    hard_stop=1.0,
+                )),
+            )
+
+        self.assertEqual(decision(average_equal).state, SwingState.REDUCE_CANDIDATE)
+        self.assertEqual(
+            decision(math.nextafter(average_equal, 0.0)).state,
+            SwingState.REDUCE_CANDIDATE,
+        )
+        self.assertNotEqual(
+            decision(math.nextafter(average_equal, math.inf)).state,
+            SwingState.REDUCE_CANDIDATE,
+        )
+
+    def test_add_exact_one_r_breakout_and_stop_to_cost_boundaries(self) -> None:
+        bars = swing_strategy_bars()
+        latest = bars[-1].close
+        prior_high = max(bar.adjusted_high for bar in bars[-21:-1])
+        average_equal = latest - 0.1
+        initial_risk = latest - average_equal
+
+        def position_decision(
+            *,
+            average_cost: float = average_equal,
+            hard_stop: float = average_equal,
+            risk: float = initial_risk,
+            candidate_bars=bars,
+        ):
+            return evaluate_swing(
+                candidate_bars,
+                self.config,
+                self.with_position(self.position(
+                    shares=1_000,
+                    sellable_shares=1_000,
+                    average_cost=average_cost,
+                    initial_risk_per_share=risk,
+                    entry_trading_date=candidate_bars[-1].trading_date,
+                    highest_completed_close=candidate_bars[-1].close,
+                    hard_stop=hard_stop,
+                    first_reduction_completed=True,
+                )),
+            )
+
+        self.assertTrue(position_decision().evidence["add_profit_ok"])
+        self.assertTrue(position_decision().evidence["add_stop_to_cost_ok"])
+        self.assertFalse(position_decision(
+            average_cost=math.nextafter(average_equal, math.inf),
+            hard_stop=math.nextafter(average_equal, math.inf),
+        ).evidence["add_profit_ok"])
+        self.assertTrue(position_decision(
+            average_cost=math.nextafter(average_equal, 0.0),
+            hard_stop=math.nextafter(average_equal, 0.0),
+        ).evidence["add_profit_ok"])
+        self.assertFalse(position_decision(
+            hard_stop=math.nextafter(average_equal, 0.0),
+        ).evidence["add_stop_to_cost_ok"])
+        self.assertTrue(position_decision(
+            hard_stop=math.nextafter(average_equal, math.inf),
+        ).evidence["add_stop_to_cost_ok"])
+
+        for close, expected in (
+            (math.nextafter(prior_high, 0.0), False),
+            (prior_high, False),
+            (math.nextafter(prior_high, math.inf), True),
+        ):
+            candidate_bars = replace_latest_adjusted(
+                bars,
+                close=close,
+                high=max(bars[-1].adjusted_high, close),
+                low=min(bars[-1].adjusted_low, close),
+            )
+            candidate_average = close - 1.0
+            candidate_risk = close - candidate_average
+            result = position_decision(
+                average_cost=candidate_average,
+                hard_stop=candidate_average,
+                risk=candidate_risk,
+                candidate_bars=candidate_bars,
+            )
+            self.assertIs(result.evidence["add_breakout_ok"], expected)
+
     def test_exit_rules_and_exit_is_never_suppressed(self) -> None:
         cases = (
             (swing_strategy_bars(pattern="exit"), self.position(hard_stop=1.0)),
@@ -385,6 +796,154 @@ class SwingStrategyTests(unittest.TestCase):
                     ),
                 )
                 self.assertEqual(result.state, SwingState.EXIT_CANDIDATE)
+
+    def test_exit_thresholds_are_exact_at_ma60_and_hard_stop(self) -> None:
+        base = swing_strategy_bars(pattern="rising")
+        ma60_equal = sum(bar.adjusted_close for bar in base[-60:-1]) / 59
+
+        def ma60_decision(close: float):
+            bars = replace_latest_adjusted(
+                base,
+                close=close,
+                high=max(base[-1].adjusted_high, close),
+                low=min(base[-1].adjusted_low, close),
+            )
+            return evaluate_swing(
+                bars,
+                self.config,
+                self.with_position(self.position(
+                    average_cost=200.0,
+                    entry_trading_date=bars[-1].trading_date,
+                    highest_completed_close=bars[-1].close,
+                    hard_stop=1.0,
+                )),
+            )
+
+        for close, expected in (
+            (math.nextafter(ma60_equal, 0.0), True),
+            (ma60_equal, False),
+            (math.nextafter(ma60_equal, math.inf), False),
+        ):
+            with self.subTest(exit_gate="ma60", close=close):
+                self.assertIs(
+                    ma60_decision(close).evidence["exit_close_below_ma60"],
+                    expected,
+                )
+
+        latest = base[-1].close
+        for stop, expected in (
+            (math.nextafter(latest, 0.0), False),
+            (latest, True),
+            (math.nextafter(latest, math.inf), True),
+        ):
+            with self.subTest(exit_gate="hard_stop", stop=stop):
+                decision = evaluate_swing(
+                    base,
+                    self.config,
+                    self.with_position(self.position(
+                        average_cost=200.0,
+                        entry_trading_date=base[-1].trading_date,
+                        highest_completed_close=latest,
+                        hard_stop=stop,
+                    )),
+                )
+                self.assertIs(decision.evidence["exit_hard_stop"], expected)
+
+    def test_two_ma20_exit_equality_and_adjacent_values(self) -> None:
+        base = swing_strategy_bars(pattern="rising")
+        previous_equal = sum(
+            bar.adjusted_close for bar in base[-21:-2]
+        ) / 19
+
+        def decision(previous_direction: float, latest_direction: float):
+            previous_close = (
+                previous_equal
+                if previous_direction == 0.0
+                else math.nextafter(previous_equal, previous_direction)
+            )
+            bars = replace_adjusted_bar(
+                base,
+                -2,
+                close=previous_close,
+                high=max(base[-2].adjusted_high, previous_close),
+                low=min(base[-2].adjusted_low, previous_close),
+            )
+            latest_equal = sum(
+                bar.adjusted_close for bar in bars[-20:-1]
+            ) / 19
+            latest_close = (
+                latest_equal
+                if latest_direction == 0.0
+                else math.nextafter(latest_equal, latest_direction)
+            )
+            bars = replace_latest_adjusted(
+                bars,
+                close=latest_close,
+                high=max(bars[-1].adjusted_high, latest_close),
+                low=min(bars[-1].adjusted_low, latest_close),
+            )
+            return evaluate_swing(
+                bars,
+                self.config,
+                self.with_position(self.position(
+                    average_cost=200.0,
+                    entry_trading_date=bars[-1].trading_date,
+                    highest_completed_close=bars[-1].close,
+                    hard_stop=1.0,
+                )),
+            )
+
+        cases = (
+            (0.0, 0.0, False),
+            (math.inf, math.inf, False),
+            (-math.inf, -math.inf, True),
+            (-math.inf, 0.0, False),
+            (-math.inf, math.inf, False),
+            (0.0, -math.inf, False),
+            (math.inf, -math.inf, False),
+        )
+        for previous_direction, latest_direction, expected in cases:
+            with self.subTest(
+                previous_direction=previous_direction,
+                latest_direction=latest_direction,
+            ):
+                self.assertIs(
+                    decision(previous_direction, latest_direction).evidence[
+                        "exit_two_closes_below_ma20"
+                    ],
+                    expected,
+                )
+
+    def test_trailing_stop_equality_and_adjacent_highs(self) -> None:
+        bars = swing_strategy_bars(pattern="rising")
+        baseline = evaluate_swing(bars, self.config, self.portfolio())
+        distance = self.config.trailing_stop_atr * float(
+            baseline.evidence["atr14_raw"],
+        )
+        latest = bars[-1].close
+        highest_equal = latest + distance
+
+        def decision(highest: float):
+            return evaluate_swing(
+                bars,
+                self.config,
+                self.with_position(self.position(
+                    average_cost=200.0,
+                    entry_trading_date=bars[-1].trading_date,
+                    highest_completed_close=highest,
+                    hard_stop=1.0,
+                )),
+            )
+
+        equal = decision(highest_equal)
+        self.assertEqual(equal.evidence["trailing_stop_raw"], latest)
+        self.assertTrue(equal.evidence["exit_trailing_stop"])
+        self.assertFalse(decision(
+            math.nextafter(highest_equal, 0.0),
+        ).evidence["exit_trailing_stop"])
+        self.assertTrue(decision(
+            math.nextafter(highest_equal, math.inf),
+        ).evidence["exit_trailing_stop"])
 
     def test_degraded_exit_still_exposes_derived_position_risk(self) -> None:
         result = evaluate_swing(
@@ -457,6 +1016,109 @@ class SwingStrategyTests(unittest.TestCase):
                 self.assertEqual(
                     result.overlay, IntradayOverlay.INTRADAY_FEED_UNAVAILABLE,
                 )
+        for price in (HostileInt(100), HostileFloat(100.0), 10**400):
+            with self.subTest(hostile_subclass=type(price).__name__):
+                result = evaluate_intraday_overlay(formal, price, has_position=False)
+                self.assertEqual(
+                    result.overlay, IntradayOverlay.INTRADAY_FEED_UNAVAILABLE,
+                )
+
+    def test_intraday_does_not_mutate_formal_or_evidence(self) -> None:
+        formal = evaluate_swing(swing_strategy_bars(), self.config, self.portfolio())
+        before = dict(formal.evidence)
+        result = evaluate_intraday_overlay(
+            formal, formal.planned_entry_low, has_position=False,
+        )
+        self.assertEqual(dict(formal.evidence), before)
+        self.assertIs(result.formal_state, formal.state)
+
+    def test_direct_swing_decision_rejects_malformed_public_fields(self) -> None:
+        formal = evaluate_swing(swing_strategy_bars(), self.config, self.portfolio())
+        invalid = (
+            {"symbol": HostileString("510300")},
+            {"symbol": "   "},
+            {"strategy_version": HostileString("SWING_V1")},
+            {"strategy_version": ""},
+            {"state": "TRIAL_ENTRY_CANDIDATE"},
+            {"as_of_trading_date": datetime(2026, 1, 1)},
+            {"valid_for_trading_date": "2026-01-01"},
+            {"blocked_reasons": (HostileString("blocked"),)},
+            {"blocked_reasons": (reason for reason in ("blocked",))},
+            {"evidence": {"nested": []}},
+            {"evidence": {HostileString("key"): 1}},
+            {"evidence": HostileMapping()},
+            {"planned_entry_low": float("nan")},
+            {"planned_entry_low": -1.0},
+            {"planned_entry_low": formal.planned_entry_high + 1.0},
+            {"planned_shares": True},
+            {"planned_shares": -1},
+            {"planned_risk_rate": float("inf")},
+            {"planned_risk_rate": -1.0},
+            {"first_reduce_price": HostileFloat(100.0)},
+        )
+        for changes in invalid:
+            with self.subTest(changes=tuple(changes)):
+                with self.assertRaises(SwingStrategyError):
+                    replace(formal, **changes)
+
+    def test_direct_decision_copies_mutable_inputs(self) -> None:
+        formal = evaluate_swing(swing_strategy_bars(), self.config, self.portfolio())
+        source_evidence: dict[str, object] = {"gate": True}
+        source_reasons = ["blocked"]
+        copied = replace(
+            formal, evidence=source_evidence, blocked_reasons=source_reasons,
+        )
+        source_evidence["gate"] = False
+        source_reasons.append("later")
+        self.assertEqual(dict(copied.evidence), {"gate": True})
+        self.assertEqual(copied.blocked_reasons, ("blocked",))
+        with self.assertRaises(TypeError):
+            copied.evidence["gate"] = False
+
+    def test_direct_intraday_decision_rejects_malformed_public_fields(self) -> None:
+        formal = evaluate_swing(swing_strategy_bars(), self.config, self.portfolio())
+        intraday = evaluate_intraday_overlay(
+            formal, formal.planned_entry_low, has_position=False,
+        )
+        invalid = (
+            {"formal_state": "TRIAL_ENTRY_CANDIDATE"},
+            {"overlay": "NONE"},
+            {"price": float("nan")},
+            {"price": -1.0},
+            {"planned_entry_low": HostileInt(1)},
+            {"planned_entry_low": intraday.planned_entry_high + 1.0},
+            {"planned_stop": 0.0},
+            {"evidence": {"nested": {}}},
+            {"evidence": HostileMapping()},
+        )
+        HostileMapping.hooks_called = 0
+        for changes in invalid:
+            with self.subTest(changes=tuple(changes)):
+                with self.assertRaises(SwingStrategyError):
+                    replace(intraday, **changes)
+        self.assertEqual(HostileMapping.hooks_called, 0)
+
+        source = {"near": True}
+        copied = replace(intraday, evidence=source)
+        source["near"] = False
+        self.assertEqual(dict(copied.evidence), {"near": True})
+        with self.assertRaises(TypeError):
+            copied.evidence["near"] = False
+
+    def test_invalid_supplied_next_trading_date_suppresses_candidate(self) -> None:
+        bars = swing_strategy_bars()
+        for invalid_date in (bars[-1].trading_date, bars[-2].trading_date):
+            with self.subTest(invalid_date=invalid_date):
+                result = evaluate_swing(
+                    bars,
+                    self.config,
+                    self.portfolio(next_trading_date=invalid_date),
+                )
+                self.assertEqual(result.state, SwingState.PULLBACK_WATCH)
+                self.assertIsNone(result.valid_for_trading_date)
+                self.assertIn("invalid_next_trading_date", result.blocked_reasons)
+                self.assertTrue(result.evidence["invalid_next_trading_date"])
+                self.assertFalse(result.evidence["calendar_fallback_used"])
 
     def test_decision_and_evidence_are_immutable_json_safe_and_inputs_unchanged(self) -> None:
         source = list(swing_strategy_bars())
@@ -504,6 +1166,13 @@ class SwingStrategyTests(unittest.TestCase):
                 self.assertEqual(result.state, SwingState.DATA_UNAVAILABLE)
                 self.assertTrue(result.blocked_reasons)
 
+    def test_whitespace_symbol_in_invalid_bar_returns_safe_data_unavailable(self) -> None:
+        bars = swing_strategy_bars()
+        malformed = tuple({**bar.to_dict(), "symbol": "   "} for bar in bars)
+        result = evaluate_swing(malformed, self.config, self.portfolio())
+        self.assertEqual(result.state, SwingState.DATA_UNAVAILABLE)
+        self.assertEqual(result.symbol, "")
+
     def test_unrepresentable_sizing_arithmetic_is_data_unavailable(self) -> None:
         result = evaluate_swing(
             swing_strategy_bars(raw_scale=1e-306),
@@ -512,6 +1181,22 @@ class SwingStrategyTests(unittest.TestCase):
         )
         self.assertEqual(result.state, SwingState.DATA_UNAVAILABLE)
         self.assertIn("sizing_calculation_failed", result.blocked_reasons)
+
+    def test_nonpositive_prospective_stop_is_data_unavailable(self) -> None:
+        bars = swing_strategy_bars(pattern="flat")
+        for index in range(len(bars) - self.config.atr_days, len(bars)):
+            bars = replace_adjusted_bar(
+                bars, index, open_price=100.0, high=200.0, low=1.0, close=100.0,
+            )
+        result = evaluate_swing(bars, self.config, self.portfolio())
+        self.assertEqual(result.state, SwingState.DATA_UNAVAILABLE)
+        self.assertIn("indicator_calculation_failed", result.blocked_reasons)
+
+    def test_mapping_inputs_are_not_mutated(self) -> None:
+        source = [bar.to_dict() for bar in swing_strategy_bars()]
+        snapshot = [dict(bar) for bar in source]
+        evaluate_swing(source, self.config, self.portfolio())
+        self.assertEqual(source, snapshot)
 
 
 if __name__ == "__main__":
