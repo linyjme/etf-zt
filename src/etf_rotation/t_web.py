@@ -40,7 +40,20 @@ from .t_monitor import (
     snapshot_to_dict,
 )
 from .t_page import PAGE
+from .swing_alerts import AlertStoreError
+from .swing_portfolio import PortfolioLedgerError, TradeInput
+from .swing_service import SwingPaths, SwingService, SwingServiceError
 from .valuation import ValuationStore
+
+try:
+    from .swing_page import SWING_PAGE
+except ModuleNotFoundError as error:
+    if error.name != f"{__package__}.swing_page":
+        raise
+    SWING_PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>指数ETF波段监控</title></head>
+<body><main><h1>指数ETF波段监控</h1><p>仅监控，不自动交易</p></main></body></html>
+"""
 
 
 _DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "monitor"
@@ -51,7 +64,6 @@ _EXPECTED_CLIENT_DISCONNECTS = (
     ConnectionResetError,
     ConnectionAbortedError,
 )
-
 
 class MissingWatchMetadataError(Exception):
     """Raised when a watch item has no verified trading metadata."""
@@ -1171,12 +1183,20 @@ class MonitorApplication:
 class MonitorServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], application: MonitorApplication):
+    def __init__(
+        self,
+        address: tuple[str, int],
+        application: MonitorApplication,
+        swing_application: SwingService | None = None,
+    ):
         super().__init__(address, MonitorRequestHandler)
         self.application = application
+        self.swing_application = swing_application
 
     def server_close(self) -> None:
         self.application.stop_refresh()
+        if self.swing_application is not None:
+            self.swing_application.stop_refresh()
         super().server_close()
 
 
@@ -1219,9 +1239,34 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             return
 
     def do_GET(self) -> None:
-        path = urlsplit(self.path).path
+        parsed = urlsplit(self.path)
+        path = parsed.path
         if path == "/":
             self._send(HTTPStatus.OK, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/swing":
+            self._send(
+                HTTPStatus.OK,
+                SWING_PAGE.encode("utf-8"),
+                "text/html; charset=utf-8",
+            )
+        elif path == "/api/swing/snapshot":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            self._swing_read(lambda application: application.snapshot())
+        elif path == "/api/swing/watchlist":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            self._swing_read(lambda application: application.watchlist())
+        elif path == "/api/swing/daily-quotes":
+            self._swing_daily_quotes(parsed.query)
+        elif path == "/api/swing/events":
+            self._swing_events(parsed.query)
+        elif path == "/api/swing/portfolio":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            self._swing_read(lambda application: application.portfolio())
+        elif path == "/api/swing/alerts":
+            self._swing_alerts(parsed.query)
         elif path == "/api/snapshot":
             self._snapshot()
         elif path == "/api/quotes":
@@ -1248,9 +1293,46 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
     def do_POST(self) -> None:
-        path = urlsplit(self.path).path
+        self.close_connection = True
+        parsed = urlsplit(self.path)
+        path = parsed.path
+        if (path == "/swing" or path.startswith("/api/swing/")) and parsed.query:
+            self._json(HTTPStatus.BAD_REQUEST, {
+                "error": "invalid_query", "message": "query parameters are not allowed",
+            })
+            return
         if path == "/api/watchlist":
             self._add_watch_item()
+        elif path == "/api/swing/watchlist":
+            self._swing_update_watchlist()
+        elif path == "/api/swing/portfolio/initialize":
+            self._swing_initialize_portfolio()
+        elif path == "/api/swing/trades":
+            self._swing_record_trade()
+        elif re.fullmatch(
+            r"/api/swing/trades/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}/reverse",
+            path,
+        ):
+            self._swing_reverse_trade(path.split("/")[4])
+        elif re.fullmatch(r"/api/swing/alerts/[0-9a-f]{24}/acknowledge", path):
+            self._swing_alert_transition(path.split("/")[4], "acknowledge")
+        elif re.fullmatch(r"/api/swing/alerts/[0-9a-f]{24}/ignore", path):
+            self._swing_alert_transition(path.split("/")[4], "ignore")
+        elif path in {
+            "/swing",
+            "/api/swing/snapshot",
+            "/api/swing/daily-quotes",
+            "/api/swing/events",
+            "/api/swing/portfolio",
+            "/api/swing/alerts",
+        }:
+            self._json(HTTPStatus.METHOD_NOT_ALLOWED, {
+                "error": "method_not_allowed",
+                "message": "resource is read-only",
+            })
+        elif path == "/api/swing" or path.startswith("/api/swing/"):
+            self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
         else:
             self._json(HTTPStatus.METHOD_NOT_ALLOWED, {
                 "error": "read_only",
@@ -1289,6 +1371,348 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         except OSError as error:
             self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
+
+    def _swing_application(self) -> SwingService:
+        application = self.server.swing_application
+        if application is None:
+            raise SwingServiceError("swing service is unavailable")
+        return application
+
+    @staticmethod
+    def _reject_json_constant(value: str) -> object:
+        raise ValueError(f"non-finite JSON value is not allowed: {value}")
+
+    @staticmethod
+    def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    def _read_json_object(self, max_bytes: int = 16_384) -> dict[str, object]:
+        self.close_connection = True
+        content_types = self.headers.get_all("Content-Type", failobj=[])
+        if len(content_types) != 1:
+            raise ValueError("Content-Type must be application/json")
+        media_type, *parameters = [
+            value.strip() for value in content_types[0].split(";")
+        ]
+        if media_type.lower() != "application/json":
+            raise ValueError("Content-Type must be application/json")
+        parameter_names: set[str] = set()
+        for parameter in parameters:
+            if "=" not in parameter:
+                raise ValueError("Content-Type parameters are invalid")
+            key, value = (part.strip().lower() for part in parameter.split("=", 1))
+            if key in parameter_names:
+                raise ValueError("Content-Type parameters must not be repeated")
+            parameter_names.add(key)
+            if key != "charset" or value.strip('"') not in {"utf-8", "utf8"}:
+                raise ValueError("JSON charset must be UTF-8")
+
+        lengths = self.headers.get_all("Content-Length", failobj=[])
+        if len(lengths) != 1 or re.fullmatch(r"(?:0|[1-9][0-9]*)", lengths[0]) is None:
+            raise ValueError("Content-Length must be one canonical nonnegative integer")
+        length = int(lengths[0])
+        if not 0 < length <= max_bytes:
+            raise ValueError("request body size is invalid")
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise ValueError("request body is shorter than Content-Length")
+        text = raw.decode("utf-8", errors="strict")
+        payload = json.loads(
+            text,
+            object_pairs_hook=self._json_object,
+            parse_constant=self._reject_json_constant,
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        return payload
+
+    def _idempotency_key(self) -> str:
+        values = self.headers.get_all("Idempotency-Key", failobj=[])
+        if len(values) != 1:
+            raise ValueError("Idempotency-Key is required")
+        key = values[0]
+        if (
+            not key or key != key.strip() or len(key) > 256
+            or any(ord(character) < 32 for character in key)
+        ):
+            raise ValueError("Idempotency-Key is invalid")
+        return key
+
+    @staticmethod
+    def _require_fields(
+        payload: Mapping[str, object],
+        required: set[str],
+        optional: set[str] = frozenset(),
+    ) -> None:
+        fields = set(payload)
+        if not required <= fields or not fields <= required | optional:
+            raise ValueError("request fields are invalid")
+
+    def _swing_request_error(self, error: Exception) -> None:
+        self._json(HTTPStatus.BAD_REQUEST, {
+            "error": "invalid_request", "message": str(error),
+        })
+
+    def _swing_domain_error(self, error: Exception) -> None:
+        message = str(error)
+        conflict = any(fragment in message for fragment in (
+            "idempotency_key was reused",
+            "idempotency key was reused",
+            "already initialized",
+            "already reversed",
+        ))
+        self._json(
+            HTTPStatus.CONFLICT if conflict else HTTPStatus.UNPROCESSABLE_ENTITY,
+            {"error": "conflict" if conflict else "unprocessable", "message": message},
+        )
+
+    def _swing_read(
+        self, reader: Callable[[SwingService], dict[str, object]],
+    ) -> None:
+        try:
+            self._json(HTTPStatus.OK, reader(self._swing_application()))
+        except (SwingServiceError, PortfolioLedgerError, AlertStoreError) as error:
+            self._swing_domain_error(error)
+        except OSError as error:
+            self._propagate_disconnect(error)
+            self._swing_domain_error(error)
+
+    def _reject_unexpected_query(self, query: str) -> bool:
+        if not query:
+            return False
+        self._json(HTTPStatus.BAD_REQUEST, {
+            "error": "invalid_query", "message": "query parameters are not allowed",
+        })
+        return True
+
+    @staticmethod
+    def _strict_query(query: str) -> dict[str, list[str]]:
+        return parse_qs(query, keep_blank_values=True, strict_parsing=True)
+
+    def _swing_daily_quotes(self, query_string: str) -> None:
+        try:
+            query = self._strict_query(query_string)
+            if not {"symbol", "since"} <= set(query) or not set(query) <= {
+                "symbol", "since", "limit",
+            }:
+                raise ValueError("symbol and since are required")
+            if any(len(values) != 1 for values in query.values()):
+                raise ValueError("query parameters must not be repeated")
+            symbol = query["symbol"][0]
+            since_text = query["since"][0]
+            limit_text = query.get("limit", ["500"])[0]
+            if re.fullmatch(r"[0-9]{6}", symbol, flags=re.ASCII) is None:
+                raise ValueError("symbol must be six ASCII digits")
+            if re.fullmatch(r"(?:0|[1-9][0-9]*)", since_text) is None:
+                raise ValueError("since must be a nonnegative integer")
+            if re.fullmatch(r"[1-9][0-9]*", limit_text) is None:
+                raise ValueError("limit must be a positive integer")
+            payload = self._swing_application().daily_quotes(
+                symbol, int(since_text), int(limit_text),
+            )
+        except (ValueError, SwingServiceError) as error:
+            self._json(HTTPStatus.BAD_REQUEST, {
+                "error": "invalid_query", "message": str(error),
+            })
+            return
+        except OSError as error:
+            self._propagate_disconnect(error)
+            self._swing_domain_error(error)
+            return
+        self._json(HTTPStatus.OK, payload)
+
+    def _swing_alerts(self, query_string: str) -> None:
+        try:
+            if not query_string:
+                include_retracted = False
+            else:
+                query = self._strict_query(query_string)
+                if set(query) != {"include_retracted"} or len(query["include_retracted"]) != 1:
+                    raise ValueError("only include_retracted is supported")
+                raw = query["include_retracted"][0]
+                if raw not in {"true", "false"}:
+                    raise ValueError("include_retracted must be true or false")
+                include_retracted = raw == "true"
+            payload = self._swing_application().alerts(
+                include_retracted=include_retracted,
+            )
+        except (ValueError, SwingServiceError) as error:
+            self._json(HTTPStatus.BAD_REQUEST, {
+                "error": "invalid_query", "message": str(error),
+            })
+            return
+        except OSError as error:
+            self._propagate_disconnect(error)
+            self._swing_domain_error(error)
+            return
+        self._json(HTTPStatus.OK, payload)
+
+    def _swing_events(self, query_string: str) -> None:
+        if self._reject_unexpected_query(query_string):
+            return
+        headers = self.headers.get_all("Last-Event-ID", failobj=[])
+        if len(headers) > 1 or (
+            headers and re.fullmatch(r"(?:0|[1-9][0-9]*)", headers[0]) is None
+        ):
+            self._json(HTTPStatus.BAD_REQUEST, {
+                "error": "invalid_last_event_id",
+                "message": "Last-Event-ID must be a nonnegative integer",
+            })
+            return
+        application = self._swing_application()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        try:
+            self.end_headers()
+        except _EXPECTED_CLIENT_DISCONNECTS:
+            return
+        if not headers:
+            payload = application.snapshot()
+            after_revision = int(payload["revision"])
+            if not self._write_snapshot_event(payload):
+                return
+        else:
+            after_revision = int(headers[0])
+        while not application._stop_event.is_set():
+            payload = application.wait_for_event(after_revision, timeout=5.0)
+            if payload is None:
+                if application._stop_event.is_set():
+                    return
+                if not self._write_sse(b": heartbeat\n\n"):
+                    return
+                continue
+            after_revision = int(payload["revision"])
+            if not self._write_snapshot_event(payload):
+                return
+
+    def _swing_update_watchlist(self) -> None:
+        try:
+            payload = self._read_json_object()
+            self._require_fields(payload, {"symbol", "enabled"})
+            result = self._swing_application().update_watchlist(
+                payload["symbol"], payload["enabled"],
+            )
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            if isinstance(error, (SwingServiceError, PortfolioLedgerError, AlertStoreError)):
+                self._swing_domain_error(error)
+            else:
+                self._swing_request_error(error)
+            return
+        except (SwingServiceError, PortfolioLedgerError, AlertStoreError) as error:
+            self._swing_domain_error(error)
+            return
+        except OSError as error:
+            self._propagate_disconnect(error)
+            self._swing_domain_error(error)
+            return
+        self._json(HTTPStatus.OK, result)
+
+    def _swing_initialize_portfolio(self) -> None:
+        try:
+            payload = self._read_json_object()
+            key = self._idempotency_key()
+            self._require_fields(
+                payload, {"name", "cash"},
+                {"initial_positions", "default_risk_per_trade"},
+            )
+            result = self._swing_application().initialize_portfolio(
+                payload["name"], payload["cash"], key,
+                initial_positions=payload.get("initial_positions"),
+                default_risk_per_trade=payload.get("default_risk_per_trade"),
+            )
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            if isinstance(error, (SwingServiceError, PortfolioLedgerError, AlertStoreError)):
+                self._swing_domain_error(error)
+            else:
+                self._swing_request_error(error)
+            return
+        except OSError as error:
+            self._propagate_disconnect(error)
+            self._swing_domain_error(error)
+            return
+        self._json(HTTPStatus.CREATED, result)
+
+    def _swing_record_trade(self) -> None:
+        try:
+            payload = self._read_json_object()
+            key = self._idempotency_key()
+            self._require_fields(
+                payload,
+                {"symbol", "side", "shares", "price", "fee", "executed_at"},
+                {"planned_risk_per_share", "exit_reason"},
+            )
+            raw_time = payload["executed_at"]
+            if type(raw_time) is not str:
+                raise ValueError("executed_at must be an ISO datetime string")
+            executed_at = datetime.fromisoformat(raw_time)
+            trade = TradeInput(
+                symbol=payload["symbol"], side=payload["side"],
+                shares=payload["shares"], price=payload["price"], fee=payload["fee"],
+                executed_at=executed_at,
+                planned_risk_per_share=payload.get("planned_risk_per_share", 0.0),
+                exit_reason=payload.get("exit_reason"),
+            )
+            result = self._swing_application().record_trade(trade, key)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            if isinstance(error, (SwingServiceError, PortfolioLedgerError, AlertStoreError)):
+                self._swing_domain_error(error)
+            else:
+                self._swing_request_error(error)
+            return
+        except OSError as error:
+            self._propagate_disconnect(error)
+            self._swing_domain_error(error)
+            return
+        self._json(HTTPStatus.CREATED, result)
+
+    def _swing_reverse_trade(self, event_id: str) -> None:
+        try:
+            payload = self._read_json_object()
+            key = self._idempotency_key()
+            self._require_fields(payload, set())
+            result = self._swing_application().reverse_trade(event_id, key)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            if isinstance(error, (SwingServiceError, PortfolioLedgerError, AlertStoreError)):
+                self._swing_domain_error(error)
+            else:
+                self._swing_request_error(error)
+            return
+        except OSError as error:
+            self._propagate_disconnect(error)
+            self._swing_domain_error(error)
+            return
+        self._json(HTTPStatus.CREATED, result)
+
+    def _swing_alert_transition(self, alert_id: str, action: str) -> None:
+        try:
+            payload = self._read_json_object()
+            key = self._idempotency_key()
+            self._require_fields(payload, set())
+            application = self._swing_application()
+            result = (
+                application.acknowledge_alert(alert_id, key)
+                if action == "acknowledge"
+                else application.ignore_alert(alert_id, key)
+            )
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            if isinstance(error, (SwingServiceError, PortfolioLedgerError, AlertStoreError)):
+                self._swing_domain_error(error)
+            else:
+                self._swing_request_error(error)
+            return
+        except OSError as error:
+            self._propagate_disconnect(error)
+            self._swing_domain_error(error)
+            return
+        self._json(HTTPStatus.OK, result)
 
     def _snapshot(self) -> None:
         try:
@@ -1493,6 +1917,9 @@ def create_server(
     valuation_path: Path | None = None,
     calendar_path: Path | None = None,
     clock: Callable[[], datetime] | None = None,
+    swing_paths: SwingPaths | None = None,
+    swing_collector: Any | None = None,
+    swing_clock: Callable[[], datetime] | None = None,
 ) -> MonitorServer:
     application = MonitorApplication(
         quotes_path=quotes_path,
@@ -1506,6 +1933,32 @@ def create_server(
         calendar_path=calendar_path,
         **({"clock": clock} if clock is not None else {}),
     )
-    server = MonitorServer((host, port), application)
+    if swing_paths is None:
+        swing_root = Path(quotes_path).parent / "swing"
+        swing_paths = SwingPaths(
+            watchlist=swing_root / "watchlist.json",
+            strategy=swing_root / "strategy.json",
+            daily_history=swing_root / "daily_quotes.jsonl",
+            portfolio_snapshot=swing_root / "portfolio.json",
+            trades=swing_root / "trades.jsonl",
+            alerts=swing_root / "alerts.jsonl",
+            metadata=Path(
+                _DEFAULT_METADATA_PATH if metadata_path is None else metadata_path,
+            ),
+            calendar=Path(
+                _DEFAULT_CALENDAR_PATH if calendar_path is None else calendar_path,
+            ),
+            backtests=swing_root / "backtests",
+        )
+    swing_application = SwingService(
+        swing_paths,
+        collector=swing_collector,
+        intraday_provider=application.snapshot,
+        intraday_points_provider=lambda symbol: application.quotes(symbol, 0),
+        clock=(swing_clock or clock or application.clock),
+        refresh_interval=refresh_interval,
+    )
+    server = MonitorServer((host, port), application, swing_application)
     application.start_refresh()
+    swing_application.start_refresh()
     return server
