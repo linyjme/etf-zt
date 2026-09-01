@@ -230,6 +230,80 @@ console.log(JSON.stringify({
         self.assertEqual(result, {"left": 0, "middle": 60, "right": 119, "before": 0, "after": 119})
         self.assertIn("hit.getBoundingClientRect()", SWING_PAGE)
 
+    def test_later_snapshot_cannot_restore_intraday_overlay_during_failure(self) -> None:
+        result = run_swing_helpers(
+            """
+const state=createPageState(); state.selectedSymbol='510300'; state.failureSources.add('daily');
+const payload={revision:2,items:[{symbol:'510300',execution_status:'READY_TO_EXECUTE',intraday_overlay:'APPROACHING_ENTRY_ZONE'}],active_alerts:[{alert_id:'a'.repeat(24),scope:'INTRADAY',state:'PREDEFINED_STOP_TOUCHED',currently_active:true}],alerts:[{alert_id:'b'.repeat(24),scope:'INTRADAY',state:'APPROACHING_ENTRY_ZONE',currently_active:true}],health:{service:'OK',configuration:'OK',daily:'OK',strategy:'OK',portfolio:'OK',alerts:'OK',intraday:'REALTIME'},errors:{}};
+applySnapshotPayload(state,payload,false); refreshExecutionPaused(state);
+const candidates=(state.snapshot.active_alerts||[]).filter(alert=>shouldNotifyAlert(alert,true,'granted',new Set(),state.safetyPaused));
+console.log(JSON.stringify({paused:state.safetyPaused,overlay:state.snapshot.items[0].intraday_overlay,active:state.snapshot.active_alerts.length,notifications:candidates.length}));
+""",
+        )
+        self.assertEqual(result, {"paused": True, "overlay": None, "active": 0, "notifications": 0})
+
+    def test_read_model_bundle_installs_only_when_all_revisions_match_snapshot(self) -> None:
+        result = run_swing_helpers(
+            """
+const state=createPageState(); state.selectedSymbol='510300';
+const snapshot=revision=>({revision,items:[{symbol:'510300',execution_status:'OBSERVE_ONLY'}],health:{service:'OK',configuration:'OK',daily:'OK',strategy:'OK',portfolio:'OK',alerts:'OK',intraday:'REALTIME'},errors:{}});
+const aux=revision=>({watch:{revision,items:[]},portfolio:{revision,projection:null},alerts:{revision,items:[]}});
+applyReadModelBundle(state,snapshot(5),aux(5),true);
+let mismatch=''; try{applyReadModelBundle(state,snapshot(6),{watch:aux(6).watch,portfolio:aux(5).portfolio,alerts:aux(6).alerts},false)}catch(error){mismatch=error.message}
+const preserved={revision:state.snapshotRevision,watch:state.auxiliary.watch.revision,portfolio:state.auxiliary.portfolio.revision,alerts:state.auxiliary.alerts.revision};
+applyReadModelBundle(state,snapshot(6),aux(6),false);
+console.log(JSON.stringify({mismatch,preserved,installed:state.snapshotRevision,auxRevision:state.auxiliary.alerts.revision}));
+""",
+        )
+        self.assertTrue(result["mismatch"])
+        self.assertEqual(result["preserved"], {"revision": 5, "watch": 5, "portfolio": 5, "alerts": 5})
+        self.assertEqual(result["installed"], 6)
+        self.assertEqual(result["auxRevision"], 6)
+
+    def test_safety_pause_is_separate_from_selected_execution_candidate(self) -> None:
+        result = run_swing_helpers(
+            """
+const state=createPageState(); state.selectedSymbol='510300';
+const base={revision:1,items:[{symbol:'510300',execution_status:'OBSERVE_ONLY'}],health:{service:'OK',configuration:'OK',daily:'OK',strategy:'OK',portfolio:'OK',alerts:'OK',intraday:'REALTIME'},errors:{}};
+applySnapshotPayload(state,base,true); refreshExecutionPaused(state);
+const observe={safetyPaused:state.safetyPaused,selectedExecutable:state.selectedExecutable,copy:executionStatusCopy(state)};
+base.revision=2;base.items[0].execution_status='READY_TO_EXECUTE';applySnapshotPayload(state,base,false);refreshExecutionPaused(state);
+console.log(JSON.stringify({observe,ready:{safetyPaused:state.safetyPaused,selectedExecutable:state.selectedExecutable,copy:executionStatusCopy(state)}}));
+""",
+        )
+        self.assertEqual(result["observe"], {
+            "safetyPaused": False,
+            "selectedExecutable": False,
+            "copy": "数据正常，当前仅观察/无执行候选",
+        })
+        self.assertEqual(result["ready"], {
+            "safetyPaused": False,
+            "selectedExecutable": True,
+            "copy": "执行候选已就绪，仍需手工确认",
+        })
+
+    def test_alert_history_and_notification_ids_are_bounded(self) -> None:
+        result = run_swing_helpers(
+            """
+const alerts=Array.from({length:240},(_,index)=>({alert_id:String(index),currently_active:index===0,retracted:false,trading_date:`2026-08-${String(1+index%28).padStart(2,'0')}`}));
+const visible=boundedAlerts(alerts,80);const notified=new Set(Array.from({length:400},(_,index)=>String(index))),active=new Set(['0']);
+pruneRememberedAlertIds(notified,active,128);
+console.log(JSON.stringify({visible:visible.length,keptActive:visible.some(item=>item.alert_id==='0'),remembered:notified.size,rememberedActive:notified.has('0')}));
+""",
+        )
+        self.assertEqual(result, {"visible": 80, "keptActive": True, "remembered": 128, "rememberedActive": True})
+
+    def test_requests_tabs_and_watchlist_status_have_safety_contracts(self) -> None:
+        for fragment in (
+            "new AbortController()", "GET_TIMEOUT_MS", "POST_TIMEOUT_MS",
+            'role="tabpanel"', 'aria-controls="alerts-panel"',
+            'aria-labelledby="alerts-tab"', "ArrowLeft", "ArrowRight",
+            "event.key==='Home'", "event.key==='End'", "tabIndex",
+            "监控列表已保存", "form-result success", "#swing-live-status.success",
+        ):
+            self.assertIn(fragment, SWING_PAGE)
+        self.assertNotIn("setError('监控列表已保存')", SWING_PAGE)
+
 
 if __name__ == "__main__":
     unittest.main()
