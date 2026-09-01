@@ -50,6 +50,7 @@ class TradeInput:
     fee: float
     executed_at: datetime
     planned_risk_per_share: float = 0.0
+    exit_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -766,6 +767,12 @@ class PortfolioLedger:
             "planned_risk_per_share",
             positive=False,
         )
+        exit_reason = trade.exit_reason
+        if exit_reason is not None:
+            if type(exit_reason) is not str or exit_reason != "STOP_EXIT":
+                raise PortfolioLedgerError("exit_reason must be STOP_EXIT or null")
+            if trade.side != "SELL":
+                raise PortfolioLedgerError("exit_reason is only valid for SELL")
         executed_at = _aware_datetime(trade.executed_at, "executed_at")
         closed_dates = self._require_closed_dates()
         if not _is_trading_date(executed_at.date(), closed_dates):
@@ -778,6 +785,7 @@ class PortfolioLedger:
             _public_float(fee, "trade fee"),
             executed_at,
             _public_float(risk, "planned_risk_per_share"),
+            exit_reason,
         )
 
     def _require_closed_dates(self) -> frozenset[date]:
@@ -803,7 +811,7 @@ class PortfolioLedger:
 
     @staticmethod
     def _trade_request_payload(trade: TradeInput) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "symbol": trade.symbol,
             "side": trade.side,
             "shares": trade.shares,
@@ -812,6 +820,9 @@ class PortfolioLedger:
             "executed_at": trade.executed_at.isoformat(),
             "planned_risk_per_share": trade.planned_risk_per_share,
         }
+        if trade.exit_reason is not None:
+            payload["exit_reason"] = trade.exit_reason
+        return payload
 
     def _trade_request_payload_from_event(
         self, event: PortfolioEvent,
@@ -940,7 +951,9 @@ class PortfolioLedger:
             "planned_risk_per_share",
         }
         current = legacy | {"effective_planned_risk_per_share"}
-        if set(event.payload) not in (legacy, current):
+        with_exit = legacy | {"exit_reason"}
+        current_with_exit = current | {"exit_reason"}
+        if set(event.payload) not in (legacy, current, with_exit, current_with_exit):
             raise PortfolioLedgerError("trade event payload is invalid")
         requested_risk = _finite_decimal(
             event.payload["planned_risk_per_share"],
@@ -969,6 +982,7 @@ class PortfolioLedger:
             planned_risk_per_share=_public_float(
                 effective_risk, "effective_planned_risk_per_share",
             ),
+            exit_reason=event.payload.get("exit_reason"),
         )
         normalized = self._validate_trade_input(trade)
         expected_type = (

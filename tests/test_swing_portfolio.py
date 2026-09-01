@@ -974,6 +974,71 @@ print(ledger.record_trade(trade, 'subprocess-same-key').event_id, flush=True)
                 "fee-over-proceeds",
             )
 
+    def test_stop_exit_reason_is_strict_sell_only_and_persisted(self) -> None:
+        self.initialize()
+        self.ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.0, 0.0, self.tuesday),
+            "stop-buy",
+        )
+        stopped = self.ledger.record_trade(
+            TradeInput(
+                "510300", "SELL", 100, 3.8, 0.0, self.wednesday,
+                exit_reason="STOP_EXIT",
+            ),
+            "stop-sell",
+        )
+        self.assertEqual(stopped.payload["exit_reason"], "STOP_EXIT")
+        rebuilt = PortfolioLedger(
+            self.path, self.metadata, closed_dates=frozenset(),
+        ).load_events()
+        self.assertEqual(rebuilt[-1].payload["exit_reason"], "STOP_EXIT")
+
+        invalid = (
+            TradeInput(
+                "510300", "BUY", 100, 4.0, 0.0, self.tuesday,
+                exit_reason="STOP_EXIT",
+            ),
+            TradeInput(
+                "510300", "SELL", 100, 3.8, 0.0, self.wednesday,
+                exit_reason="stop_exit",
+            ),
+            TradeInput(
+                "510300", "SELL", 100, 3.8, 0.0, self.wednesday,
+                exit_reason="STOP EXIT",
+            ),
+        )
+        for index, trade in enumerate(invalid):
+            with self.subTest(index=index):
+                other = PortfolioLedger(
+                    self.root / f"invalid-exit-{index}.jsonl",
+                    self.metadata,
+                    closed_dates=frozenset(),
+                )
+                other.initialize("test", 100_000.0, f"init-exit-{index}")
+                with self.assertRaises(PortfolioLedgerError):
+                    other.record_trade(trade, f"bad-exit-{index}")
+
+    def test_exit_reason_participates_in_idempotency_and_old_payloads_stay_valid(self) -> None:
+        self.initialize()
+        self.ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.0, 0.0, self.tuesday),
+            "reason-buy",
+        )
+        ordinary = TradeInput(
+            "510300", "SELL", 100, 4.1, 0.0, self.wednesday,
+        )
+        event = self.ledger.record_trade(ordinary, "reason-sell")
+        self.assertNotIn("exit_reason", event.payload)
+        self.assertEqual(self.ledger.load_events()[-1], event)
+        with self.assertRaisesRegex(PortfolioLedgerError, "different request"):
+            self.ledger.record_trade(
+                TradeInput(
+                    "510300", "SELL", 100, 4.1, 0.0, self.wednesday,
+                    exit_reason="STOP_EXIT",
+                ),
+                "reason-sell",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

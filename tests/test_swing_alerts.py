@@ -199,6 +199,32 @@ class SwingAlertStoreTests(unittest.TestCase):
         self.assertEqual(self.store.retract_overlays("SECOND_OUTAGE"), ())
         self.assertEqual(len(self.store.load_events()), 3)
 
+    def test_targeted_overlay_retraction_is_idempotent_and_isolated(self) -> None:
+        formal = self.store.publish_formal(formal_alert())
+        first = self.store.publish_overlay(overlay_alert(symbol="510300"))
+        second = self.store.publish_overlay(overlay_alert(symbol="510500"))
+        before = len(self.store.load_events())
+
+        retracted = self.store.retract_overlay(first.alert_id, "LEFT_ZONE")
+        repeated = self.store.retract_overlay(first.alert_id, "OTHER_REASON")
+        self.assertEqual(retracted, repeated)
+        self.assertTrue(retracted.retracted)
+        self.assertEqual(len(self.store.load_events()), before + 1)
+        current = {item.alert_id: item for item in self.store.current()}
+        self.assertNotIn(first.alert_id, current)
+        self.assertIn(second.alert_id, current)
+        history = {
+            item.alert_id: item
+            for item in self.store.current(include_retracted=True)
+        }
+        self.assertFalse(history[formal.alert_id].retracted)
+        self.assertFalse(history[second.alert_id].retracted)
+
+        with self.assertRaisesRegex(AlertStoreError, "formal"):
+            self.store.retract_overlay(formal.alert_id, "NOT_ALLOWED")
+        with self.assertRaisesRegex(AlertStoreError, "does not exist"):
+            self.store.retract_overlay("a" * 24, "MISSING")
+
     def test_ignore_is_persisted_only_for_current_alert_and_excluded_from_active(self) -> None:
         first = self.store.publish_formal(formal_alert())
         ignored = self.store.ignore(first.alert_id, "opaque-ignore-1")

@@ -10,11 +10,13 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 import json
 import math
+import os
 from pathlib import Path
+import tempfile
 import threading
 import time as monotonic_time
 from typing import Any, Protocol
@@ -29,7 +31,11 @@ from .swing_config import (
     load_strategy,
     load_watchlist,
 )
-from .swing_data import DailyBar, DailyHistoryStore, SwingDataError
+from .swing_data import (
+    DailyBar,
+    DailyHistoryStore,
+    _SiblingFileLock,
+)
 from .swing_portfolio import (
     InitialPositionInput,
     PortfolioLedger,
@@ -210,6 +216,52 @@ class SwingService:
             "read_only": False,
         }
 
+    def update_watchlist(self, symbol: str, enabled: bool) -> dict[str, object]:
+        """Atomically persist and publish one validated watchlist toggle."""
+        if (
+            not isinstance(symbol, str)
+            or len(symbol) != 6
+            or not symbol.isascii()
+            or not symbol.isdigit()
+            or symbol not in self._metadata
+        ):
+            raise SwingServiceError("symbol must identify a metadata-verified ETF")
+        if type(enabled) is not bool:
+            raise SwingServiceError("enabled must be boolean")
+        with self.producer_lock:
+            candidate = list(self._watchlist)
+            index = next(
+                (position for position, item in enumerate(candidate)
+                 if item.symbol == symbol),
+                None,
+            )
+            if index is None:
+                candidate.append(SwingWatchItem(symbol, enabled))
+            else:
+                candidate[index] = SwingWatchItem(symbol, enabled)
+            next_watchlist = tuple(candidate)
+            now = self._safe_now()
+            try:
+                next_formal = self._calculate_formal(
+                    self._history,
+                    self._portfolio_projection,
+                    self._health["portfolio"],
+                    self._health["daily"],
+                    now,
+                    watchlist=next_watchlist,
+                )
+                snapshot = self._candidate_snapshot(
+                    now, watchlist=next_watchlist, formal=next_formal,
+                )
+                self._write_watchlist(next_watchlist)
+            except Exception as error:
+                raise SwingServiceError("watchlist update failed") from error
+            with self.publish_condition:
+                self._watchlist = next_watchlist
+                self._formal = next_formal
+                self._publish_locked(snapshot)
+            return self.watchlist()
+
     def portfolio(self) -> dict[str, object]:
         with self.publish_condition:
             projection = self._portfolio_projection
@@ -228,13 +280,15 @@ class SwingService:
         store = self._alert_store
         if store is None:
             return {"status": "BLOCKED", "items": [], "local_only": True}
-        try:
-            items = store.current(include_retracted=include_retracted)
-        except Exception as error:
-            raise SwingServiceError("alerts could not be loaded") from error
+        now = self._safe_now()
+        with self.publish_condition:
+            items, _ = self._alert_snapshot(
+                now, include_retracted=include_retracted,
+            )
+            status = self._health["alerts"]
         return {
-            "status": "OK",
-            "items": [item.to_dict() for item in items],
+            "status": status,
+            "items": items,
             "local_only": True,
         }
 
@@ -343,8 +397,10 @@ class SwingService:
         return self.wait_for_event(after_revision, timeout)
 
     def start_refresh(self) -> None:
+        if self._refresh_thread is not None:
+            return
         with self.producer_lock:
-            if self._refresh_thread is not None and self._refresh_thread.is_alive():
+            if self._refresh_thread is not None:
                 return
             self._stop_event.clear()
             self._refresh_thread = threading.Thread(
@@ -361,7 +417,8 @@ class SwingService:
         thread = self._refresh_thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=min(5.0, self.refresh_interval + 1.0))
-        self._refresh_thread = None
+        if thread is None or not thread.is_alive():
+            self._refresh_thread = None
 
     # ---- Producer entry points ----------------------------------------
 
@@ -419,9 +476,48 @@ class SwingService:
         self, trade: TradeInput, idempotency_key: str,
     ) -> dict[str, object]:
         with self.producer_lock:
-            event = self._require_ledger().record_trade(trade, idempotency_key)
+            normalized = trade
+            if (
+                type(trade) is TradeInput
+                and trade.side == "SELL"
+                and trade.exit_reason is None
+                and self._sell_completes_position(trade)
+                and self._stop_exit_is_active(trade.symbol)
+            ):
+                normalized = replace(trade, exit_reason="STOP_EXIT")
+            event = self._require_ledger().record_trade(
+                normalized, idempotency_key,
+            )
             self._rebuild_after_portfolio_mutation(self._safe_now())
             return event.to_dict()
+
+    def _sell_completes_position(self, trade: TradeInput) -> bool:
+        projection = self._portfolio_projection
+        if projection is None:
+            return False
+        position = projection.positions.get(trade.symbol)
+        return position is not None and trade.shares == position.shares
+
+    def _stop_exit_is_active(self, symbol: str) -> bool:
+        formal = self._formal.get(symbol)
+        if formal is not None and (
+            formal.evidence.get("exit_hard_stop") is True
+            or formal.evidence.get("exit_trailing_stop") is True
+        ):
+            return True
+        store = self._alert_store
+        if store is None:
+            return False
+        try:
+            return any(
+                item.scope == "INTRADAY"
+                and item.symbol == symbol
+                and item.state == IntradayOverlay.PREDEFINED_STOP_TOUCHED.value
+                and not item.retracted
+                for item in store.current()
+            )
+        except Exception:
+            return False
 
     def reverse_trade(
         self, event_id: str, idempotency_key: str,
@@ -532,45 +628,80 @@ class SwingService:
         return self._build_snapshot(now)
 
     def _load_portfolio_projection(self, now: datetime) -> None:
+        projection, status, error = self._calculate_portfolio_projection(
+            self._history, now,
+        )
+        self._portfolio_projection = projection
+        self._health["portfolio"] = status
+        if error is None:
+            self._errors.pop("portfolio", None)
+        else:
+            self._errors["portfolio"] = error
+
+    def _calculate_portfolio_projection(
+        self,
+        history: Sequence[DailyBar],
+        now: datetime,
+    ) -> tuple[PortfolioProjection | None, str, str | None]:
         ledger = self._require_ledger()
         if self._closed_dates is None:
-            self._portfolio_projection = None
-            self._health["portfolio"] = "BLOCKED"
-            self._errors["portfolio"] = (
-                "authoritative market calendar is unavailable"
+            return (
+                None,
+                "BLOCKED",
+                "authoritative market calendar is unavailable",
             )
-            return
         as_of = self._portfolio_as_of(now)
-        marks = self._latest_marks()
+        marks = self._latest_marks(history)
         try:
-            self._portfolio_projection = ledger.load_or_rebuild_projection(
+            projection = ledger.load_or_rebuild_projection(
                 self.paths.portfolio_snapshot, as_of, marks,
             )
         except PortfolioLedgerError as error:
-            self._portfolio_projection = None
             text = str(error).lower()
-            self._health["portfolio"] = (
-                "UNINITIALIZED" if "not initialized" in text else "BLOCKED"
+            return (
+                None,
+                "UNINITIALIZED" if "not initialized" in text else "BLOCKED",
+                self._safe_error(error),
             )
-            self._errors["portfolio"] = self._safe_error(error)
-            return
-        self._health["portfolio"] = "OK"
-        self._errors.pop("portfolio", None)
+        return projection, "OK", None
 
     def _recompute_formal(self, now: datetime, *, publish_alerts: bool) -> None:
-        self._formal = {}
+        self._formal = self._calculate_formal(
+            self._history,
+            self._portfolio_projection,
+            self._health["portfolio"],
+            self._health["daily"],
+            now,
+        )
+        if publish_alerts:
+            next_by_symbol = {
+                symbol: self._next_trading_date(decision.as_of_trading_date)
+                for symbol, decision in self._formal.items()
+            }
+            self._publish_formal_alerts(now, next_by_symbol)
+
+    def _calculate_formal(
+        self,
+        history: Sequence[DailyBar],
+        projection: PortfolioProjection | None,
+        portfolio_health: str,
+        daily_health: str,
+        now: datetime,
+        *,
+        watchlist: Sequence[SwingWatchItem] | None = None,
+    ) -> dict[str, SwingDecision]:
         if self._strategy is None:
-            return
-        grouped = self._bars_by_symbol()
+            return {}
+        grouped = self._bars_by_symbol(history)
         expected = self._last_completed_trading_date(now)
-        next_by_symbol: dict[str, date | None] = {}
-        for item in self._watchlist:
+        result: dict[str, SwingDecision] = {}
+        for item in self._watchlist if watchlist is None else watchlist:
             if not item.enabled:
                 continue
             bars = grouped.get(item.symbol, ())
             latest = bars[-1].trading_date if bars else None
             data_healthy = bool(
-                self._health["daily"] == "OK"
+                daily_health == "OK"
                 and expected is not None
                 and latest == expected
             )
@@ -578,16 +709,16 @@ class SwingService:
                 self._next_trading_date(latest)
                 if latest is not None and self._closed_dates is not None else None
             )
-            next_by_symbol[item.symbol] = next_date
             context = self._portfolio_context(
                 item.symbol, bars, data_healthy=data_healthy,
                 next_trading_date=next_date,
+                projection=projection,
+                portfolio_health=portfolio_health,
             )
-            self._formal[item.symbol] = evaluate_swing(
+            result[item.symbol] = evaluate_swing(
                 bars, self._strategy, context,
             )
-        if publish_alerts:
-            self._publish_formal_alerts(now, next_by_symbol)
+        return result
 
     def _portfolio_context(
         self,
@@ -596,16 +727,20 @@ class SwingService:
         *,
         data_healthy: bool,
         next_trading_date: date | None,
+        projection: PortfolioProjection | None,
+        portfolio_health: str,
     ) -> PortfolioContext:
         metadata = self._metadata.get(symbol)
         lot_size = metadata.trading.lot_size if metadata is not None else 100
-        projection = self._portfolio_projection
-        ledger_healthy = self._health["portfolio"] == "OK" and projection is not None
+        ledger_healthy = portfolio_health == "OK" and projection is not None
         equity = projection.equity if ledger_healthy else 1.0
         cash = projection.cash if ledger_healthy else 0.0
         market_value = projection.etf_market_value if ledger_healthy else 0.0
         planned_risk = projection.planned_risk if ledger_healthy else 0.0
         position = None
+        last_stop_trading_date = (
+            self._last_stop_trading_date(symbol, bars) if ledger_healthy else None
+        )
         if ledger_healthy and projection is not None:
             projected = projection.positions.get(symbol)
             if projected is not None and projected.shares > 0 and bars:
@@ -621,6 +756,7 @@ class SwingService:
             ledger_healthy=ledger_healthy,
             tradable=True,
             next_trading_date=next_trading_date,
+            last_stop_trading_date=last_stop_trading_date,
             position=position,
         )
 
@@ -639,7 +775,9 @@ class SwingService:
         if risk <= 0.0:
             risk = max(average * 0.01, math.ulp(average))
         hard_stop = max(average - risk, math.ulp(average))
-        entry_date, first_reduction = self._position_lifecycle(symbol, bars)
+        entry_date, first_reduction, _ = self._event_lifecycle(symbol, bars)
+        if entry_date is None:
+            raise PortfolioLedgerError("projected position has no open event lifecycle")
         completed_since_entry = tuple(
             bar for bar in bars if bar.trading_date >= entry_date
         )
@@ -658,11 +796,21 @@ class SwingService:
             first_reduction_completed=first_reduction,
         )
 
-    def _position_lifecycle(
+    def _last_stop_trading_date(
         self,
         symbol: str,
         bars: Sequence[DailyBar],
-    ) -> tuple[date, bool]:
+    ) -> date | None:
+        if self._ledger is None:
+            return None
+        _, _, stopped = self._event_lifecycle(symbol, bars)
+        return stopped
+
+    def _event_lifecycle(
+        self,
+        symbol: str,
+        bars: Sequence[DailyBar],
+    ) -> tuple[date | None, bool, date | None]:
         """Derive the open holding cycle solely from authoritative ledger events."""
         ledger = self._require_ledger()
         events = ledger.load_events()
@@ -674,6 +822,7 @@ class SwingService:
         shares = 0
         entry_date: date | None = None
         first_reduction = False
+        last_stop_date: date | None = None
         if events:
             initial = events[0].payload.get("initial_positions", {})
             if isinstance(initial, Mapping):
@@ -681,8 +830,9 @@ class SwingService:
                 if isinstance(raw, Mapping) and type(raw.get("shares")) is int:
                     shares = int(raw["shares"])
                     if shares > 0:
-                        entry_date = bars[0].trading_date
-        trades = [
+                        initialized = events[0].recorded_at.astimezone(SHANGHAI).date()
+                        entry_date = self._trading_date_on_or_before(initialized)
+        raw_trades = [
             event for event in events
             if (
                 event.event_type in {
@@ -693,13 +843,26 @@ class SwingService:
                 and event.payload.get("symbol") == symbol
             )
         ]
-        trades.sort(key=lambda event: str(event.payload.get("executed_at", "")))
-        for event in trades:
+        trades: list[tuple[datetime, Any]] = []
+        for event in raw_trades:
             raw_shares = event.payload.get("shares")
             raw_time = event.payload.get("executed_at")
             if type(raw_shares) is not int or type(raw_time) is not str:
                 raise PortfolioLedgerError("portfolio trade lifecycle is invalid")
-            executed = datetime.fromisoformat(raw_time).astimezone(SHANGHAI).date()
+            try:
+                executed_at = datetime.fromisoformat(raw_time)
+                if executed_at.tzinfo is None or executed_at.utcoffset() is None:
+                    raise ValueError("naive trade timestamp")
+                executed_at = executed_at.astimezone(SHANGHAI)
+            except Exception as error:
+                raise PortfolioLedgerError(
+                    "portfolio trade lifecycle timestamp is invalid",
+                ) from error
+            trades.append((executed_at, event))
+        trades.sort(key=lambda item: item[0])
+        for executed_at, event in trades:
+            raw_shares = event.payload["shares"]
+            executed = executed_at.date()
             if event.event_type is PortfolioEventType.BUY_CONFIRMED:
                 if shares == 0:
                     entry_date = executed
@@ -710,13 +873,21 @@ class SwingService:
                 if shares < 0:
                     raise PortfolioLedgerError("portfolio lifecycle shares are negative")
                 if shares == 0:
+                    if event.payload.get("exit_reason") == "STOP_EXIT":
+                        last_stop_date = executed
                     entry_date = None
                     first_reduction = False
                 else:
                     first_reduction = True
-        if shares <= 0 or entry_date is None:
-            raise PortfolioLedgerError("projected position has no open event lifecycle")
-        return max(entry_date, bars[0].trading_date), first_reduction
+        return entry_date, first_reduction, last_stop_date
+
+    def _trading_date_on_or_before(self, value: date) -> date:
+        candidate = value
+        for _ in range(370):
+            if self._is_trading_date(candidate):
+                return candidate
+            candidate -= timedelta(days=1)
+        raise PortfolioLedgerError("initialization date cannot map to a trading day")
 
     # ---- Daily producer ------------------------------------------------
 
@@ -774,10 +945,39 @@ class SwingService:
 
         before = {(bar.symbol, bar.trading_date): bar for bar in self._history}
         try:
-            merged = self._history_store.upsert(records)
+            merged = self._candidate_history(records)
+            next_health = dict(self._health)
+            next_errors = dict(self._errors)
+            next_health["daily"] = "OK"
+            next_health["minute_crosscheck"] = crosscheck_health
+            next_errors.pop("daily", None)
+            next_errors.pop("minute_crosscheck", None)
+            projection, portfolio_status, portfolio_error = (
+                self._calculate_portfolio_projection(merged, now)
+            )
+            next_health["portfolio"] = portfolio_status
+            if portfolio_error is None:
+                next_errors.pop("portfolio", None)
+            else:
+                next_errors["portfolio"] = portfolio_error
+            formal = self._calculate_formal(
+                merged, projection, portfolio_status, "OK", now,
+            )
+            # Exercise every public serialization path before the primary
+            # history file is replaced.  The second build below only reflects
+            # the alert-store outcome, which is isolated as its own component.
+            self._candidate_snapshot(
+                now,
+                history=merged,
+                projection=projection,
+                projection_is_explicit=True,
+                formal=formal,
+                health=next_health,
+                errors=next_errors,
+            )
         except Exception as error:
             self._publish_component_failure(
-                "daily", "PERSISTENCE_FAILED", error, now=now,
+                "daily", "STRATEGY_FAILED", error, now=now,
             )
             return False
         changed = tuple(
@@ -785,19 +985,55 @@ class SwingService:
             if before.get((bar.symbol, bar.trading_date)) != bar
         )
         old_as_of = self._snapshot_as_of()
-        self._history = merged
-        self._health["daily"] = "OK"
-        self._health["minute_crosscheck"] = crosscheck_health
-        self._errors.pop("daily", None)
-        self._errors.pop("minute_crosscheck", None)
-        self._load_portfolio_projection(now)
-        self._recompute_formal(now, publish_alerts=True)
-        new_as_of = self._history_as_of()
-        self._publish(
-            self._build_snapshot(now),
-            daily_upserts=self._group_bar_payloads(changed),
-            force_reset=old_as_of != new_as_of,
+        try:
+            persisted = self._history_store.upsert(records)
+            if persisted != merged:
+                raise SwingServiceError("persisted daily history differs from staged batch")
+        except Exception as error:
+            self._publish_component_failure(
+                "daily", "PERSISTENCE_FAILED", error, now=now,
+            )
+            return False
+
+        next_by_symbol = {
+            symbol: self._next_trading_date(decision.as_of_trading_date)
+            for symbol, decision in formal.items()
+        }
+        alert_error = self._persist_formal_alerts(
+            formal, next_by_symbol, portfolio_status,
         )
+        if alert_error is None:
+            next_health["alerts"] = "OK"
+            next_errors.pop("alerts", None)
+        else:
+            next_health["alerts"] = "BLOCKED"
+            next_errors["alerts"] = alert_error
+        snapshot = self._candidate_snapshot(
+            now,
+            history=merged,
+            projection=projection,
+            projection_is_explicit=True,
+            formal=formal,
+            health=next_health,
+            errors=next_errors,
+        )
+        new_as_of = max(
+            (bar.trading_date for bar in merged), default=None,
+        )
+        with self.publish_condition:
+            self._history = merged
+            self._portfolio_projection = projection
+            self._formal = formal
+            self._health = next_health
+            self._errors = next_errors
+            self._publish_locked(
+                snapshot,
+                daily_upserts=self._group_bar_payloads(changed),
+                force_reset=(
+                    old_as_of
+                    != (new_as_of.isoformat() if new_as_of is not None else None)
+                ),
+            )
         return True
 
     @staticmethod
@@ -838,6 +1074,13 @@ class SwingService:
             raise SwingServiceError(
                 f"completed daily batch is missing or duplicates target bars: {missing}",
             )
+        self._candidate_history(records)
+
+    def _candidate_history(
+        self, records: Sequence[DailyBar],
+    ) -> tuple[DailyBar, ...]:
+        if self._history_store is None:
+            raise SwingServiceError("daily history store is unavailable")
         combined = {
             (bar.symbol, bar.trading_date): bar for bar in self._history
         }
@@ -847,7 +1090,8 @@ class SwingService:
             if existing is None or bar.observed_at >= existing.observed_at:
                 combined[key] = bar
         merged = tuple(combined[key] for key in sorted(combined))
-        self._history_store.validator.validate_sequence(merged, self._metadata)  # type: ignore[union-attr]
+        self._history_store.validator.validate_sequence(merged, self._metadata)
+        return merged
 
     def _crosscheck_minutes(self, bar: DailyBar) -> str:
         try:
@@ -884,24 +1128,60 @@ class SwingService:
         if not isinstance(candidates, (tuple, list)):
             return ()
         accepted: list[Mapping[str, object]] = []
+        timestamps: list[datetime] = []
         for point in candidates:
             if not isinstance(point, Mapping):
-                continue
-            point_date = point.get("trading_date")
-            if point_date is None:
-                timestamp = point.get("timestamp")
-                if type(timestamp) is str:
-                    try:
-                        parsed = datetime.fromisoformat(timestamp)
-                        point_date = parsed.astimezone(SHANGHAI).date().isoformat()
-                    except Exception:
-                        continue
-            if point_date != trading_date.isoformat():
-                continue
-            if point.get("is_complete", True) is not True:
-                continue
+                return ()
+            if (
+                type(point.get("schema_version")) is not int
+                or point.get("schema_version") != 3
+                or point.get("trading_date") != trading_date.isoformat()
+                or point.get("is_complete") is not True
+                or type(point.get("timestamp")) is not str
+            ):
+                return ()
+            try:
+                parsed = datetime.fromisoformat(str(point["timestamp"]))
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    return ()
+                local = parsed.astimezone(SHANGHAI)
+            except Exception:
+                return ()
+            if (
+                local.date() != trading_date
+                or local.second != 0
+                or local.microsecond != 0
+            ):
+                return ()
             accepted.append(point)
-        return tuple(sorted(accepted, key=lambda item: str(item.get("timestamp", ""))))
+            timestamps.append(local)
+        if len(set(timestamps)) != len(timestamps):
+            return ()
+        if any(left >= right for left, right in zip(timestamps, timestamps[1:])):
+            return ()
+        if tuple(timestamps) != SwingService._expected_complete_minutes(trading_date):
+            return ()
+        return tuple(accepted)
+
+    @staticmethod
+    def _expected_complete_minutes(trading_date: date) -> tuple[datetime, ...]:
+        """Return Eastmoney/T-monitor's 241 completed minute timestamps."""
+        result: list[datetime] = []
+        current = datetime.combine(
+            trading_date, time(9, 30), tzinfo=SHANGHAI,
+        )
+        morning_end = current.replace(hour=11, minute=30)
+        while current <= morning_end:
+            result.append(current)
+            current += timedelta(minutes=1)
+        current = datetime.combine(
+            trading_date, time(13, 1), tzinfo=SHANGHAI,
+        )
+        afternoon_end = current.replace(hour=15, minute=0)
+        while current <= afternoon_end:
+            result.append(current)
+            current += timedelta(minutes=1)
+        return tuple(result)
 
     @staticmethod
     def _aggregate_minute_ohlc(
@@ -966,6 +1246,28 @@ class SwingService:
                 feed_healthy=healthy,
                 has_position=self._has_position(symbol),
             )
+            resolved_status = self._execution_status(
+                formal, now, market_realtime=healthy,
+            )
+            if (
+                intraday.overlay is IntradayOverlay.APPROACHING_ENTRY_ZONE
+                and (
+                    formal.state is not SwingState.TRIAL_ENTRY_CANDIDATE
+                    or resolved_status != "READY_TO_EXECUTE"
+                )
+            ):
+                overlays[symbol] = None
+                normalized_price = intraday.price
+                status = resolved_status
+                raw_health = (
+                    str(raw.get("health_status"))
+                    if raw is not None and type(raw.get("health_status")) is str
+                    else "UNAVAILABLE"
+                )
+                current[symbol] = (
+                    normalized_price, timestamp, status, raw_health,
+                )
+                continue
             if intraday.overlay is IntradayOverlay.INTRADAY_FEED_UNAVAILABLE:
                 all_realtime = False
                 overlays[symbol] = None
@@ -977,7 +1279,7 @@ class SwingService:
                     else intraday.overlay.value
                 )
                 normalized_price = intraday.price
-                status = self._execution_status(formal, now, market_realtime=True)
+                status = resolved_status
                 style = _OVERLAY_ALERT_STYLE.get(intraday.overlay)
                 if style is not None and formal.as_of_trading_date is not None:
                     desired_alerts.append(AlertInput(
@@ -1049,12 +1351,26 @@ class SwingService:
                 item for item in store.current()
                 if item.scope == "INTRADAY" and not item.retracted
             )
-            active_keys = {(item.symbol, item.state) for item in active}
-            desired_keys = {(item.symbol, item.state) for item in desired}
-            if active_keys != desired_keys:
-                store.retract_overlays("INTRADAY_STATE_CHANGED")
-                for alert in desired:
-                    store.publish_overlay(alert)
+            def projection_key(item: object) -> tuple[date, str, str, str]:
+                return (
+                    item.trading_date, item.symbol, item.state,
+                    item.strategy_version,
+                )
+
+            def input_key(item: AlertInput) -> tuple[date, str, str, str]:
+                return (
+                    item.trading_date, item.symbol, item.state,
+                    item.strategy_version,
+                )
+
+            active_by_key = {projection_key(item): item for item in active}
+            desired_by_key = {input_key(item): item for item in desired}
+            for key in active_by_key.keys() - desired_by_key.keys():
+                store.retract_overlay(
+                    active_by_key[key].alert_id, "INTRADAY_STATE_CHANGED",
+                )
+            for key in desired_by_key.keys() - active_by_key.keys():
+                store.publish_overlay(desired_by_key[key])
             self._health["alerts"] = "OK"
             self._errors.pop("alerts", None)
         except Exception as error:
@@ -1062,6 +1378,89 @@ class SwingService:
             self._errors["alerts"] = self._safe_error(error)
 
     # ---- Publishing helpers ------------------------------------------
+
+    def _candidate_snapshot(
+        self,
+        now: datetime,
+        *,
+        watchlist: tuple[SwingWatchItem, ...] | None = None,
+        history: tuple[DailyBar, ...] | None = None,
+        projection: PortfolioProjection | None = None,
+        formal: dict[str, SwingDecision] | None = None,
+        health: dict[str, str] | None = None,
+        errors: dict[str, str] | None = None,
+        projection_is_explicit: bool = False,
+    ) -> dict[str, object]:
+        """Build a snapshot from staged state without exposing that state."""
+        self.publish_condition.acquire()
+        old = (
+            self._watchlist,
+            self._history,
+            self._portfolio_projection,
+            self._formal,
+            self._health,
+            self._errors,
+        )
+        try:
+            if watchlist is not None:
+                self._watchlist = watchlist
+            if history is not None:
+                self._history = history
+            if projection_is_explicit:
+                self._portfolio_projection = projection
+            if formal is not None:
+                self._formal = formal
+            if health is not None:
+                self._health = health
+            if errors is not None:
+                self._errors = errors
+            return self._build_snapshot(now)
+        finally:
+            (
+                self._watchlist,
+                self._history,
+                self._portfolio_projection,
+                self._formal,
+                self._health,
+                self._errors,
+            ) = old
+            self.publish_condition.release()
+
+    def _write_watchlist(
+        self, watchlist: Sequence[SwingWatchItem],
+    ) -> None:
+        payload = {
+            "schema_version": 1,
+            "items": [
+                {"symbol": item.symbol, "enabled": item.enabled}
+                for item in watchlist
+            ],
+        }
+        destination = self.paths.watchlist
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        encoded = (json.dumps(
+            payload, ensure_ascii=False, indent=2, sort_keys=False,
+        ) + "\n").encode("utf-8")
+        with _SiblingFileLock(destination, shared=False):
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=destination.parent,
+                    prefix=f".{destination.name}.", suffix=".tmp",
+                    delete=False,
+                ) as handle:
+                    temporary = Path(handle.name)
+                    handle.write(encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, destination)
+                temporary = None
+            finally:
+                if temporary is not None:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
 
     def _build_snapshot(self, now: datetime) -> dict[str, object]:
         current = self.published if hasattr(self, "published") else {}
@@ -1132,18 +1531,30 @@ class SwingService:
     ) -> None:
         value = copy.deepcopy(dict(snapshot))
         with self.publish_condition:
-            self.revision += 1
-            value["revision"] = self.revision
-            self.published = value
-            event = copy.deepcopy(value)
-            event.update({
-                "event": "reset" if force_reset else "update",
-                "reset": bool(force_reset),
-                "force_reset": bool(force_reset),
-                "daily_upserts": copy.deepcopy(dict(daily_upserts or {})),
-            })
-            self.events.append(event)
-            self.publish_condition.notify_all()
+            self._publish_locked(
+                value, daily_upserts=daily_upserts, force_reset=force_reset,
+            )
+
+    def _publish_locked(
+        self,
+        snapshot: Mapping[str, object],
+        *,
+        daily_upserts: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
+        force_reset: bool = False,
+    ) -> None:
+        value = copy.deepcopy(dict(snapshot))
+        self.revision += 1
+        value["revision"] = self.revision
+        self.published = value
+        event = copy.deepcopy(value)
+        event.update({
+            "event": "reset" if force_reset else "update",
+            "reset": bool(force_reset),
+            "force_reset": bool(force_reset),
+            "daily_upserts": copy.deepcopy(dict(daily_upserts or {})),
+        })
+        self.events.append(event)
+        self.publish_condition.notify_all()
 
     def _publish_component_failure(
         self,
@@ -1205,17 +1616,33 @@ class SwingService:
         now: datetime,
         next_by_symbol: Mapping[str, date | None],
     ) -> None:
+        error = self._persist_formal_alerts(
+            self._formal, next_by_symbol, self._health["portfolio"],
+        )
+        if error is None:
+            self._health["alerts"] = "OK"
+            self._errors.pop("alerts", None)
+        else:
+            self._health["alerts"] = "BLOCKED"
+            self._errors["alerts"] = error
+
+    def _persist_formal_alerts(
+        self,
+        formal_by_symbol: Mapping[str, SwingDecision],
+        next_by_symbol: Mapping[str, date | None],
+        portfolio_health: str,
+    ) -> str | None:
         store = self._alert_store
         if store is None:
-            return
+            return "alert store is unavailable"
         try:
-            for symbol, formal in self._formal.items():
+            for symbol, formal in formal_by_symbol.items():
                 style = _FORMAL_ALERT_STYLE.get(formal.state)
                 if style is None or formal.as_of_trading_date is None:
                     continue
                 if (
                     formal.state in _PORTFOLIO_DEPENDENT_STATES
-                    and self._health["portfolio"] != "OK"
+                    and portfolio_health != "OK"
                 ):
                     continue
                 if formal.state is SwingState.TRIAL_ENTRY_CANDIDATE and (
@@ -1231,32 +1658,86 @@ class SwingService:
                     label=style[1],
                     evidence=formal.to_dict()["evidence"],
                 ))
-            self._health["alerts"] = "OK"
-            self._errors.pop("alerts", None)
         except Exception as error:
-            self._health["alerts"] = "BLOCKED"
-            self._errors["alerts"] = self._safe_error(error)
+            return self._safe_error(error)
+        return None
 
     def _alert_snapshot(
-        self, now: datetime,
+        self, now: datetime, *, include_retracted: bool = False,
     ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         store = self._alert_store
-        if store is None:
+        if store is None or self._health["alerts"] != "OK":
             return [], []
         try:
-            current = store.current()
+            current = store.current(include_retracted=include_retracted)
         except Exception:
             return [], []
-        items = [item.to_dict() for item in current]
+        items: list[dict[str, object]] = []
         active: list[dict[str, object]] = []
+        enabled_symbols = {
+            item.symbol for item in self._watchlist if item.enabled
+        }
         for item in current:
-            if not item.active_notification:
-                continue
-            if item.scope == "FORMAL" and item.state == SwingState.TRIAL_ENTRY_CANDIDATE:
-                next_date = self._next_trading_date(item.trading_date)
-                if next_date is None or now.date() > next_date:
-                    continue
-            active.append(item.to_dict())
+            currently_active = item.active_notification
+            if item.scope == "FORMAL":
+                formal = self._formal.get(item.symbol)
+                currently_active = bool(
+                    currently_active
+                    and formal is not None
+                    and formal.as_of_trading_date == item.trading_date
+                    and formal.state.value == item.state
+                    and formal.strategy_version == item.strategy_version
+                    and formal.state in _ACTION_STATES
+                )
+                expected = self._last_completed_trading_date(now)
+                if formal is None or formal.as_of_trading_date != expected:
+                    currently_active = False
+                elif formal.state is SwingState.TRIAL_ENTRY_CANDIDATE:
+                    currently_active = bool(
+                        currently_active
+                        and formal.valid_for_trading_date == now.date()
+                        and now.timetz().replace(tzinfo=None) <= time(15, 0)
+                        and self._health["portfolio"] == "OK"
+                    )
+                elif formal.state in {
+                    SwingState.ADD_CANDIDATE,
+                    SwingState.REDUCE_CANDIDATE,
+                } and self._health["portfolio"] != "OK":
+                    currently_active = False
+            else:
+                formal = self._formal.get(item.symbol)
+                currently_active = bool(
+                    currently_active
+                    and item.symbol in enabled_symbols
+                    and item.trading_date == now.date()
+                    and self._health["intraday"] == "REALTIME"
+                    and formal is not None
+                    and formal.strategy_version == item.strategy_version
+                )
+                if (
+                    currently_active
+                    and item.state
+                    == IntradayOverlay.APPROACHING_ENTRY_ZONE.value
+                ):
+                    currently_active = bool(
+                        formal is not None
+                        and formal.state is SwingState.TRIAL_ENTRY_CANDIDATE
+                        and self._execution_status(
+                            formal, now, market_realtime=True,
+                        ) == "READY_TO_EXECUTE"
+                    )
+                elif (
+                    currently_active
+                    and item.state
+                    == IntradayOverlay.PREDEFINED_STOP_TOUCHED.value
+                ):
+                    currently_active = self._has_position(item.symbol)
+            payload = item.to_dict()
+            payload["currently_active"] = currently_active
+            payload["active_notification"] = currently_active
+            items.append(payload)
+            if currently_active:
+                active.append(copy.deepcopy(payload))
         return items, active
 
     # ---- Calendar, history, and validation utilities ------------------
@@ -1335,15 +1816,19 @@ class SwingService:
             value = self.published.get("as_of_trading_date")
         return value if type(value) is str else None
 
-    def _bars_by_symbol(self) -> dict[str, tuple[DailyBar, ...]]:
+    def _bars_by_symbol(
+        self, history: Sequence[DailyBar] | None = None,
+    ) -> dict[str, tuple[DailyBar, ...]]:
         result: dict[str, list[DailyBar]] = {}
-        for bar in self._history:
+        for bar in self._history if history is None else history:
             result.setdefault(bar.symbol, []).append(bar)
         return {symbol: tuple(bars) for symbol, bars in result.items()}
 
-    def _latest_marks(self) -> dict[str, float]:
+    def _latest_marks(
+        self, history: Sequence[DailyBar] | None = None,
+    ) -> dict[str, float]:
         marks: dict[str, float] = {}
-        for symbol, bars in self._bars_by_symbol().items():
+        for symbol, bars in self._bars_by_symbol(history).items():
             if bars:
                 marks[symbol] = bars[-1].close
         return marks
@@ -1393,6 +1878,8 @@ class SwingService:
                 return "PAUSED_PLAN_EXPIRED"
             if now.date() < formal.valid_for_trading_date:
                 return "WAITING_NEXT_TRADING_DAY"
+            if now.timetz().replace(tzinfo=None) > time(15, 0):
+                return "PAUSED_PLAN_EXPIRED"
         if formal.state in _ACTION_STATES:
             return "READY_TO_EXECUTE"
         return "OBSERVE_ONLY"

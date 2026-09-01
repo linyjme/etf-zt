@@ -8,8 +8,10 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from etf_rotation.etf_metadata import EtfMetadataStore
+from etf_rotation.swing_alerts import AlertInput, SwingAlertStore
 from etf_rotation.swing_config import SwingWatchItem
 from etf_rotation.swing_data import DailyBar, DailyHistoryStore
 from etf_rotation.swing_portfolio import PortfolioLedger, TradeInput
@@ -110,6 +112,8 @@ class SwingServiceTests(unittest.TestCase):
         intraday_provider: object | None = None,
         intraday_points_provider: object | None = None,
         event_limit: int = 4,
+        clock: object | None = None,
+        refresh_interval: float = 60.0,
     ) -> SwingService:
         return SwingService(
             self.paths,
@@ -131,9 +135,53 @@ class SwingServiceTests(unittest.TestCase):
                 if intraday_points_provider is not None
                 else lambda _symbol: {"upserts": []}
             ),
-            clock=lambda: datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI),
+            clock=(
+                clock if clock is not None
+                else lambda: datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI)
+            ),
+            refresh_interval=refresh_interval,
             event_limit=event_limit,
         )
+
+    @staticmethod
+    def full_day_points(
+        bar: DailyBar,
+        *,
+        mismatched_open: bool = False,
+    ) -> dict[str, object]:
+        timestamps: list[datetime] = []
+        current = datetime.combine(
+            bar.trading_date, datetime.min.time(), SHANGHAI,
+        ).replace(hour=9, minute=30)
+        morning_end = current.replace(hour=11, minute=30)
+        while current <= morning_end:
+            timestamps.append(current)
+            current += timedelta(minutes=1)
+        current = current.replace(hour=13, minute=1)
+        afternoon_end = current.replace(hour=15, minute=0)
+        while current <= afternoon_end:
+            timestamps.append(current)
+            current += timedelta(minutes=1)
+        self_bar = bar
+        points: list[dict[str, object]] = []
+        for index, timestamp in enumerate(timestamps):
+            price = self_bar.close
+            high = self_bar.high if index == 1 else price
+            low = self_bar.low if index == 2 else price
+            points.append({
+                "schema_version": 3,
+                "trading_date": self_bar.trading_date.isoformat(),
+                "timestamp": timestamp.isoformat(),
+                "is_complete": True,
+                "open": (
+                    1.0 if index == 0 and mismatched_open
+                    else self_bar.open if index == 0 else price
+                ),
+                "high": max(high, price),
+                "low": min(low, price),
+                "price": price,
+            })
+        return {"upserts": points}
 
     def test_bootstrap_reads_history_without_collecting_or_writing(self) -> None:
         before = self.paths.daily_history.read_bytes()
@@ -192,12 +240,9 @@ class SwingServiceTests(unittest.TestCase):
         self.assertEqual(realtime["execution_status"], "PAUSED_DAILY_DATA")
 
     def test_available_minute_mismatch_blocks_entire_batch(self) -> None:
+        target = self.final_bars[-1]
         def points(_symbol: str) -> dict[str, object]:
-            return {"upserts": [{
-                "trading_date": "2026-09-01", "is_complete": True,
-                "timestamp": "2026-09-01T15:00:00+08:00",
-                "open": 1.0, "high": 1.0, "low": 1.0, "price": 1.0,
-            }]}
+            return self.full_day_points(target, mismatched_open=True)
 
         service = self.make_service(
             collector=StaticDailyCollector(self.final_bars),
@@ -209,6 +254,23 @@ class SwingServiceTests(unittest.TestCase):
         ))
         self.assertEqual(self.paths.daily_history.read_bytes(), before)
         self.assertEqual(service.snapshot()["health"]["daily"], "CROSSCHECK_FAILED")
+
+    def test_partial_or_implicitly_complete_minutes_are_unavailable_not_mismatch(self) -> None:
+        target = self.final_bars[-1]
+        partial = self.full_day_points(target, mismatched_open=True)
+        partial["upserts"] = partial["upserts"][:-1]
+        partial["upserts"][0].pop("is_complete")
+        service = self.make_service(
+            collector=StaticDailyCollector(self.final_bars),
+            intraday_points_provider=lambda _symbol: partial,
+        )
+        self.assertTrue(service.refresh_once(
+            datetime(2026, 9, 1, 15, 10, tzinfo=SHANGHAI),
+        ))
+        self.assertEqual(
+            service.snapshot()["health"]["minute_crosscheck"],
+            "MINUTE_CROSSCHECK_UNAVAILABLE",
+        )
 
     def test_duplicate_non_target_collector_key_blocks_batch_before_commit(self) -> None:
         duplicated = self.final_bars + (self.final_bars[0],)
@@ -288,6 +350,16 @@ class SwingServiceTests(unittest.TestCase):
             snapshot["items"][0]["intraday_overlay"],
             "APPROACHING_ENTRY_ZONE",
         )
+
+    def test_trial_overlay_is_suppressed_after_valid_session_close(self) -> None:
+        service = self.make_service(clock=lambda: datetime(
+            2026, 9, 1, 15, 1, tzinfo=SHANGHAI,
+        ))
+        item = service.refresh_intraday()["items"][0]
+        self.assertEqual(item["formal_state"], "TRIAL_ENTRY_CANDIDATE")
+        self.assertIsNone(item["intraday_overlay"])
+        self.assertNotEqual(item["execution_status"], "READY_TO_EXECUTE")
+        self.assertFalse(service.snapshot()["active_alerts"])
 
     def test_delayed_intraday_quote_is_visible_but_cannot_create_overlay(self) -> None:
         service = self.make_service(intraday_provider=lambda: {
@@ -383,7 +455,6 @@ class SwingServiceTests(unittest.TestCase):
             ending_on=date(2026, 8, 31),
         ))
         old = bars[0]
-        scale = old.close / old.adjusted_close
         payload = old.to_dict()
         payload.update({
             "adjusted_open": old.adjusted_open * 10.0,
@@ -411,6 +482,45 @@ class SwingServiceTests(unittest.TestCase):
         state = self.make_service().snapshot()["items"][0]["formal_state"]
         self.assertNotEqual(state, "EXIT_CANDIDATE")
 
+    def test_initial_position_lifecycle_starts_at_initialization_session(self) -> None:
+        bars = list(retime_daily_bars(
+            swing_strategy_bars(80, pattern="rising"),
+            ending_on=date(2026, 9, 4),
+        ))
+        old = bars[0]
+        payload = old.to_dict()
+        payload.update({
+            "adjusted_open": old.adjusted_open * 10.0,
+            "adjusted_high": old.adjusted_high * 10.0,
+            "adjusted_low": old.adjusted_low * 10.0,
+            "adjusted_close": old.adjusted_close * 10.0,
+        })
+        bars[0] = DailyBar.from_mapping(payload)
+        self.paths.daily_history.unlink()
+        DailyHistoryStore(
+            self.paths.daily_history, self.metadata, frozenset(),
+        ).upsert(tuple(bars))
+        self.paths.trades.unlink()
+        PortfolioLedger(
+            self.paths.trades,
+            self.metadata,
+            clock=lambda: datetime(2026, 9, 6, 16, tzinfo=SHANGHAI),
+            closed_dates=frozenset(),
+        ).initialize(
+            "existing", 1_000.0, "existing-init",
+            initial_positions={
+                "510300": {
+                    "shares": 100,
+                    "average_cost": bars[-1].close,
+                    "planned_risk_per_share": 2.0,
+                },
+            },
+        )
+        state = self.make_service(clock=lambda: datetime(
+            2026, 9, 7, 10, tzinfo=SHANGHAI,
+        )).snapshot()["items"][0]["formal_state"]
+        self.assertNotEqual(state, "EXIT_CANDIDATE")
+
     def test_trade_rebuilds_current_session_projection_before_publish(self) -> None:
         service = self.make_service()
         event = service.record_trade(TradeInput(
@@ -424,6 +534,237 @@ class SwingServiceTests(unittest.TestCase):
         self.assertEqual(snapshot["portfolio"]["as_of_trading_date"], "2026-09-01")
         self.assertEqual(snapshot["portfolio"]["positions"]["510300"]["shares"], 100)
         self.assertEqual(snapshot["revision"], 1)
+
+    def test_stop_exit_cooldown_survives_restart_but_ordinary_exit_does_not(self) -> None:
+        service = self.make_service()
+        service.record_trade(TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        ), "cooldown-buy")
+        service.clock = lambda: datetime(2026, 9, 2, 10, tzinfo=SHANGHAI)
+        service.record_trade(TradeInput(
+            "510300", "SELL", 100, 98.0, 0.0,
+            datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+            exit_reason="STOP_EXIT",
+        ), "cooldown-stop")
+        stop_log = self.paths.trades.read_bytes()
+        restarted = self.make_service(clock=lambda: datetime(
+            2026, 9, 3, 10, tzinfo=SHANGHAI,
+        ))
+        self.assertEqual(
+            restarted.snapshot()["items"][0]["formal_state"], "COOLDOWN",
+        )
+
+        ordinary_path = Path(self.temporary.name) / "ordinary.jsonl"
+        ordinary = PortfolioLedger(
+            ordinary_path, self.metadata,
+            clock=lambda: datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+            closed_dates=frozenset(),
+        )
+        ordinary.initialize("ordinary", 100_000.0, "ordinary-init")
+        ordinary.record_trade(TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+        ), "ordinary-buy")
+        ordinary.record_trade(TradeInput(
+            "510300", "SELL", 100, 101.0, 0.0,
+            datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+        ), "ordinary-sell")
+        self.paths.trades.write_bytes(ordinary_path.read_bytes())
+        not_stopped = self.make_service(clock=lambda: datetime(
+            2026, 9, 3, 10, tzinfo=SHANGHAI,
+        ))
+        self.assertNotEqual(
+            not_stopped.snapshot()["items"][0]["formal_state"], "COOLDOWN",
+        )
+
+        later_bars = retime_daily_bars(
+            swing_strategy_bars(80, pattern="rising"),
+            ending_on=date(2026, 9, 10),
+        )
+        self.paths.daily_history.unlink()
+        DailyHistoryStore(
+            self.paths.daily_history, self.metadata, frozenset(),
+        ).upsert(later_bars)
+        self.paths.trades.write_bytes(stop_log)
+        released = self.make_service(clock=lambda: datetime(
+            2026, 9, 11, 10, tzinfo=SHANGHAI,
+        ))
+        self.assertNotEqual(
+            released.snapshot()["items"][0]["formal_state"], "COOLDOWN",
+        )
+
+        partial_path = Path(self.temporary.name) / "partial-stop.jsonl"
+        partial = PortfolioLedger(
+            partial_path, self.metadata,
+            clock=lambda: datetime(2026, 9, 3, 10, tzinfo=SHANGHAI),
+            closed_dates=frozenset(),
+        )
+        partial.initialize("partial", 100_000.0, "partial-init")
+        partial.record_trade(TradeInput(
+            "510300", "BUY", 200, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+        ), "partial-buy")
+        partial.record_trade(TradeInput(
+            "510300", "SELL", 100, 98.0, 0.0,
+            datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+            exit_reason="STOP_EXIT",
+        ), "partial-stop")
+        partial.record_trade(TradeInput(
+            "510300", "SELL", 100, 101.0, 0.0,
+            datetime(2026, 9, 3, 10, tzinfo=SHANGHAI),
+        ), "partial-ordinary-close")
+        self.paths.trades.write_bytes(partial_path.read_bytes())
+        partial_restart = self.make_service(clock=lambda: datetime(
+            2026, 9, 11, 10, tzinfo=SHANGHAI,
+        ))
+        self.assertNotEqual(
+            partial_restart.snapshot()["items"][0]["formal_state"], "COOLDOWN",
+        )
+
+    def test_formal_recompute_failure_cannot_commit_or_publish_partial_batch(self) -> None:
+        service = self.make_service(collector=StaticDailyCollector(self.final_bars))
+        before_file = self.paths.daily_history.read_bytes()
+        before_snapshot = service.snapshot()
+        with patch(
+            "etf_rotation.swing_service.evaluate_swing",
+            side_effect=RuntimeError("one symbol failed"),
+        ):
+            self.assertFalse(service.refresh_once(datetime(
+                2026, 9, 1, 15, 10, tzinfo=SHANGHAI,
+            )))
+        self.assertEqual(self.paths.daily_history.read_bytes(), before_file)
+        after = service.snapshot()
+        self.assertEqual(after["items"], before_snapshot["items"])
+
+    def test_active_formal_alert_must_match_current_decision_identity(self) -> None:
+        SwingAlertStore(self.paths.alerts).publish_formal(AlertInput(
+            trading_date=date(2026, 8, 30),
+            symbol="510300",
+            state="ADD_CANDIDATE",
+            strategy_version="SWING_V1",
+            level="YELLOW",
+            label="stale add",
+            evidence={},
+        ))
+        service = self.make_service()
+        self.assertEqual(service.snapshot()["active_alerts"], [])
+        stale = next(
+            item for item in service.alerts()["items"]
+            if item["state"] == "ADD_CANDIDATE"
+        )
+        self.assertFalse(stale["active_notification"])
+
+    def test_overlay_sync_retracts_by_full_lifecycle_without_churning_peer(self) -> None:
+        service = self.make_service()
+        store = SwingAlertStore(self.paths.alerts)
+        stale = store.publish_overlay(AlertInput(
+            trading_date=date(2026, 8, 31),
+            symbol="510300",
+            state="APPROACHING_ENTRY_ZONE",
+            strategy_version="SWING_V1",
+            level="BLUE",
+            label="stale",
+            evidence={},
+        ))
+        current_input = AlertInput(
+            trading_date=date(2026, 9, 1),
+            symbol="510300",
+            state="APPROACHING_ENTRY_ZONE",
+            strategy_version="SWING_V1",
+            level="BLUE",
+            label="current",
+            evidence={},
+        )
+        current = store.publish_overlay(current_input)
+        service._sync_overlay_alerts((current_input,))
+        projected = {item.alert_id: item for item in store.current(
+            include_retracted=True,
+        )}
+        self.assertTrue(projected[stale.alert_id].retracted)
+        self.assertFalse(projected[current.alert_id].retracted)
+        self.assertEqual(
+            projected[current.alert_id].generation, current.generation,
+        )
+
+    def test_watchlist_update_is_atomic_validated_and_published(self) -> None:
+        service = self.make_service()
+        service.refresh_intraday()
+        self.assertTrue(service.snapshot()["active_alerts"])
+        before_revision = service.snapshot()["revision"]
+        result = service.update_watchlist("510300", False)
+        self.assertFalse(result["items"][0]["enabled"])
+        self.assertEqual(service.snapshot()["items"], [])
+        self.assertEqual(service.snapshot()["active_alerts"], [])
+        self.assertEqual(service.snapshot()["revision"], before_revision + 1)
+        persisted = json.loads(self.paths.watchlist.read_text(encoding="utf-8"))
+        self.assertEqual(persisted, {
+            "schema_version": 1,
+            "items": [{"symbol": "510300", "enabled": False}],
+        })
+        for symbol, enabled in (("999999", True), ("510300", 1)):
+            with self.subTest(symbol=symbol, enabled=enabled):
+                before = self.paths.watchlist.read_bytes()
+                with self.assertRaises(Exception):
+                    service.update_watchlist(symbol, enabled)
+                self.assertEqual(self.paths.watchlist.read_bytes(), before)
+
+        before = self.paths.watchlist.read_bytes()
+        before_snapshot = service.snapshot()
+        with patch(
+            "etf_rotation.swing_service.os.replace",
+            side_effect=OSError("replace failed"),
+        ):
+            with self.assertRaises(Exception):
+                service.update_watchlist("510300", True)
+        self.assertEqual(self.paths.watchlist.read_bytes(), before)
+        self.assertEqual(service.snapshot(), before_snapshot)
+
+    def test_watchlist_update_can_add_a_metadata_verified_symbol(self) -> None:
+        self.paths.metadata.write_text(json.dumps(
+            metadata_fixture(("510300", "159915")),
+        ), encoding="utf-8")
+        service = self.make_service()
+        result = service.update_watchlist("159915", True)
+        self.assertEqual(result["items"], [
+            {"symbol": "510300", "enabled": True},
+            {"symbol": "159915", "enabled": True},
+        ])
+        self.assertEqual(
+            [item["symbol"] for item in service.snapshot()["items"]],
+            ["510300", "159915"],
+        )
+
+    def test_blocking_producer_reference_survives_stop_timeout(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        class BlockingCollector:
+            def collect(self, *args: object, **kwargs: object) -> tuple[DailyBar, ...]:
+                entered.set()
+                release.wait(5.0)
+                return self.final  # type: ignore[attr-defined]
+
+        collector = BlockingCollector()
+        collector.final = self.final_bars
+        service = self.make_service(
+            collector=collector,
+            clock=lambda: datetime(2026, 9, 1, 15, 10, tzinfo=SHANGHAI),
+            refresh_interval=0.01,
+        )
+        service.start_refresh()
+        self.assertTrue(entered.wait(1.0))
+        thread = service._refresh_thread
+        service.stop_refresh()
+        self.assertIs(service._refresh_thread, thread)
+        self.assertTrue(thread.is_alive())
+        service.start_refresh()
+        self.assertIs(service._refresh_thread, thread)
+        release.set()
+        thread.join(1.0)
+        service.stop_refresh()
+        self.assertFalse(thread.is_alive())
 
 
 if __name__ == "__main__":

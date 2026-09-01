@@ -339,6 +339,31 @@ class SwingAlertStore:
     def ignore(self, alert_id: str, idempotency_key: str) -> AlertProjection:
         return self._transition(alert_id, AlertEventType.IGNORED, idempotency_key)
 
+    def retract_overlay(self, alert_id: str, reason: str) -> AlertProjection:
+        """Retract exactly one intraday lifecycle without touching its peers."""
+        normalized_id = _alert_id(alert_id)
+        normalized_reason = _nonblank(reason, "retraction reason")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with _SiblingFileLock(self.path, shared=False):
+            events = self._load_events_unlocked()
+            projections = self._project(events)
+            target = projections.get(normalized_id)
+            if target is None:
+                raise AlertStoreError("alert does not exist")
+            if target.scope != "INTRADAY":
+                raise AlertStoreError("formal alert cannot be retracted as overlay")
+            if target.retracted:
+                return target
+            event = self._event(
+                AlertEventType.RETRACTED,
+                None,
+                {"alert_id": normalized_id, "reason": normalized_reason},
+            )
+            updated = events + (event,)
+            projected = self._validate_and_project(updated)
+            self._atomic_replace_events(updated)
+            return projected[normalized_id]
+
     def retract_overlays(self, reason: str) -> tuple[AlertProjection, ...]:
         normalized_reason = _nonblank(reason, "retraction reason")
         self.path.parent.mkdir(parents=True, exist_ok=True)
