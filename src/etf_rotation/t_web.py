@@ -228,21 +228,18 @@ class MonitorApplication:
     ) -> dict[str, Any] | None:
         deadline = time.monotonic() + max(0.0, timeout)
         selected: dict[str, Any] | None = None
-        reset_current: dict[str, Any] | None = None
-        reset_now: datetime | None = None
-        reset_revision: int | None = None
         with self._publish_condition:
-            while selected is None and reset_current is None:
+            while selected is None:
                 now = self.clock()
                 current = copy.deepcopy(self._published)
                 current_revision = int(current.get("revision", 0))
                 events = tuple(self._revision_events)
                 if not self._published_date_matches(current, now):
-                    virtual_revision = current_revision + 1
-                    if after_revision != virtual_revision:
-                        reset_current = current
-                        reset_now = now
-                        reset_revision = virtual_revision
+                    current_view = self._empty_current_date_view(current, now)
+                    self._publish_locked(
+                        current_view, {}, force_reset_event=True,
+                    )
+                    selected = copy.deepcopy(self._revision_events[-1])
                 elif after_revision > current_revision:
                     selected = self._reset_summary(current)
                 elif (
@@ -262,13 +259,9 @@ class MonitorApplication:
                     selected is not None
                     and not self._revision_payload_matches_date(selected, now)
                 ):
-                    selected = None
-                    reset_current = current
-                    reset_now = now
-                    reset_revision = current_revision
+                    selected = self._reset_summary(current)
                 if (
                     selected is not None
-                    or reset_current is not None
                     or self._stop_event.is_set()
                 ):
                     break
@@ -276,11 +269,6 @@ class MonitorApplication:
                 if remaining <= 0:
                     break
                 self._publish_condition.wait(remaining)
-        if reset_current is not None and reset_now is not None:
-            current_view, _ = self._current_date_view(reset_current, reset_now)
-            result = self._reset_summary(current_view)
-            result["revision"] = reset_revision
-            return result
         return copy.deepcopy(selected) if selected is not None else None
 
     def refresh_once(self) -> bool:
@@ -676,8 +664,13 @@ class MonitorApplication:
                 if self._published_date_matches(previous, now):
                     return False
                 current = self._empty_current_date_view(previous, now)
-                self._publish(current, {})
-                return True
+                with self._publish_condition:
+                    if self._published_date_matches(self._published, now):
+                        return False
+                    self._publish_locked(
+                        current, {}, force_reset_event=True,
+                    )
+                    return True
 
     @staticmethod
     def _summary_snapshot(published: Mapping[str, Any]) -> dict[str, Any]:
@@ -815,6 +808,40 @@ class MonitorApplication:
         })
         return event
 
+    def _publish_locked(
+        self,
+        published: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        *,
+        error: str | None = None,
+        persistence_errors: list[str] | None = None,
+        increment_revision: bool = True,
+        force_reset_event: bool = False,
+    ) -> None:
+        if increment_revision:
+            self._revision += 1
+        previous = self._published
+        result = copy.deepcopy(dict(published))
+        result["revision"] = self._revision
+        result["source"] = copy.deepcopy(payload.get("source"))
+        result["refresh_error"] = error
+        result["persistence_errors"] = list(persistence_errors or [])
+        if persistence_errors:
+            result["errors"] = [
+                *list(result.get("errors") or []), *persistence_errors,
+            ]
+        result["last_refresh_at"] = payload.get("collected_at")
+        self.refresh_error = error
+        self.last_refresh_at = result["last_refresh_at"]
+        self._published = result
+        event = (
+            self._reset_summary(result)
+            if force_reset_event
+            else self._revision_delta(previous, result)
+        )
+        self._revision_events.append(event)
+        self._publish_condition.notify_all()
+
     def _publish(
         self,
         published: Mapping[str, Any],
@@ -823,26 +850,17 @@ class MonitorApplication:
         error: str | None = None,
         persistence_errors: list[str] | None = None,
         increment_revision: bool = True,
+        force_reset_event: bool = False,
     ) -> None:
         with self._publish_condition:
-            if increment_revision:
-                self._revision += 1
-            previous = self._published
-            result = copy.deepcopy(dict(published))
-            result["revision"] = self._revision
-            result["source"] = copy.deepcopy(payload.get("source"))
-            result["refresh_error"] = error
-            result["persistence_errors"] = list(persistence_errors or [])
-            if persistence_errors:
-                result["errors"] = [
-                    *list(result.get("errors") or []), *persistence_errors,
-                ]
-            result["last_refresh_at"] = payload.get("collected_at")
-            self.refresh_error = error
-            self.last_refresh_at = result["last_refresh_at"]
-            self._published = result
-            self._revision_events.append(self._revision_delta(previous, result))
-            self._publish_condition.notify_all()
+            self._publish_locked(
+                published,
+                payload,
+                error=error,
+                persistence_errors=persistence_errors,
+                increment_revision=increment_revision,
+                force_reset_event=force_reset_event,
+            )
 
     def _publish_outage(
         self,

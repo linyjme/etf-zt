@@ -1533,6 +1533,145 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(reset["items"][0]["timestamp"])
         self.assertIsNone(app.wait_for_revision(2, timeout=0.01))
 
+    def test_sse_rollover_reserves_revision_before_outage_and_recovery(self) -> None:
+        old_payload = quote_payload_for_date("2026-08-28")
+        clock = MutableClock("2026-08-28T10:02:00+08:00")
+        collector = StaticCollector(old_payload)
+        app = self.make_runtime_fixture(collector)
+        app.clock = clock
+        app._bootstrap(increment_revision=False)
+        self.assertEqual(app._revision, 0)
+        clock.current = datetime.fromisoformat("2026-08-31T10:02:00+08:00")
+
+        rollover = app.wait_for_revision(0, timeout=0.01)
+
+        self.assertEqual(rollover["event"], "reset")
+        self.assertEqual(rollover["revision"], 1)
+        self.assertEqual(app._revision, 1)
+        self.assertEqual(app._published["generated_at"], clock.current.isoformat())
+
+        app._publish_outage("断流", now=clock.current)
+        outage = app.wait_for_revision(rollover["revision"], timeout=0.01)
+        self.assertEqual(outage["revision"], 2)
+        self.assertEqual(outage["refresh_error"], "断流")
+
+        collector.payload = quote_payload_for_date("2026-08-31")
+        self.assertTrue(app.refresh_once())
+        recovery = app.wait_for_revision(outage["revision"], timeout=0.01)
+        self.assertEqual(recovery["revision"], 3)
+        self.assertIsNone(recovery["refresh_error"])
+        self.assertEqual(
+            [rollover["revision"], outage["revision"], recovery["revision"]],
+            [1, 2, 3],
+        )
+
+    def test_collector_free_sse_rollover_reserves_one_revision_per_date(self) -> None:
+        payload = quote_payload_for_date("2026-08-28")
+        self.paths.quotes.write_text(json.dumps(payload), encoding="utf-8")
+        clock = MutableClock("2026-08-28T10:02:00+08:00")
+        app = self.make_runtime_fixture(collector=None)
+        app.clock = clock
+        app._bootstrap(increment_revision=False)
+        cursor = app._revision
+        persisted_before = {
+            path: path.read_bytes()
+            for path in (
+                self.paths.quotes, self.paths.history, self.paths.alerts,
+            )
+        }
+
+        clock.current = datetime.fromisoformat("2026-08-31T09:00:00+08:00")
+        monday = app.wait_for_revision(cursor, timeout=0.01)
+        self.assertEqual(monday["revision"], cursor + 1)
+        self.assertEqual(app._revision, monday["revision"])
+        self.assertIsNone(
+            app.wait_for_revision(monday["revision"], timeout=0.01),
+        )
+
+        clock.current = datetime.fromisoformat("2026-09-01T09:00:00+08:00")
+        tuesday = app.wait_for_revision(monday["revision"], timeout=0.01)
+        self.assertEqual(tuesday["revision"], monday["revision"] + 1)
+        self.assertEqual(app._revision, tuesday["revision"])
+        self.assertEqual(tuesday["generated_at"], clock.current.isoformat())
+        self.assertIsNone(
+            app.wait_for_revision(tuesday["revision"], timeout=0.01),
+        )
+        self.assertEqual(
+            {path: path.read_bytes() for path in persisted_before},
+            persisted_before,
+        )
+
+    def test_concurrent_sse_rollover_clients_share_one_reserved_revision(self) -> None:
+        payload = quote_payload_for_date("2026-08-28")
+        self.paths.quotes.write_text(json.dumps(payload), encoding="utf-8")
+        clock = MutableClock("2026-08-28T10:02:00+08:00")
+        app = self.make_runtime_fixture(StaticCollector(payload))
+        app.clock = clock
+        app._bootstrap(increment_revision=False)
+        clock.current = datetime.fromisoformat("2026-08-31T09:00:00+08:00")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(app.wait_for_revision, 0, 0.1)
+                for _ in range(2)
+            ]
+            results = [future.result(timeout=1) for future in futures]
+
+        self.assertEqual([result["revision"] for result in results], [1, 1])
+        self.assertTrue(all(result["event"] == "reset" for result in results))
+        self.assertEqual(app._revision, 1)
+        self.assertEqual(len([
+            event for event in app._revision_events
+            if event.get("event") == "reset" and event.get("revision") == 1
+        ]), 1)
+
+    def test_producer_and_sse_race_publish_only_one_rollover_reset(self) -> None:
+        payload = quote_payload_for_date("2026-08-28")
+        clock = MutableClock("2026-08-28T10:02:00+08:00")
+        app = self.make_runtime_fixture(StaticCollector(payload))
+        app.clock = clock
+        app._bootstrap(increment_revision=False)
+        clock.current = datetime.fromisoformat("2026-08-31T09:00:00+08:00")
+        producer_building = threading.Event()
+        allow_producer = threading.Event()
+        original_empty_view = app._empty_current_date_view
+
+        def interleaved_empty_view(
+            published: object, now: datetime,
+        ) -> dict[str, object]:
+            if threading.current_thread().name == "rollover-producer":
+                producer_building.set()
+                self.assertTrue(allow_producer.wait(timeout=1))
+            return original_empty_view(published, now)
+
+        producer_result: list[bool] = []
+
+        def publish_from_producer() -> None:
+            producer_result.append(
+                app._publish_cross_date_reset(clock.current, generation=None),
+            )
+
+        with patch.object(
+            app, "_empty_current_date_view", side_effect=interleaved_empty_view,
+        ):
+            producer = threading.Thread(
+                target=publish_from_producer, name="rollover-producer",
+            )
+            producer.start()
+            self.assertTrue(producer_building.wait(timeout=1))
+            sse_reset = app.wait_for_revision(0, timeout=0.1)
+            allow_producer.set()
+            producer.join(timeout=1)
+
+        self.assertFalse(producer.is_alive())
+        self.assertEqual(producer_result, [False])
+        self.assertEqual(sse_reset["revision"], 1)
+        self.assertEqual(app._revision, 1)
+        self.assertEqual(len([
+            event for event in app._revision_events
+            if event.get("event") == "reset" and event.get("revision") == 1
+        ]), 1)
+
     def test_previous_day_wait_resets_ahead_evicted_and_collector_free_cursors(self) -> None:
         cases = ("ahead", "evicted", "collector-free")
         for case in cases:

@@ -100,9 +100,9 @@ Task 6 的真实主机验证纠正了最初“本次不修改/不使用 fallback
 
 ### 6. 跨自然日双层防线
 
-后台生产者每轮先比较已发布 `generated_at` 与当前上海自然日，即使当前会话不允许采集，也只发布一次空的当日权威 reset；该 reset 不写正式行情文件或历史。`/api/snapshot` 与 `/api/quotes` 另有无副作用读防线，因此生产者未启动或尚未轮询时也不会泄漏昨日价格、时间、分钟点和派生指标。读防线不得修改 revision；后台 reset 在同一 generation 内只增加一次 revision。
+后台生产者每轮先比较已发布 `generated_at` 与当前上海自然日，即使当前会话不允许采集，也只发布一次空的当日权威 reset；该 reset 不写正式行情文件、历史或提醒。`/api/snapshot` 与 `/api/quotes` 另有无副作用读防线，因此生产者未启动或尚未轮询时也不会泄漏昨日价格、时间、分钟点和派生指标。普通 GET 读防线不得修改 revision；后台 reset 在同一 generation 内只增加一次 revision。
 
-SSE revision 队列也必须经过同一防线：昨日 retained delta、cursor ahead/evicted 和无生产者跨日场景一律返回空的当前日 reset。读路径可使用稳定的虚拟下一 revision 作为连接 cursor；同一 cursor 再次等待时只能 heartbeat，不能无限重发相同 reset。午休/收盘补采失败仍执行 60/120/240/300 秒退避，但相同日期、相同会话阶段、无错误的语义快照不重复增加 revision。
+SSE revision 队列也必须经过同一防线：昨日 retained delta、cursor ahead/evicted 和无生产者跨日场景一律返回空的当前日 reset。若生产者尚未先完成跨日 reset，SSE 握手必须在发布锁内原子提交一次纯内存权威 reset，正式占用并记录新的 revision 后再返回；后续 outage 或正常发布只能使用更大的 revision。多客户端并发只共享这一次 reset，producer 与 SSE 交错时也必须在最终发布锁内复检当日状态并只保留一个 reset；同一日期复用其 cursor 只能 heartbeat，不能无限重发；连续自然日则各占用一个不同 revision。该握手不写行情、历史或提醒文件，普通 `/api/snapshot` 与 `/api/quotes` GET 仍保持无副作用。午休/收盘补采失败仍执行 60/120/240/300 秒退避，但相同日期、相同会话阶段、无错误的语义快照不重复增加 revision。
 
 每轮生产者先捕获唯一的决策时间，并把它同时传给跨日判断和 `collection_due(now)`；`_has_complete_current_day` 直接读取同一锁下的内部 published 副本，不调用会再次读取时钟的公开 snapshot。采集完成时间仍单独用于分钟边界调度和失败归类。
 
