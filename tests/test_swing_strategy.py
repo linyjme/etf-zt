@@ -91,11 +91,11 @@ class SwingStrategyTests(unittest.TestCase):
         values: dict[str, object] = {
             "shares": 10_000,
             "sellable_shares": 10_000,
-            "average_cost": 100.0,
-            "initial_risk_per_share": 2.0,
+            "average_cost_adjusted": 100.0,
+            "initial_risk_per_share_adjusted": 2.0,
             "entry_trading_date": date(2026, 2, 2),
             "highest_completed_adjusted_close": 106.0,
-            "hard_stop": 94.0,
+            "hard_stop_adjusted": 94.0,
             "first_reduction_completed": False,
         }
         values.update(overrides)
@@ -422,8 +422,8 @@ class SwingStrategyTests(unittest.TestCase):
             self.with_position(self.position(
                 shares=200,
                 sellable_shares=200,
-                average_cost=106.0,
-                initial_risk_per_share=0.2,
+                average_cost_adjusted=106.0,
+                initial_risk_per_share_adjusted=0.2,
             )),
         )
         self.assertEqual(exact.state, SwingState.REDUCE_CANDIDATE)
@@ -434,8 +434,8 @@ class SwingStrategyTests(unittest.TestCase):
             self.with_position(self.position(
                 shares=199,
                 sellable_shares=199,
-                average_cost=106.0,
-                initial_risk_per_share=0.2,
+                average_cost_adjusted=106.0,
+                initial_risk_per_share_adjusted=0.2,
             )),
         )
         self.assertEqual(below.state, SwingState.HOLDING)
@@ -449,10 +449,10 @@ class SwingStrategyTests(unittest.TestCase):
             self.with_position(self.position(
                 shares=1_000,
                 sellable_shares=199,
-                average_cost=100.0,
-                initial_risk_per_share=2.0,
+                average_cost_adjusted=100.0,
+                initial_risk_per_share_adjusted=2.0,
                 highest_completed_adjusted_close=bars[-1].adjusted_close,
-                hard_stop=100.0,
+                hard_stop_adjusted=100.0,
                 first_reduction_completed=False,
             )),
         )
@@ -469,7 +469,7 @@ class SwingStrategyTests(unittest.TestCase):
             lambda: PortfolioContext.empty(float("nan")),
             lambda: PortfolioContext.empty(1_000.0, lot_size=True),
             lambda: self.position(shares=True),
-            lambda: self.position(average_cost=float("inf")),
+            lambda: self.position(average_cost_adjusted=float("inf")),
             lambda: self.position(sellable_shares=10_001),
         )
         for build in invalid:
@@ -482,8 +482,8 @@ class SwingStrategyTests(unittest.TestCase):
             lambda: PortfolioContext.empty(HostileInt(1_000)),
             lambda: PortfolioContext.empty(HostileFloat(1_000.0)),
             lambda: PortfolioContext.empty(10**400),
-            lambda: self.position(average_cost=HostileInt(100)),
-            lambda: self.position(hard_stop=HostileFloat(90.0)),
+            lambda: self.position(average_cost_adjusted=HostileInt(100)),
+            lambda: self.position(hard_stop_adjusted=HostileFloat(90.0)),
             lambda: self.position(highest_completed_adjusted_close=10**400),
             lambda: self.position(shares=HostileInt(1_000)),
             lambda: PortfolioContext.empty(1_000.0, lot_size=HostileInt(100)),
@@ -501,26 +501,33 @@ class SwingStrategyTests(unittest.TestCase):
             current_planned_risk_amount=5_000,
         )
         position = self.position(
-            average_cost=100,
-            initial_risk_per_share=2,
+            average_cost_adjusted=100,
+            initial_risk_per_share_adjusted=2,
             highest_completed_adjusted_close=105,
-            hard_stop=95,
+            hard_stop_adjusted=95,
         )
         for value in (
             portfolio.equity,
             portfolio.cash,
             portfolio.current_etf_market_value,
             portfolio.current_planned_risk_amount,
-            position.average_cost,
-            position.initial_risk_per_share,
+            position.average_cost_adjusted,
+            position.initial_risk_per_share_adjusted,
             position.highest_completed_adjusted_close,
-            position.hard_stop,
+            position.hard_stop_adjusted,
         ):
             self.assertIs(type(value), float)
 
-    def test_position_context_rejects_ambiguous_legacy_raw_watermark_name(self) -> None:
-        with self.assertRaises(TypeError):
-            self.position(highest_completed_close=106.0)
+    def test_position_context_rejects_all_ambiguous_legacy_raw_anchor_names(self) -> None:
+        for field in (
+            "average_cost",
+            "initial_risk_per_share",
+            "highest_completed_close",
+            "hard_stop",
+        ):
+            with self.subTest(field=field):
+                with self.assertRaises(TypeError):
+                    self.position(**{field: 100.0})
 
     def test_portfolio_context_has_only_required_logical_fields(self) -> None:
         self.assertEqual(
@@ -550,7 +557,10 @@ class SwingStrategyTests(unittest.TestCase):
                     bars,
                     self.config,
                     self.with_position(
-                        self.position(average_cost=100.0, initial_risk_per_share=2.0),
+                        self.position(
+                            average_cost_adjusted=100.0,
+                            initial_risk_per_share_adjusted=2.0,
+                        ),
                         **{field: False},
                     ),
                 )
@@ -564,9 +574,9 @@ class SwingStrategyTests(unittest.TestCase):
                         self.position(
                             shares=1_000,
                             sellable_shares=1_000,
-                            average_cost=100.0,
-                            initial_risk_per_share=5.0,
-                            hard_stop=100.0,
+                            average_cost_adjusted=100.0,
+                            initial_risk_per_share_adjusted=5.0,
+                            hard_stop_adjusted=100.0,
                             first_reduction_completed=True,
                         ),
                         **{field: False},
@@ -582,9 +592,9 @@ class SwingStrategyTests(unittest.TestCase):
             self.with_position(self.position(
                 shares=1_000,
                 sellable_shares=1_000,
-                average_cost=100.0,
-                initial_risk_per_share=5.0,
-                hard_stop=100.0,
+                average_cost_adjusted=100.0,
+                initial_risk_per_share_adjusted=5.0,
+                hard_stop_adjusted=100.0,
                 first_reduction_completed=True,
             )),
         )
@@ -611,9 +621,9 @@ class SwingStrategyTests(unittest.TestCase):
         position = self.position(
             shares=1_000,
             sellable_shares=1_000,
-            average_cost=100.0,
-            initial_risk_per_share=5.0,
-            hard_stop=100.0,
+            average_cost_adjusted=100.0,
+            initial_risk_per_share_adjusted=5.0,
+            hard_stop_adjusted=100.0,
             first_reduction_completed=True,
         )
         baseline_portfolio = self.with_position(position)
@@ -689,7 +699,10 @@ class SwingStrategyTests(unittest.TestCase):
         rising = swing_strategy_bars(pattern="rising")
         holding = evaluate_swing(
             rising, self.config,
-            self.with_position(self.position(average_cost=110.0, hard_stop=90.0)),
+            self.with_position(self.position(
+                average_cost_adjusted=110.0,
+                hard_stop_adjusted=90.0,
+            )),
         )
         self.assertEqual(holding.state, SwingState.HOLDING)
 
@@ -699,9 +712,9 @@ class SwingStrategyTests(unittest.TestCase):
             self.with_position(self.position(
                 shares=1_000,
                 sellable_shares=1_000,
-                average_cost=100.0,
-                initial_risk_per_share=5.0,
-                hard_stop=100.0,
+                average_cost_adjusted=100.0,
+                initial_risk_per_share_adjusted=5.0,
+                hard_stop_adjusted=100.0,
                 first_reduction_completed=True,
             )),
         )
@@ -711,19 +724,28 @@ class SwingStrategyTests(unittest.TestCase):
 
         no_loss_add = evaluate_swing(
             breakout, self.config,
-            self.with_position(self.position(average_cost=200.0, hard_stop=200.0)),
+            self.with_position(self.position(
+                average_cost_adjusted=200.0,
+                hard_stop_adjusted=200.0,
+            )),
         )
         self.assertNotEqual(no_loss_add.state, SwingState.ADD_CANDIDATE)
 
         reduce = evaluate_swing(
             breakout, self.config,
-            self.with_position(self.position(average_cost=100.0, initial_risk_per_share=2.0)),
+            self.with_position(self.position(
+                average_cost_adjusted=100.0,
+                initial_risk_per_share_adjusted=2.0,
+            )),
         )
         self.assertEqual(reduce.state, SwingState.REDUCE_CANDIDATE)
         self.assertEqual(reduce.planned_shares, 5_000)
         reduced_once = evaluate_swing(
             breakout, self.config,
-            self.with_position(self.position(first_reduction_completed=True, hard_stop=90.0)),
+            self.with_position(self.position(
+                first_reduction_completed=True,
+                hard_stop_adjusted=90.0,
+            )),
         )
         self.assertNotEqual(reduced_once.state, SwingState.REDUCE_CANDIDATE)
         too_small = evaluate_swing(
@@ -745,11 +767,11 @@ class SwingStrategyTests(unittest.TestCase):
                 self.with_position(self.position(
                     shares=200,
                     sellable_shares=200,
-                    average_cost=average_cost,
-                    initial_risk_per_share=initial_risk,
+                    average_cost_adjusted=average_cost,
+                    initial_risk_per_share_adjusted=initial_risk,
                     entry_trading_date=bars[-1].trading_date,
                     highest_completed_adjusted_close=latest,
-                    hard_stop=1.0,
+                    hard_stop_adjusted=1.0,
                 )),
             )
 
@@ -783,13 +805,13 @@ class SwingStrategyTests(unittest.TestCase):
                 self.with_position(self.position(
                     shares=1_000,
                     sellable_shares=1_000,
-                    average_cost=average_cost,
-                    initial_risk_per_share=risk,
+                    average_cost_adjusted=average_cost,
+                    initial_risk_per_share_adjusted=risk,
                     entry_trading_date=candidate_bars[-1].trading_date,
                     highest_completed_adjusted_close=(
                         candidate_bars[-1].adjusted_close
                     ),
-                    hard_stop=hard_stop,
+                    hard_stop_adjusted=hard_stop,
                     first_reduction_completed=True,
                 )),
             )
@@ -834,13 +856,16 @@ class SwingStrategyTests(unittest.TestCase):
 
     def test_exit_rules_and_exit_is_never_suppressed(self) -> None:
         cases = (
-            (swing_strategy_bars(pattern="exit"), self.position(hard_stop=1.0)),
-            (swing_strategy_bars(pattern="falling_ma60"), self.position(hard_stop=1.0)),
-            (swing_strategy_bars(pattern="rising"), self.position(highest_completed_adjusted_close=120.0, hard_stop=1.0)),
-            (swing_strategy_bars(pattern="rising"), self.position(hard_stop=200.0)),
+            (swing_strategy_bars(pattern="exit"), self.position(hard_stop_adjusted=1.0)),
+            (swing_strategy_bars(pattern="falling_ma60"), self.position(hard_stop_adjusted=1.0)),
+            (swing_strategy_bars(pattern="rising"), self.position(highest_completed_adjusted_close=120.0, hard_stop_adjusted=1.0)),
+            (swing_strategy_bars(pattern="rising"), self.position(hard_stop_adjusted=200.0)),
         )
         for bars, position in cases:
-            with self.subTest(close=bars[-1].close, hard_stop=position.hard_stop):
+            with self.subTest(
+                close=bars[-1].close,
+                hard_stop_adjusted=position.hard_stop_adjusted,
+            ):
                 result = evaluate_swing(
                     bars, self.config,
                     self.with_position(
@@ -864,11 +889,101 @@ class SwingStrategyTests(unittest.TestCase):
             self.with_position(self.position(
                 shares=100,
                 sellable_shares=0,
-                hard_stop=200.0,
+                hard_stop_adjusted=200.0,
             )),
         )
         self.assertEqual(result.state, SwingState.EXIT_CANDIDATE)
         self.assertEqual(result.planned_shares, 0)
+
+    def test_hard_exit_precedes_overflowing_reduce_and_risk_derivations(self) -> None:
+        bars = swing_strategy_bars(pattern="rising")
+        result = evaluate_swing(
+            bars,
+            self.config,
+            self.with_position(self.position(
+                average_cost_adjusted=1e308,
+                initial_risk_per_share_adjusted=1e308,
+                hard_stop_adjusted=1e308,
+            )),
+        )
+        self.assertEqual(result.state, SwingState.EXIT_CANDIDATE)
+        self.assertTrue(result.evidence["exit_hard_stop"])
+
+        technical = evaluate_swing(
+            swing_strategy_bars(pattern="exit"),
+            self.config,
+            self.with_position(self.position(
+                shares=10**308,
+                average_cost_adjusted=1e308,
+                initial_risk_per_share_adjusted=1e308,
+                hard_stop_adjusted=1.0,
+            )),
+        )
+        self.assertEqual(technical.state, SwingState.EXIT_CANDIDATE)
+        self.assertTrue(technical.evidence["exit_two_closes_below_ma20"])
+
+    def test_all_position_anchors_survive_raw_scale_transitions(self) -> None:
+        adjusted = swing_strategy_bars()
+        scales = [2.0] * (len(adjusted) - 1) + [0.5]
+        transitioned = with_raw_scales(adjusted, scales)
+
+        def decisions(**position_values: object):
+            position = self.position(**position_values)
+            return (
+                evaluate_swing(
+                    adjusted, self.config, self.with_position(position),
+                ),
+                evaluate_swing(
+                    transitioned, self.config, self.with_position(position),
+                ),
+            )
+
+        hard_safe = decisions(
+            average_cost_adjusted=104.0,
+            initial_risk_per_share_adjusted=2.0,
+            hard_stop_adjusted=95.0,
+        )
+        for result, latest_scale in zip(hard_safe, (1.0, 0.5), strict=True):
+            self.assertFalse(result.evidence["exit_hard_stop"])
+            self.assertEqual(
+                result.evidence["average_cost_raw_mapped"],
+                104.0 * latest_scale,
+            )
+            self.assertEqual(
+                result.evidence["initial_risk_per_share_raw_mapped"],
+                2.0 * latest_scale,
+            )
+            self.assertEqual(
+                result.evidence["hard_stop_raw_mapped"],
+                95.0 * latest_scale,
+            )
+            self.assertFalse(result.evidence["reduce_profit_ok"])
+
+        reduce_ready = decisions(
+            average_cost_adjusted=103.0,
+            initial_risk_per_share_adjusted=2.0,
+            hard_stop_adjusted=95.0,
+        )
+        self.assertEqual(reduce_ready[0].state, SwingState.REDUCE_CANDIDATE)
+        self.assertEqual(reduce_ready[1].state, SwingState.REDUCE_CANDIDATE)
+        self.assertTrue(reduce_ready[1].evidence["reduce_profit_ok"])
+        self.assertEqual(reduce_ready[1].first_reduce_price, 53.5)
+
+        add_ready = decisions(
+            shares=1_000,
+            sellable_shares=1_000,
+            average_cost_adjusted=105.0,
+            initial_risk_per_share_adjusted=1.0,
+            hard_stop_adjusted=105.0,
+            first_reduction_completed=True,
+        )
+        self.assertEqual(add_ready[0].state, SwingState.ADD_CANDIDATE)
+        self.assertEqual(add_ready[1].state, SwingState.ADD_CANDIDATE)
+        self.assertTrue(add_ready[1].evidence["add_profit_ok"])
+
+        hard_exit = decisions(hard_stop_adjusted=110.0)
+        self.assertEqual(hard_exit[0].state, SwingState.EXIT_CANDIDATE)
+        self.assertEqual(hard_exit[1].state, SwingState.EXIT_CANDIDATE)
 
     def test_exit_thresholds_are_exact_at_ma60_and_hard_stop(self) -> None:
         base = swing_strategy_bars(pattern="rising")
@@ -885,10 +1000,10 @@ class SwingStrategyTests(unittest.TestCase):
                 bars,
                 self.config,
                 self.with_position(self.position(
-                    average_cost=200.0,
+                    average_cost_adjusted=200.0,
                     entry_trading_date=bars[-1].trading_date,
                     highest_completed_adjusted_close=bars[-1].adjusted_close,
-                    hard_stop=1.0,
+                    hard_stop_adjusted=1.0,
                 )),
             )
 
@@ -914,10 +1029,10 @@ class SwingStrategyTests(unittest.TestCase):
                     base,
                     self.config,
                     self.with_position(self.position(
-                        average_cost=200.0,
+                        average_cost_adjusted=200.0,
                         entry_trading_date=base[-1].trading_date,
                         highest_completed_adjusted_close=latest,
-                        hard_stop=stop,
+                        hard_stop_adjusted=stop,
                     )),
                 )
                 self.assertIs(decision.evidence["exit_hard_stop"], expected)
@@ -959,10 +1074,10 @@ class SwingStrategyTests(unittest.TestCase):
                 bars,
                 self.config,
                 self.with_position(self.position(
-                    average_cost=200.0,
+                    average_cost_adjusted=200.0,
                     entry_trading_date=bars[-1].trading_date,
                     highest_completed_adjusted_close=bars[-1].adjusted_close,
-                    hard_stop=1.0,
+                    hard_stop_adjusted=1.0,
                 )),
             )
 
@@ -1001,10 +1116,10 @@ class SwingStrategyTests(unittest.TestCase):
                 bars,
                 self.config,
                 self.with_position(self.position(
-                    average_cost=200.0,
+                    average_cost_adjusted=200.0,
                     entry_trading_date=bars[-1].trading_date,
                     highest_completed_adjusted_close=highest,
-                    hard_stop=1.0,
+                    hard_stop_adjusted=1.0,
                 )),
             )
 
@@ -1027,10 +1142,10 @@ class SwingStrategyTests(unittest.TestCase):
             bars,
             self.config,
             self.with_position(self.position(
-                average_cost=200.0,
+                average_cost_adjusted=200.0,
                 entry_trading_date=bars[-15].trading_date,
                 highest_completed_adjusted_close=bars[-15].adjusted_close,
-                hard_stop=1.0,
+                hard_stop_adjusted=1.0,
             )),
         )
         self.assertFalse(unchanged.evidence["exit_trailing_stop"])
@@ -1049,10 +1164,10 @@ class SwingStrategyTests(unittest.TestCase):
             bars,
             self.config,
             self.with_position(self.position(
-                average_cost=200.0,
+                average_cost_adjusted=200.0,
                 entry_trading_date=bars[-15].trading_date,
                 highest_completed_adjusted_close=120.0,
-                hard_stop=1.0,
+                hard_stop_adjusted=1.0,
             )),
         )
         self.assertTrue(drawdown.evidence["exit_trailing_stop"])
@@ -1063,7 +1178,7 @@ class SwingStrategyTests(unittest.TestCase):
             swing_strategy_bars(pattern="exit"),
             self.config,
             self.with_position(
-                self.position(hard_stop=1.0),
+                self.position(hard_stop_adjusted=1.0),
                 data_healthy=False,
                 metadata_complete=False,
                 ledger_healthy=False,
@@ -1129,7 +1244,10 @@ class SwingStrategyTests(unittest.TestCase):
         self.assertNotEqual(prospective.overlay, IntradayOverlay.PREDEFINED_STOP_TOUCHED)
         held = evaluate_swing(
             swing_strategy_bars(pattern="rising"), self.config,
-            self.with_position(self.position(average_cost=120.0, hard_stop=90.0)),
+            self.with_position(self.position(
+                average_cost_adjusted=120.0,
+                hard_stop_adjusted=90.0,
+            )),
         )
         touched = evaluate_intraday_overlay(
             held, held.planned_stop, has_position=True,
@@ -1256,6 +1374,34 @@ class SwingStrategyTests(unittest.TestCase):
                 valid_for_trading_date=None,
             )
 
+    def test_direct_swing_decision_enforces_complete_state_matrix(self) -> None:
+        trial = evaluate_swing(swing_strategy_bars(), self.config, self.portfolio())
+        with self.assertRaises(SwingStrategyError):
+            replace(trial, blocked_reasons=("blocked",))
+        for state in (
+            SwingState.DATA_UNAVAILABLE,
+            SwingState.TREND_BLOCKED,
+            SwingState.UPTREND_WATCH,
+            SwingState.PULLBACK_WATCH,
+            SwingState.HOLDING,
+            SwingState.COOLDOWN,
+        ):
+            with self.subTest(state=state):
+                with self.assertRaises(SwingStrategyError):
+                    replace(
+                        trial,
+                        state=state,
+                        planned_shares=1,
+                        valid_for_trading_date=None,
+                    )
+        with self.assertRaises(SwingStrategyError):
+            replace(
+                trial,
+                state=SwingState.ADD_CANDIDATE,
+                planned_risk_rate=0.0,
+                valid_for_trading_date=None,
+            )
+
     def test_swing_decision_wraps_hostile_mappingproxy_evidence_failure(self) -> None:
         formal = evaluate_swing(swing_strategy_bars(), self.config, self.portfolio())
         HostileMapping.hooks_called = 0
@@ -1272,7 +1418,13 @@ class SwingStrategyTests(unittest.TestCase):
         source_evidence: dict[str, object] = {"gate": True}
         source_reasons = ["blocked"]
         copied = replace(
-            formal, evidence=source_evidence, blocked_reasons=source_reasons,
+            formal,
+            state=SwingState.PULLBACK_WATCH,
+            evidence=source_evidence,
+            blocked_reasons=source_reasons,
+            planned_shares=0,
+            planned_risk_rate=0.0,
+            valid_for_trading_date=None,
         )
         source_evidence["gate"] = False
         source_reasons.append("later")
@@ -1393,7 +1545,7 @@ class SwingStrategyTests(unittest.TestCase):
             evaluate_swing(
                 swing_strategy_bars(pattern="exit"),
                 self.config,
-                self.with_position(self.position(hard_stop=1.0)),
+                self.with_position(self.position(hard_stop_adjusted=1.0)),
             ),
         )
         required = {

@@ -115,15 +115,15 @@ def _strict_date(value: object, field: str, *, optional: bool = False) -> date |
 
 @dataclass(frozen=True)
 class PositionContext:
-    """Position inputs with raw cost/risk/stop and an adjusted-close watermark."""
+    """Position strategy anchors are stored exclusively in adjusted-price units."""
 
     shares: int
     sellable_shares: int
-    average_cost: float
-    initial_risk_per_share: float
+    average_cost_adjusted: float
+    initial_risk_per_share_adjusted: float
     entry_trading_date: date
     highest_completed_adjusted_close: float
-    hard_stop: float
+    hard_stop_adjusted: float
     first_reduction_completed: bool
 
     def __post_init__(self) -> None:
@@ -136,12 +136,21 @@ class PositionContext:
         ):
             raise SwingStrategyError("sellable_shares must be an integer within shares")
         object.__setattr__(
-            self, "average_cost",
-            _finite_number(self.average_cost, "average_cost", positive=True),
+            self,
+            "average_cost_adjusted",
+            _finite_number(
+                self.average_cost_adjusted, "average_cost_adjusted", positive=True,
+            ),
         )
-        object.__setattr__(self, "initial_risk_per_share", _finite_number(
-            self.initial_risk_per_share, "initial_risk_per_share", positive=True,
-        ))
+        object.__setattr__(
+            self,
+            "initial_risk_per_share_adjusted",
+            _finite_number(
+                self.initial_risk_per_share_adjusted,
+                "initial_risk_per_share_adjusted",
+                positive=True,
+            ),
+        )
         _strict_date(self.entry_trading_date, "entry_trading_date")
         object.__setattr__(
             self,
@@ -153,8 +162,11 @@ class PositionContext:
             ),
         )
         object.__setattr__(
-            self, "hard_stop",
-            _finite_number(self.hard_stop, "hard_stop", positive=True),
+            self,
+            "hard_stop_adjusted",
+            _finite_number(
+                self.hard_stop_adjusted, "hard_stop_adjusted", positive=True,
+            ),
         )
         if type(self.first_reduction_completed) is not bool:
             raise SwingStrategyError("first_reduction_completed must be bool")
@@ -291,6 +303,17 @@ class SwingDecision:
         planned_risk_rate = _finite_number(
             self.planned_risk_rate, "planned_risk_rate",
         )
+        blocked_reasons = _blocked_reason_tuple(self.blocked_reasons)
+        action_states = (
+            SwingState.TRIAL_ENTRY_CANDIDATE,
+            SwingState.ADD_CANDIDATE,
+            SwingState.REDUCE_CANDIDATE,
+            SwingState.EXIT_CANDIDATE,
+        )
+        if self.state in action_states and blocked_reasons:
+            raise SwingStrategyError("candidate states cannot be blocked")
+        if self.state not in action_states and self.planned_shares > 0:
+            raise SwingStrategyError("non-action states cannot plan shares")
         if self.state is SwingState.TRIAL_ENTRY_CANDIDATE:
             if self.planned_shares <= 0:
                 raise SwingStrategyError("trial candidate requires positive shares")
@@ -313,6 +336,8 @@ class SwingDecision:
             raise SwingStrategyError("add and reduce candidates require positive shares")
         if self.state is SwingState.ADD_CANDIDATE and planned_stop is None:
             raise SwingStrategyError("add candidate requires a protective stop")
+        if self.state is SwingState.ADD_CANDIDATE and planned_risk_rate <= 0.0:
+            raise SwingStrategyError("add candidate requires positive planned risk")
         if (
             self.state is SwingState.REDUCE_CANDIDATE
             and first_reduce_price is None
@@ -325,7 +350,7 @@ class SwingDecision:
         object.__setattr__(self, "planned_risk_rate", planned_risk_rate)
         object.__setattr__(self, "evidence", _immutable_evidence(self.evidence))
         object.__setattr__(
-            self, "blocked_reasons", _blocked_reason_tuple(self.blocked_reasons),
+            self, "blocked_reasons", blocked_reasons,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -455,6 +480,21 @@ def _product(left: float, right: float) -> float:
     if not math.isfinite(result):
         raise ArithmeticError("nonfinite product")
     return result
+
+
+def _optional_product(left: float | int, right: float | int) -> float | None:
+    try:
+        return _product(float(left), float(right))
+    except (ArithmeticError, OverflowError, ValueError):
+        return None
+
+
+def _optional_ratio(numerator: float, denominator: float) -> float | None:
+    try:
+        result = numerator / denominator
+    except (OverflowError, ZeroDivisionError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _compute_metrics(
@@ -830,6 +870,22 @@ def _position_decision(
     assert position is not None
     latest = bars[-1]
     previous = bars[-2]
+    two_below = (
+        previous.adjusted_close < metrics.previous_ma20
+        and latest.adjusted_close < metrics.ma20
+    )
+    below_ma60 = latest.adjusted_close < metrics.ma60
+    hard_exit = latest.adjusted_close <= position.hard_stop_adjusted
+    evidence.update({
+        "average_cost_adjusted": position.average_cost_adjusted,
+        "initial_risk_per_share_adjusted": (
+            position.initial_risk_per_share_adjusted
+        ),
+        "hard_stop_adjusted": position.hard_stop_adjusted,
+        "exit_two_closes_below_ma20": two_below,
+        "exit_close_below_ma60": below_ma60,
+        "exit_hard_stop": hard_exit,
+    })
     available_since_entry = tuple(
         bar.adjusted_close
         for bar in bars
@@ -839,68 +895,102 @@ def _position_decision(
         position.highest_completed_adjusted_close,
         *available_since_entry,
     ))
-    highest_raw_mapped = _product(highest_adjusted, metrics.raw_scale)
-    trailing_stop = (
-        highest_raw_mapped - _product(config.trailing_stop_atr, metrics.atr_raw)
+    trailing_stop_adjusted = (
+        highest_adjusted - _product(config.trailing_stop_atr, metrics.atr)
     )
-    protective_stop = max(position.hard_stop, trailing_stop)
-    position_risk_per_share = max(0.0, latest.close - protective_stop)
-    position_risk_amount = _product(position.shares, position_risk_per_share)
-    position_risk_rate = position_risk_amount / portfolio.equity
-    two_below = (
-        previous.adjusted_close < metrics.previous_ma20
-        and latest.adjusted_close < metrics.ma20
+    protective_stop_adjusted = max(
+        position.hard_stop_adjusted, trailing_stop_adjusted,
     )
-    below_ma60 = latest.adjusted_close < metrics.ma60
-    trailing_exit = latest.close <= trailing_stop
-    hard_exit = latest.close <= position.hard_stop
+    trailing_exit = latest.adjusted_close <= trailing_stop_adjusted
+    highest_raw_mapped = _optional_product(highest_adjusted, metrics.raw_scale)
+    trailing_stop_raw = _optional_product(
+        trailing_stop_adjusted, metrics.raw_scale,
+    )
+    hard_stop_raw = _optional_product(
+        position.hard_stop_adjusted, metrics.raw_scale,
+    )
+    protective_stop_raw = _optional_product(
+        protective_stop_adjusted, metrics.raw_scale,
+    )
+    position_risk_per_share = (
+        max(0.0, latest.close - protective_stop_raw)
+        if protective_stop_raw is not None else None
+    )
+    position_risk_amount = (
+        _optional_product(position.shares, position_risk_per_share)
+        if position_risk_per_share is not None else None
+    )
+    position_risk_rate = (
+        _optional_ratio(position_risk_amount, portfolio.equity)
+        if position_risk_amount is not None else None
+    )
     evidence.update({
         "position_high_watermark_adjusted_close": (
             position.highest_completed_adjusted_close
         ),
         "highest_completed_adjusted_close": highest_adjusted,
         "highest_completed_raw_close_mapped": highest_raw_mapped,
-        "trailing_stop_raw": trailing_stop,
-        "hard_stop_raw": position.hard_stop,
-        "protective_stop_raw": protective_stop,
-        "exit_two_closes_below_ma20": two_below,
-        "exit_close_below_ma60": below_ma60,
+        "trailing_stop_adjusted": trailing_stop_adjusted,
+        "trailing_stop_raw": trailing_stop_raw,
+        "hard_stop_raw_mapped": hard_stop_raw,
+        "protective_stop_adjusted": protective_stop_adjusted,
+        "protective_stop_raw": protective_stop_raw,
         "exit_trailing_stop": trailing_exit,
-        "exit_hard_stop": hard_exit,
         "exit_any": two_below or below_ma60 or trailing_exit or hard_exit,
         "position_risk_per_share": position_risk_per_share,
         "position_risk_amount": position_risk_amount,
         "position_risk_rate": position_risk_rate,
     })
-    common = {
+    exit_common = {
         "symbol": latest.symbol,
         "strategy_version": config.strategy_version,
         "as_of_trading_date": latest.trading_date,
         "evidence": evidence,
         "planned_entry_low": None,
         "planned_entry_high": None,
-        "planned_stop": protective_stop,
-        "planned_risk_rate": position_risk_rate,
-        "first_reduce_price": (
-            position.average_cost
-            + _product(config.reduce_profit_r, position.initial_risk_per_share)
-        ),
+        "planned_stop": protective_stop_raw,
+        "planned_risk_rate": position_risk_rate or 0.0,
+        "first_reduce_price": None,
         "valid_for_trading_date": None,
     }
-    health_reasons = _health_reasons(portfolio)
     if two_below or below_ma60 or trailing_exit or hard_exit:
         return SwingDecision(
-            **common,
+            **exit_common,
             state=SwingState.EXIT_CANDIDATE,
             blocked_reasons=(),
             planned_shares=position.sellable_shares,
         )
 
-    reduce_price = position.average_cost + _product(
-        config.reduce_profit_r, position.initial_risk_per_share,
+    average_cost_raw = _product(
+        position.average_cost_adjusted, metrics.raw_scale,
     )
+    initial_risk_per_share_raw = _product(
+        position.initial_risk_per_share_adjusted, metrics.raw_scale,
+    )
+    if protective_stop_raw is None or position_risk_amount is None:
+        raise ArithmeticError("unrepresentable position risk")
+    evidence.update({
+        "average_cost_raw_mapped": average_cost_raw,
+        "initial_risk_per_share_raw_mapped": initial_risk_per_share_raw,
+    })
+    reduce_price_adjusted = (
+        position.average_cost_adjusted
+        + _product(
+            config.reduce_profit_r,
+            position.initial_risk_per_share_adjusted,
+        )
+    )
+    reduce_price_raw = _product(reduce_price_adjusted, metrics.raw_scale)
+    common = {
+        **exit_common,
+        "planned_risk_rate": position_risk_rate or 0.0,
+        "first_reduce_price": reduce_price_raw,
+    }
+    health_reasons = _health_reasons(portfolio)
+
     reduce_profit_ok = (
-        not position.first_reduction_completed and latest.close >= reduce_price
+        not position.first_reduction_completed
+        and latest.adjusted_close >= reduce_price_adjusted
     )
     reduce_shares = _lot_floor(position.sellable_shares / 2.0, portfolio.lot_size)
     reduce_quantity_ok = reduce_shares >= portfolio.lot_size
@@ -918,14 +1008,17 @@ def _position_decision(
         )
 
     add_profit_ok = (
-        latest.close - position.average_cost
-        >= _product(config.add_profit_r, position.initial_risk_per_share)
+        latest.adjusted_close - position.average_cost_adjusted
+        >= _product(
+            config.add_profit_r,
+            position.initial_risk_per_share_adjusted,
+        )
     )
     prior_breakout_high = max(
         bar.adjusted_high for bar in bars[-config.breakout_days - 1:-1]
     )
     add_breakout_ok = latest.adjusted_close > prior_breakout_high
-    add_stop_ok = protective_stop >= position.average_cost
+    add_stop_ok = protective_stop_adjusted >= position.average_cost_adjusted
     evidence.update({
         "add_profit_ok": add_profit_ok,
         "add_breakout_ok": add_breakout_ok,
@@ -955,7 +1048,7 @@ def _position_decision(
             _product(portfolio.equity, config.max_equity_weight)
             - portfolio.current_etf_market_value,
         ) / entry
-        per_share_add_risk = max(0.0, entry - protective_stop)
+        per_share_add_risk = max(0.0, entry - protective_stop_raw)
         remaining_risk = max(
             0.0,
             _product(portfolio.equity, config.max_portfolio_risk)
@@ -1025,13 +1118,15 @@ def _position_decision(
                 position_risk_amount + add_shares * per_share_add_risk
             ) / portfolio.equity
             evidence["post_add_risk_rate"] = risk_rate
-            common["planned_risk_rate"] = risk_rate
-            return SwingDecision(
-                **common,
-                state=SwingState.ADD_CANDIDATE,
-                blocked_reasons=(),
-                planned_shares=add_shares,
-            )
+            if risk_rate > 0.0:
+                common["planned_risk_rate"] = risk_rate
+                return SwingDecision(
+                    **common,
+                    state=SwingState.ADD_CANDIDATE,
+                    blocked_reasons=(),
+                    planned_shares=add_shares,
+                )
+            add_reasons.append("add_nonpositive_post_risk")
     return SwingDecision(
         **common,
         state=SwingState.HOLDING,
