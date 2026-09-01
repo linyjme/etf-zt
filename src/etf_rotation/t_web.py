@@ -25,6 +25,7 @@ from .market_data import (
     SHANGHAI,
     finalized_points,
     load_closed_dates,
+    market_session_state,
 )
 from .t_backtest import TBacktester
 from .t_monitor import (
@@ -52,7 +53,7 @@ class MonitorApplication:
     watchlist_path: Path
     history_path: Path | None = None
     collector: Any | None = None
-    refresh_interval: float = 5.0
+    refresh_interval: float = constants.DEFAULT_REFRESH_INTERVAL_SECONDS
     alert_history_path: Path | None = None
     metadata_path: Path | None = None
     valuation_path: Path | None = None
@@ -248,6 +249,40 @@ class MonitorApplication:
     def refresh_once(self) -> bool:
         return self._refresh_once(generation=None)
 
+    def _has_complete_current_day(self, now: datetime) -> bool:
+        trading_date = now.astimezone(SHANGHAI).date().isoformat()
+        enabled = tuple(
+            item.symbol for item in load_watchlist(self.watchlist_path) if item.enabled
+        )
+        if not enabled:
+            return False
+        items = {
+            str(item.get("symbol", "")): item
+            for item in self.snapshot().get("items", [])
+        }
+        return all(
+            symbol in items
+            and items[symbol].get("status") == "OK"
+            and str(items[symbol].get("timestamp", "")).startswith(trading_date)
+            for symbol in enabled
+        )
+
+    def collection_due(self) -> bool:
+        now = self.clock()
+        session = market_session_state(
+            now, closed_dates=self.health_classifier.closed_dates,
+        )
+        if session.active:
+            return True
+        return session.catch_up_allowed and not self._has_complete_current_day(now)
+
+    def refresh_delay(self, failure_count: int) -> float:
+        exponent = max(0, int(failure_count) - 1)
+        return min(
+            self.refresh_interval * (2 ** exponent),
+            constants.MAX_REFRESH_BACKOFF_SECONDS,
+        )
+
     def _refresh_once(self, generation: int | None) -> bool:
         with self.producer_lock:
             if self.collector is None:
@@ -255,27 +290,32 @@ class MonitorApplication:
             staging: Path | None = None
             watchlist: Sequence[WatchItem] | None = None
             try:
-                watchlist = load_watchlist(self.watchlist_path)
-                staging = self._staging_quotes_path()
-                self.collector.collect_to_file(watchlist, staging)
-                payload = json.loads(staging.read_text(encoding="utf-8"))
-                if not isinstance(payload, Mapping):
-                    raise ValueError("行情文件必须是对象")
-                all_quotes = JsonQuoteAdapter().parse(payload)
                 metadata: Mapping[str, Any] = {}
-                if self.history_store is not None:
-                    metadata = self.metadata_store.load()
-                    self._validate_quotes(all_quotes, metadata)
-            except Exception as error:
-                if staging is not None:
-                    staging.unlink(missing_ok=True)
-                    staging = None
-                with self.lifecycle_gate:
-                    if self._generation_cancelled(generation):
-                        return False
-                    self._publish_outage(str(error), watchlist)
-                return False
-            try:
+                try:
+                    watchlist = load_watchlist(self.watchlist_path)
+                    staging = self._staging_quotes_path()
+                    if self.history_store is not None:
+                        metadata = self.metadata_store.load()
+                except Exception as error:
+                    with self.lifecycle_gate:
+                        if self._generation_cancelled(generation):
+                            return False
+                        self._publish_outage(str(error), watchlist)
+                    return False
+                try:
+                    self.collector.collect_to_file(watchlist, staging)
+                    payload = json.loads(staging.read_text(encoding="utf-8"))
+                    if not isinstance(payload, Mapping):
+                        raise ValueError("行情文件必须是对象")
+                    all_quotes = JsonQuoteAdapter().parse(payload)
+                    if self.history_store is not None:
+                        self._validate_quotes(all_quotes, metadata)
+                except Exception as error:
+                    with self.lifecycle_gate:
+                        if self._generation_cancelled(generation):
+                            return False
+                        self._publish_collection_failure(str(error))
+                    return False
                 with self.lifecycle_gate:
                     if self._generation_cancelled(generation):
                         return False
@@ -327,13 +367,20 @@ class MonitorApplication:
 
     def _refresh_loop(self, generation: int) -> None:
         thread = threading.current_thread()
+        failure_count = 0
         try:
             while True:
                 with self.lifecycle_gate:
                     if self._generation_cancelled(generation):
                         break
-                self._refresh_once(generation)
-                self._stop_event.wait(self.refresh_interval)
+                attempted = self.collection_due()
+                if attempted:
+                    succeeded = self._refresh_once(generation)
+                    failure_count = 0 if succeeded else failure_count + 1
+                else:
+                    failure_count = 0
+                delay = self.refresh_delay(failure_count if attempted else 0)
+                self._stop_event.wait(delay)
         finally:
             with self.lifecycle_gate:
                 if self._refresh_thread is thread:
@@ -676,6 +723,15 @@ class MonitorApplication:
             self._published = result
             self._revision_events.append(self._revision_delta(previous, result))
             self._publish_condition.notify_all()
+
+    def _publish_collection_failure(self, message: str) -> None:
+        session = market_session_state(
+            self.clock(), closed_dates=self.health_classifier.closed_dates,
+        )
+        if session.active:
+            self._publish_outage(message)
+        else:
+            self._bootstrap(increment_revision=True)
 
     def valuation(self, symbol: str) -> dict[str, Any]:
         metadata = EtfMetadataStore(self.metadata_path).get(symbol) if self.metadata_path else None
@@ -1125,7 +1181,7 @@ def create_server(
     watchlist_path: Path,
     history_path: Path | None = None,
     collector: Any | None = None,
-    refresh_interval: float = 5.0,
+    refresh_interval: float = constants.DEFAULT_REFRESH_INTERVAL_SECONDS,
     alert_history_path: Path | None = None,
     metadata_path: Path | None = None,
     valuation_path: Path | None = None,

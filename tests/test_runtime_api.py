@@ -159,6 +159,28 @@ class FailingCollector:
         raise MarketDataError(self.message)
 
 
+class RecordingWaitEvent:
+    def __init__(self, *, stop_after: int):
+        self.stop_after = stop_after
+        self.waits: list[float] = []
+        self.stopped = False
+
+    def is_set(self) -> bool:
+        return self.stopped
+
+    def set(self) -> None:
+        self.stopped = True
+
+    def clear(self) -> None:
+        self.stopped = False
+
+    def wait(self, timeout: float) -> bool:
+        self.waits.append(timeout)
+        if len(self.waits) >= self.stop_after:
+            self.stopped = True
+        return self.stopped
+
+
 class FailingStore:
     def __init__(self, message: str, method: str):
         self.message = message
@@ -375,6 +397,95 @@ class RuntimeTests(unittest.TestCase):
             collector.release.set()
             app.stop_refresh()
         self.assertEqual(collector.calls, 1)
+
+    def test_closed_session_with_complete_current_day_never_collects(self) -> None:
+        payload = quote_payload_for_date("2026-08-28")
+        self.paths.quotes.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+        )
+        collector = StaticCollector(payload)
+        app = self.make_runtime_fixture(collector)
+        app.clock = lambda: datetime.fromisoformat("2026-08-28T15:10:00+08:00")
+        app._bootstrap(increment_revision=True)
+
+        self.assertFalse(app.collection_due())
+        app.start_refresh()
+        threading.Event().wait(0.05)
+        app.stop_refresh()
+
+        self.assertEqual(collector.calls, 0)
+
+    def test_closed_session_without_current_day_data_catches_up_once(self) -> None:
+        payload = quote_payload_for_date("2026-08-28")
+        collector = StaticCollector(payload)
+        app = self.make_runtime_fixture(collector)
+        app.clock = lambda: datetime.fromisoformat("2026-08-28T15:10:00+08:00")
+
+        self.assertTrue(app.collection_due())
+        app.start_refresh()
+        for _ in range(50):
+            if collector.calls == 1:
+                break
+            threading.Event().wait(0.01)
+        app.stop_refresh()
+
+        self.assertEqual(collector.calls, 1)
+        self.assertFalse(app.collection_due())
+
+    def test_weekend_without_current_day_data_never_collects(self) -> None:
+        collector = StaticCollector(quote_payload_for_date("2026-08-29"))
+        app = self.make_runtime_fixture(collector)
+        app.clock = lambda: datetime.fromisoformat("2026-08-29T10:02:00+08:00")
+
+        self.assertFalse(app.collection_due())
+        app.start_refresh()
+        threading.Event().wait(0.05)
+        app.stop_refresh()
+
+        self.assertEqual(collector.calls, 0)
+
+    def test_collection_failure_uses_current_market_session_health(self) -> None:
+        cases = (
+            ("2026-08-28T10:02:00+08:00", "OUTAGE", ["采集失败"]),
+            ("2026-08-28T15:10:00+08:00", "CLOSED", []),
+        )
+        for current_time, health_status, errors in cases:
+            with self.subTest(current_time=current_time):
+                self.paths.quotes.write_text(
+                    json.dumps(
+                        quote_payload_for_date("2026-08-28"), ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                app = self.make_runtime_fixture(FailingCollector("采集失败"))
+                app.clock = lambda value=current_time: datetime.fromisoformat(value)
+                app._bootstrap(increment_revision=True)
+
+                self.assertFalse(app.refresh_once())
+
+                snapshot = app.snapshot()
+                self.assertEqual(snapshot["items"][0]["health_status"], health_status)
+                self.assertEqual(snapshot["errors"], errors)
+
+    def test_refresh_delay_is_bounded_and_success_resets_loop_backoff(self) -> None:
+        app = self.make_runtime_fixture()
+        app.refresh_interval = 60.0
+        self.assertEqual(
+            [app.refresh_delay(count) for count in range(1, 6)],
+            [60.0, 120.0, 240.0, 300.0, 300.0],
+        )
+
+        waits = RecordingWaitEvent(stop_after=2)
+        outcomes = iter((False, True))
+        app._stop_event = waits
+        app._generation = 1
+        app._refresh_thread = threading.current_thread()
+        app.collection_due = lambda: True
+        app._refresh_once = lambda generation: next(outcomes)
+
+        app._refresh_loop(1)
+
+        self.assertEqual(waits.waits, [60.0, 60.0])
 
     def test_stop_cancels_blocked_generation_without_any_commit_side_effect(self) -> None:
         collector = LifecycleCollector(valid_completed_quote_payload())

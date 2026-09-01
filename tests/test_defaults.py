@@ -3,12 +3,18 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from etf_rotation.constants import DEFAULT_GRID_WIDTH_PCT
+from etf_rotation.constants import (
+    DEFAULT_GRID_WIDTH_PCT,
+    DEFAULT_REFRESH_INTERVAL_SECONDS,
+)
 from etf_rotation.t_monitor import load_watchlist
 from etf_rotation.t_web import MonitorApplication
 
 
 class DefaultConfigurationTests(unittest.TestCase):
+    def test_refresh_interval_default_is_one_minute(self) -> None:
+        self.assertEqual(DEFAULT_REFRESH_INTERVAL_SECONDS, 60.0)
+
     def test_grid_width_default_is_shared_by_loading_and_addition(self) -> None:
         self.assertEqual(DEFAULT_GRID_WIDTH_PCT, 0.002)
         with tempfile.TemporaryDirectory() as temporary:
