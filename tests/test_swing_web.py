@@ -8,13 +8,15 @@ import shutil
 import socket
 import tempfile
 import threading
+import time
 import unittest
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from etf_rotation.swing_alerts import AlertInput, SwingAlertStore
 from etf_rotation.swing_service import SwingPaths
-from etf_rotation.t_web import create_server
+from etf_rotation.t_web import MonitorApplication, MonitorServer, create_server
 
 from tests.swing_helpers import metadata_fixture
 
@@ -173,6 +175,7 @@ class SwingWebTests(unittest.TestCase):
             "", "?symbol=510300", "?symbol=%EF%BC%95%EF%BC%91%EF%BC%90%EF%BC%93%EF%BC%90%EF%BC%90&since=0",
             "?symbol=510300&since=-1", "?symbol=510300&since=0&extra=1",
             "?symbol=510300&since=0&since=1", "?symbol=510300&since=0&limit=0",
+            "?symbol=510300&since=" + "9" * 5000,
         ):
             with self.subTest(query=query):
                 with self.assertRaises(HTTPError) as captured:
@@ -321,6 +324,40 @@ class SwingWebTests(unittest.TestCase):
             with self.subTest(request=request[:80]):
                 self.assertEqual(self._raw_status(request), 400)
 
+    def test_under_sent_body_times_out_with_bounded_408_without_half_close(self) -> None:
+        host, port = self.server.server_address
+        request = (
+            b"POST /api/swing/watchlist HTTP/1.1\r\n"
+            b"Host: localhost\r\nContent-Type: application/json\r\n"
+            b"Content-Length: 10\r\nConnection: keep-alive\r\n\r\n{}"
+        )
+        started = time.monotonic()
+        with socket.create_connection((host, port), timeout=5) as client:
+            client.sendall(request)
+            response = client.recv(4096)
+        self.assertLess(time.monotonic() - started, 4.0)
+        self.assertEqual(int(response.split(b" ", 2)[1]), 408)
+
+    def test_transfer_encoding_is_rejected_even_with_content_length(self) -> None:
+        body = b'{"symbol":"510500","enabled":true}'
+        content_length = str(len(body)).encode("ascii")
+        prefix = (
+            b"POST /api/swing/watchlist HTTP/1.1\r\nHost: localhost\r\n"
+            b"Content-Type: application/json\r\nConnection: close\r\n"
+        )
+        requests = (
+            prefix + b"Transfer-Encoding: chunked\r\nContent-Length: "
+            + content_length + b"\r\n\r\n" + body,
+            prefix + b"Transfer-Encoding: identity\r\nContent-Length: "
+            + content_length + b"\r\n\r\n" + body,
+            prefix + b"Transfer-Encoding: chunked\r\n"
+            + b"Transfer-Encoding: identity\r\nContent-Length: "
+            + content_length + b"\r\n\r\n" + body,
+        )
+        for request in requests:
+            with self.subTest(request=request):
+                self.assertEqual(self._raw_status(request), 400)
+
     def test_alert_query_and_events_headers_are_strict(self) -> None:
         _, history, _ = self._get("/api/swing/alerts?include_retracted=true")
         self.assertIn("items", history)
@@ -336,6 +373,15 @@ class SwingWebTests(unittest.TestCase):
                 captured.exception.close()
         connection = HTTPConnection(*self.server.server_address, timeout=2)
         connection.request("GET", "/api/swing/events", headers={"Last-Event-ID": "bad"})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 400)
+        response.read()
+        connection.close()
+        connection = HTTPConnection(*self.server.server_address, timeout=2)
+        connection.request(
+            "GET", "/api/swing/events",
+            headers={"Last-Event-ID": "9" * 5000},
+        )
         response = connection.getresponse()
         self.assertEqual(response.status, 400)
         response.read()
@@ -365,6 +411,60 @@ class SwingWebTests(unittest.TestCase):
             other.server_close()
         self.assertTrue(other.application.is_stopping())
         self.assertTrue(other.swing_application._stop_event.is_set())
+
+    def test_swing_start_failure_stops_t_then_closes_server_in_dependency_order(self) -> None:
+        events: list[str] = []
+        instances: list[MonitorServer] = []
+        real_server = MonitorServer
+        swing = Mock()
+
+        def fail_swing_start() -> None:
+            events.append("swing_start")
+            raise RuntimeError("swing start failed")
+
+        swing.start_refresh.side_effect = fail_swing_start
+        swing.stop_refresh.side_effect = lambda: events.append("swing_stop")
+
+        def make_server(*args: object, **kwargs: object) -> MonitorServer:
+            server = real_server(*args, **kwargs)
+            instances.append(server)
+            return server
+
+        with (
+            patch.object(
+                MonitorApplication, "start_refresh",
+                side_effect=lambda _application: events.append("t_start"),
+                autospec=True,
+            ),
+            patch.object(
+                MonitorApplication, "stop_refresh",
+                side_effect=lambda _application: events.append("t_stop"),
+                autospec=True,
+            ),
+            patch("etf_rotation.t_web.SwingService", return_value=swing),
+            patch("etf_rotation.t_web.MonitorServer", side_effect=make_server),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "swing start failed"):
+                create_server(
+                    "127.0.0.1", 0,
+                    quotes_path=self.quotes_path,
+                    watchlist_path=self.watchlist_path,
+                    metadata_path=self.metadata_path,
+                    calendar_path=self.calendar_path,
+                    collector=None,
+                    swing_paths=self.swing_paths,
+                    clock=lambda: self.now,
+                )
+        self.assertEqual(
+            events,
+            ["t_start", "swing_start", "swing_stop", "t_stop"],
+        )
+        self.assertEqual(len(instances), 1)
+        try:
+            self.assertEqual(instances[0].socket.fileno(), -1)
+        finally:
+            if instances[0].socket.fileno() != -1:
+                instances[0].server_close()
 
 
 if __name__ == "__main__":

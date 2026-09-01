@@ -64,6 +64,13 @@ _EXPECTED_CLIENT_DISCONNECTS = (
     ConnectionResetError,
     ConnectionAbortedError,
 )
+_REQUEST_SOCKET_TIMEOUT_SECONDS = 2.0
+_MAX_CURSOR_DIGITS = 19
+
+
+class _RequestBodyTimeoutError(ValueError):
+    """Raised when a declared local JSON body does not arrive in time."""
+
 
 class MissingWatchMetadataError(Exception):
     """Raised when a watch item has no verified trading metadata."""
@@ -1194,15 +1201,23 @@ class MonitorServer(ThreadingHTTPServer):
         self.swing_application = swing_application
 
     def server_close(self) -> None:
-        self.application.stop_refresh()
-        if self.swing_application is not None:
-            self.swing_application.stop_refresh()
-        super().server_close()
+        try:
+            if self.swing_application is not None:
+                self.swing_application.stop_refresh()
+        finally:
+            try:
+                self.application.stop_refresh()
+            finally:
+                super().server_close()
 
 
 class MonitorRequestHandler(BaseHTTPRequestHandler):
     server: MonitorServer
     protocol_version = "HTTP/1.1"
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(_REQUEST_SOCKET_TIMEOUT_SECONDS)
 
     def handle_one_request(self) -> None:
         """Handle one request, quieting only an aborted request-line read."""
@@ -1393,6 +1408,8 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
 
     def _read_json_object(self, max_bytes: int = 16_384) -> dict[str, object]:
         self.close_connection = True
+        if self.headers.get_all("Transfer-Encoding", failobj=[]):
+            raise ValueError("Transfer-Encoding is not supported")
         content_types = self.headers.get_all("Content-Type", failobj=[])
         if len(content_types) != 1:
             raise ValueError("Content-Type must be application/json")
@@ -1418,7 +1435,12 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         length = int(lengths[0])
         if not 0 < length <= max_bytes:
             raise ValueError("request body size is invalid")
-        raw = self.rfile.read(length)
+        try:
+            raw = self.rfile.read(length)
+        except socket.timeout as error:
+            raise _RequestBodyTimeoutError(
+                "request body timed out before Content-Length bytes arrived",
+            ) from error
         if len(raw) != length:
             raise ValueError("request body is shorter than Content-Length")
         text = raw.decode("utf-8", errors="strict")
@@ -1458,6 +1480,18 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             "error": "invalid_request", "message": str(error),
         })
 
+    def _swing_write_error(self, error: Exception) -> None:
+        if isinstance(error, _RequestBodyTimeoutError):
+            self._json(HTTPStatus.REQUEST_TIMEOUT, {
+                "error": "request_timeout", "message": str(error),
+            })
+        elif isinstance(
+            error, (SwingServiceError, PortfolioLedgerError, AlertStoreError),
+        ):
+            self._swing_domain_error(error)
+        else:
+            self._swing_request_error(error)
+
     def _swing_domain_error(self, error: Exception) -> None:
         message = str(error)
         conflict = any(fragment in message for fragment in (
@@ -1494,6 +1528,15 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
     def _strict_query(query: str) -> dict[str, list[str]]:
         return parse_qs(query, keep_blank_values=True, strict_parsing=True)
 
+    @staticmethod
+    def _parse_nonnegative_cursor(value: str, label: str) -> int:
+        if re.fullmatch(
+            rf"(?:0|[1-9][0-9]{{0,{_MAX_CURSOR_DIGITS - 1}}})",
+            value,
+        ) is None:
+            raise ValueError(f"{label} must be a bounded nonnegative integer")
+        return int(value)
+
     def _swing_daily_quotes(self, query_string: str) -> None:
         try:
             query = self._strict_query(query_string)
@@ -1508,12 +1551,11 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             limit_text = query.get("limit", ["500"])[0]
             if re.fullmatch(r"[0-9]{6}", symbol, flags=re.ASCII) is None:
                 raise ValueError("symbol must be six ASCII digits")
-            if re.fullmatch(r"(?:0|[1-9][0-9]*)", since_text) is None:
-                raise ValueError("since must be a nonnegative integer")
+            since = self._parse_nonnegative_cursor(since_text, "since")
             if re.fullmatch(r"[1-9][0-9]*", limit_text) is None:
                 raise ValueError("limit must be a positive integer")
             payload = self._swing_application().daily_quotes(
-                symbol, int(since_text), int(limit_text),
+                symbol, since, int(limit_text),
             )
         except (ValueError, SwingServiceError) as error:
             self._json(HTTPStatus.BAD_REQUEST, {
@@ -1556,12 +1598,17 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         if self._reject_unexpected_query(query_string):
             return
         headers = self.headers.get_all("Last-Event-ID", failobj=[])
-        if len(headers) > 1 or (
-            headers and re.fullmatch(r"(?:0|[1-9][0-9]*)", headers[0]) is None
-        ):
+        try:
+            if len(headers) > 1:
+                raise ValueError("Last-Event-ID must not be repeated")
+            parsed_revision = (
+                self._parse_nonnegative_cursor(headers[0], "Last-Event-ID")
+                if headers else None
+            )
+        except ValueError as error:
             self._json(HTTPStatus.BAD_REQUEST, {
                 "error": "invalid_last_event_id",
-                "message": "Last-Event-ID must be a nonnegative integer",
+                "message": str(error),
             })
             return
         application = self._swing_application()
@@ -1580,7 +1627,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             if not self._write_snapshot_event(payload):
                 return
         else:
-            after_revision = int(headers[0])
+            after_revision = parsed_revision
         while not application._stop_event.is_set():
             payload = application.wait_for_event(after_revision, timeout=5.0)
             if payload is None:
@@ -1601,10 +1648,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
                 payload["symbol"], payload["enabled"],
             )
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
-            if isinstance(error, (SwingServiceError, PortfolioLedgerError, AlertStoreError)):
-                self._swing_domain_error(error)
-            else:
-                self._swing_request_error(error)
+            self._swing_write_error(error)
             return
         except (SwingServiceError, PortfolioLedgerError, AlertStoreError) as error:
             self._swing_domain_error(error)
@@ -1629,10 +1673,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
                 default_risk_per_trade=payload.get("default_risk_per_trade"),
             )
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
-            if isinstance(error, (SwingServiceError, PortfolioLedgerError, AlertStoreError)):
-                self._swing_domain_error(error)
-            else:
-                self._swing_request_error(error)
+            self._swing_write_error(error)
             return
         except OSError as error:
             self._propagate_disconnect(error)
@@ -1662,10 +1703,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             )
             result = self._swing_application().record_trade(trade, key)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
-            if isinstance(error, (SwingServiceError, PortfolioLedgerError, AlertStoreError)):
-                self._swing_domain_error(error)
-            else:
-                self._swing_request_error(error)
+            self._swing_write_error(error)
             return
         except OSError as error:
             self._propagate_disconnect(error)
@@ -1680,10 +1718,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             self._require_fields(payload, set())
             result = self._swing_application().reverse_trade(event_id, key)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
-            if isinstance(error, (SwingServiceError, PortfolioLedgerError, AlertStoreError)):
-                self._swing_domain_error(error)
-            else:
-                self._swing_request_error(error)
+            self._swing_write_error(error)
             return
         except OSError as error:
             self._propagate_disconnect(error)
@@ -1703,10 +1738,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
                 else application.ignore_alert(alert_id, key)
             )
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
-            if isinstance(error, (SwingServiceError, PortfolioLedgerError, AlertStoreError)):
-                self._swing_domain_error(error)
-            else:
-                self._swing_request_error(error)
+            self._swing_write_error(error)
             return
         except OSError as error:
             self._propagate_disconnect(error)
@@ -1959,6 +1991,10 @@ def create_server(
         refresh_interval=refresh_interval,
     )
     server = MonitorServer((host, port), application, swing_application)
-    application.start_refresh()
-    swing_application.start_refresh()
+    try:
+        application.start_refresh()
+        swing_application.start_refresh()
+    except BaseException:
+        server.server_close()
+        raise
     return server
