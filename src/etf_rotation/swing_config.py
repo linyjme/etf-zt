@@ -7,7 +7,7 @@ import json
 import math
 from pathlib import Path
 
-from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
+from etf_rotation.etf_metadata import EtfMetadataStore
 
 
 class SwingConfigError(ValueError):
@@ -121,7 +121,7 @@ def load_watchlist(
 
     try:
         metadata = EtfMetadataStore(metadata_path).load()
-    except (MetadataError, UnicodeDecodeError) as error:
+    except ValueError as error:
         raise SwingConfigError(
             f"波段监控列表ETF元数据加载失败: {error}",
         ) from error

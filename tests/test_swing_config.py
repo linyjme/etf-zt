@@ -179,6 +179,22 @@ class SwingConfigurationTests(unittest.TestCase):
         self.assertIn("ETF元数据", str(error))
         self.assertIsInstance(error.__cause__, UnicodeDecodeError)
 
+    def test_watchlist_normalizes_metadata_integer_digit_limit_with_cause(
+        self,
+    ) -> None:
+        watchlist_path = self.write("watchlist.json", {
+            "schema_version": 1,
+            "items": [{"symbol": "510300", "enabled": True}],
+        })
+        self.metadata_path.write_text("1" * 5_000, encoding="utf-8")
+
+        error = self.configuration_error_from(
+            lambda: load_watchlist(watchlist_path, self.metadata_path),
+        )
+
+        self.assertIn("ETF元数据", str(error))
+        self.assertIs(type(error.__cause__), ValueError)
+
     def test_repository_defaults_are_exact_and_independent(self) -> None:
         watchlist_path = PROJECT_ROOT / "data" / "swing" / "watchlist.json"
         strategy_path = PROJECT_ROOT / "data" / "swing" / "strategy.json"
