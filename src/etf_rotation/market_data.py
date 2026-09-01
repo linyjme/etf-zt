@@ -150,18 +150,20 @@ class MarketDataValidator:
         if (volume == 0.0) != (amount == 0.0):
             raise MarketDataError("成交量和成交额必须同时为零或同时非零")
         if volume > 0.0:
-            implied_price = amount / (volume * self.trading.volume_unit_shares)
-            # The public feed reports volume in whole units and can truncate an
-            # odd-lot remainder smaller than one unit while keeping exact amount.
-            lowest_price_with_remainder = amount / (
+            # The public feed reports volume in whole units while amount can
+            # retain greater precision. Allow at most one source volume unit of
+            # rounding in either direction and require the resulting possible
+            # price interval to intersect the tick-tolerant OHLC interval.
+            lowest_possible_price = amount / (
                 (volume + 1.0) * self.trading.volume_unit_shares
             )
+            highest_possible_price = (
+                amount / ((volume - 1.0) * self.trading.volume_unit_shares)
+                if volume > 1.0 else float("inf")
+            )
             if (
-                implied_price < low - tick - epsilon
-                or (
-                    implied_price > high + tick + epsilon
-                    and lowest_price_with_remainder > high + tick + epsilon
-                )
+                highest_possible_price < low - tick - epsilon
+                or lowest_possible_price > high + tick + epsilon
             ):
                 raise MarketDataError("量价校验失败")
 

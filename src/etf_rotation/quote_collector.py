@@ -19,11 +19,20 @@ from .t_monitor import JsonQuoteAdapter, MarketDataError, WatchItem
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-SOURCE_NAME = "东方财富 push2his trends2"
+SOURCE_NAME = "东方财富 trends2"
 TRENDS2_ENDPOINT = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
+TRENDS2_FALLBACK_ENDPOINT = "https://push2delay.eastmoney.com/api/qt/stock/trends2/get"
 _FIELDS1 = "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"
 _FIELDS2 = "f51,f52,f53,f54,f55,f56,f57,f58"
 Transport = Callable[[Request, float], bytes]
+
+
+class _RequestFailure(Exception):
+    def __init__(self, symbol: str, endpoint: str, error: Exception):
+        super().__init__(f"{symbol} trends2 请求失败 ({endpoint}): {error}")
+        self.symbol = symbol
+        self.endpoint = endpoint
+        self.error = error
 
 
 def market_for_symbol(symbol: str) -> int:
@@ -124,12 +133,22 @@ class Trends2QuoteCollector:
         observed_at = self.now()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise MarketDataError("采集时间必须带时区")
-        records = []
-        urls = []
-        for item in enabled:
-            url = self._url(item.symbol)
-            urls.append(url)
-            records.append(self._fetch(item, url))
+        endpoint = TRENDS2_ENDPOINT
+        try:
+            records, urls = self._collect_batch(enabled, endpoint)
+        except _RequestFailure as primary_error:
+            endpoint = TRENDS2_FALLBACK_ENDPOINT
+            try:
+                records, urls = self._collect_batch(enabled, endpoint)
+            except _RequestFailure as fallback_error:
+                raise MarketDataError(
+                    "trends2 主备端点请求均失败: "
+                    f"主端点 {primary_error}; 备用端点 {fallback_error}"
+                ) from fallback_error
+            except MarketDataError as fallback_error:
+                raise MarketDataError(
+                    f"trends2 备用端点失败 ({endpoint}): {fallback_error}"
+                ) from fallback_error
         for record in records:
             safe_points = [
                 point for point in record["points"]
@@ -154,7 +173,7 @@ class Trends2QuoteCollector:
             "schema_version": 2,
             "source": {
                 "name": SOURCE_NAME,
-                "endpoint": TRENDS2_ENDPOINT,
+                "endpoint": endpoint,
                 "urls": urls,
             },
             "observed_at": observed_at.isoformat(),
@@ -167,7 +186,18 @@ class Trends2QuoteCollector:
         self._atomic_write(path, payload)
         return payload
 
-    def _url(self, symbol: str) -> str:
+    def _collect_batch(
+        self, watchlist: Sequence[WatchItem], endpoint: str,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        records = []
+        urls = []
+        for item in watchlist:
+            url = self._url(item.symbol, endpoint)
+            urls.append(url)
+            records.append(self._fetch(item, url, endpoint))
+        return records, urls
+
+    def _url(self, symbol: str, endpoint: str = TRENDS2_ENDPOINT) -> str:
         query = urlencode({
             "secid": f"{market_for_symbol(symbol)}.{symbol}",
             "fields1": _FIELDS1,
@@ -175,9 +205,9 @@ class Trends2QuoteCollector:
             "iscr": 0,
             "ndays": 1,
         })
-        return f"{TRENDS2_ENDPOINT}?{query}"
+        return f"{endpoint}?{query}"
 
-    def _fetch(self, item: WatchItem, url: str) -> dict[str, Any]:
+    def _fetch(self, item: WatchItem, url: str, endpoint: str) -> dict[str, Any]:
         request = Request(url, headers={
             "Accept": "application/json",
             "User-Agent": "Mozilla/5.0",
@@ -186,7 +216,7 @@ class Trends2QuoteCollector:
         try:
             raw = json.loads(self.transport(request, self.timeout).decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise MarketDataError(f"{item.symbol} trends2 请求失败: {error}") from error
+            raise _RequestFailure(item.symbol, endpoint, error) from error
         if not isinstance(raw, dict) or raw.get("rc") != 0:
             raise MarketDataError(f"{item.symbol} trends2 返回失败")
         data = raw.get("data")

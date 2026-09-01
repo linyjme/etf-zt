@@ -14,7 +14,10 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
-from etf_rotation.quote_collector import SOURCE_NAME, Trends2QuoteCollector, market_for_symbol
+from etf_rotation.quote_collector import (
+    SOURCE_NAME, TRENDS2_ENDPOINT, TRENDS2_FALLBACK_ENDPOINT,
+    Trends2QuoteCollector, market_for_symbol,
+)
 from etf_rotation.t_monitor import (
     AlertHistoryStore, JsonQuoteAdapter, MarketDataError, QuoteHistoryStore,
     MonitorSignal, TMonitorEngine, WatchItem, load_watchlist, snapshot_to_dict,
@@ -161,6 +164,92 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
         self.assertEqual(len(requests), 2)
         self.assertIn("secid=1.510300", requests[0][0])
         self.assertIn("secid=0.159915", requests[1][0])
+        self.assertEqual(payload["source"]["endpoint"], TRENDS2_ENDPOINT)
+        self.assertTrue(all(url.startswith(TRENDS2_ENDPOINT) for url in payload["source"]["urls"]))
+
+    def test_retries_entire_batch_on_fallback_after_primary_transport_failure(self) -> None:
+        requests = []
+
+        def transport(request: Request, timeout: float) -> bytes:
+            requests.append(request.full_url)
+            secid = parse_qs(urlsplit(request.full_url).query)["secid"][0]
+            market, symbol = secid.split(".")
+            if request.full_url.startswith(TRENDS2_ENDPOINT) and symbol == "159915":
+                raise OSError("primary connection ended prematurely")
+            return self.response(symbol, int(market))
+
+        watchlist = (
+            WatchItem("510300", "沪深300ETF", 0.002),
+            WatchItem("159915", "创业板ETF", 0.002),
+        )
+        payload = Trends2QuoteCollector(
+            transport=transport,
+            now=lambda: datetime.fromisoformat(NOW),
+        ).collect(watchlist)
+
+        self.assertEqual(payload["source"]["endpoint"], TRENDS2_FALLBACK_ENDPOINT)
+        self.assertTrue(all(url.startswith(TRENDS2_FALLBACK_ENDPOINT) for url in payload["source"]["urls"]))
+        self.assertEqual(
+            [(urlsplit(url).netloc, parse_qs(urlsplit(url).query)["secid"][0]) for url in requests],
+            [
+                (urlsplit(TRENDS2_ENDPOINT).netloc, "1.510300"),
+                (urlsplit(TRENDS2_ENDPOINT).netloc, "0.159915"),
+                (urlsplit(TRENDS2_FALLBACK_ENDPOINT).netloc, "1.510300"),
+                (urlsplit(TRENDS2_FALLBACK_ENDPOINT).netloc, "0.159915"),
+            ],
+        )
+
+    def test_retries_fallback_when_primary_response_cannot_be_decoded(self) -> None:
+        requests = []
+
+        def transport(request: Request, timeout: float) -> bytes:
+            requests.append(request.full_url)
+            if request.full_url.startswith(TRENDS2_ENDPOINT):
+                return b"not-json"
+            return self.response("510300", 1)
+
+        payload = Trends2QuoteCollector(
+            transport=transport,
+            now=lambda: datetime.fromisoformat(NOW),
+        ).collect((WatchItem("510300", "沪深300ETF", 0.002),))
+
+        self.assertEqual(payload["source"]["endpoint"], TRENDS2_FALLBACK_ENDPOINT)
+        self.assertEqual(len(requests), 2)
+
+    def test_does_not_fallback_for_business_response_failure(self) -> None:
+        wrong_code = json.loads(self.response("159915", 0))
+        wrong_market = json.loads(self.response("510300", 0))
+        responses = (
+            ({"rc": 1, "data": None}, "返回失败"),
+            ({"rc": 0, "data": None}, "缺少 data"),
+            (wrong_code, "代码不匹配"),
+            (wrong_market, "市场不匹配"),
+        )
+        for response, message in responses:
+            with self.subTest(message=message):
+                requests = []
+
+                def transport(request: Request, timeout: float) -> bytes:
+                    requests.append(request.full_url)
+                    return json.dumps(response).encode("utf-8")
+
+                collector = Trends2QuoteCollector(transport=transport)
+                with self.assertRaisesRegex(MarketDataError, message):
+                    collector.collect((WatchItem("510300", "沪深300ETF", 0.002),))
+
+                self.assertEqual(len(requests), 1)
+                self.assertTrue(requests[0].startswith(TRENDS2_ENDPOINT))
+
+    def test_reports_both_endpoints_when_primary_and_fallback_requests_fail(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            raise OSError(f"connection failed for {urlsplit(request.full_url).netloc}")
+
+        collector = Trends2QuoteCollector(transport=transport)
+        with self.assertRaisesRegex(
+            MarketDataError,
+            r"510300.*push2his\.eastmoney\.com.*510300.*push2delay\.eastmoney\.com",
+        ):
+            collector.collect((WatchItem("510300", "沪深300ETF", 0.002),))
 
     def test_collects_exactly_the_six_enabled_watchlist_etfs(self) -> None:
         watchlist_path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "watchlist.json"

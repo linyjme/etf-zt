@@ -816,7 +816,7 @@ class MarketDataValidatorTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(MarketDataError, "量价"):
             self.validator.validate_point(
-                point("09:31", price=10.0, open_price=10.0, high=10.1, low=9.9, amount=9.898 * 100 * 100),
+                point("09:31", price=10.0, open_price=10.0, high=10.1, low=9.9, amount=9.8 * 100 * 100),
                 10.0,
             )
 
@@ -845,6 +845,37 @@ class MarketDataValidatorTests(unittest.TestCase):
                     amount=(1136.1 * 100 * 7.949),
                 ),
                 7.95,
+            )
+
+    def test_amount_check_allows_one_rounded_up_volume_unit(self) -> None:
+        self.validator.validate_point(
+            point(
+                "10:49",
+                price=7.879,
+                average_price=7.879,
+                open_price=7.880,
+                high=7.881,
+                low=7.878,
+                volume=1253.0,
+                amount=986874.0,
+            ),
+            7.90,
+        )
+
+    def test_amount_check_rejects_low_implied_price_beyond_one_volume_unit(self) -> None:
+        with self.assertRaisesRegex(MarketDataError, "量价"):
+            self.validator.validate_point(
+                point(
+                    "10:49",
+                    price=7.879,
+                    average_price=7.879,
+                    open_price=7.880,
+                    high=7.881,
+                    low=7.878,
+                    volume=1254.0,
+                    amount=986874.0,
+                ),
+                7.90,
             )
 
 
