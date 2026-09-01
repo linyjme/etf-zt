@@ -403,6 +403,16 @@ class SwingServiceTests(unittest.TestCase):
                 "2026-09-01T13:59:30+08:00", "CLOSED", "UNAVAILABLE",
             ),
             (
+                "source-stale",
+                datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI),
+                "2026-09-01T13:59:30+08:00", "STALE", "STALE",
+            ),
+            (
+                "source-outage",
+                datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI),
+                "2026-09-01T13:59:30+08:00", "OUTAGE", "OUTAGE",
+            ),
+            (
                 "malformed", datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI),
                 "not-an-iso-time", "REALTIME", "UNAVAILABLE",
             ),
@@ -438,7 +448,7 @@ class SwingServiceTests(unittest.TestCase):
             ),
             (
                 "lunch", datetime(2026, 9, 1, 12, 0, tzinfo=SHANGHAI),
-                "2026-09-01T11:59:30+08:00", "CLOSED",
+                "2026-09-01T11:59:30+08:00", "LUNCH_BREAK",
             ),
             (
                 "stale", datetime(2026, 9, 1, 10, 0, tzinfo=SHANGHAI),
@@ -477,6 +487,28 @@ class SwingServiceTests(unittest.TestCase):
                     alert["scope"] == "INTRADAY"
                     for alert in snapshot["active_alerts"]
                 ))
+
+    def test_explicit_nonrealtime_source_retracts_existing_overlay(self) -> None:
+        service = self.make_service()
+        self.assertTrue(any(
+            item["scope"] == "INTRADAY"
+            for item in service.refresh_intraday()["active_alerts"]
+        ))
+        service.intraday_provider = lambda: {"items": [{
+            "symbol": "510300", "price": 105.9,
+            "timestamp": "2026-09-01T13:59:30+08:00",
+            "health_status": "STALE",
+        }]}
+        snapshot = service.refresh_intraday()
+        self.assertEqual(snapshot["health"]["intraday"], "STALE")
+        self.assertEqual(
+            snapshot["items"][0]["intraday_health_status"], "STALE",
+        )
+        self.assertIsNone(snapshot["items"][0]["intraday_overlay"])
+        self.assertFalse(any(
+            item["scope"] == "INTRADAY"
+            for item in snapshot["active_alerts"]
+        ))
 
     def test_hostile_intraday_fields_withdraw_previous_overlay(self) -> None:
         class HostileStatus(str):
@@ -1045,6 +1077,67 @@ class SwingServiceTests(unittest.TestCase):
         )
         after = service.snapshot()
         self.assertEqual(after["items"], before_snapshot["items"])
+
+    def test_new_trade_rejects_future_execution_but_retry_ignores_clock_rollback(
+        self,
+    ) -> None:
+        service = self.make_service(clock=lambda: datetime(
+            2026, 9, 1, 10, 1, tzinfo=SHANGHAI,
+        ))
+        before_trades = self.paths.trades.read_bytes()
+        before_portfolio_file = self.paths.portfolio_snapshot.read_bytes()
+        before_projection = service.portfolio()
+        before_revision = service.snapshot()["revision"]
+        for side in ("BUY", "SELL"):
+            with self.subTest(side=side), self.assertRaisesRegex(
+                Exception, "trusted clock",
+            ):
+                service.record_trade(TradeInput(
+                    "510300", side, 100, 100.0, 0.0,
+                    datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI),
+                    planned_risk_per_share=(2.0 if side == "BUY" else 0.0),
+                ), f"far-future-{side.lower()}")
+        self.assertEqual(self.paths.trades.read_bytes(), before_trades)
+        self.assertEqual(
+            self.paths.portfolio_snapshot.read_bytes(), before_portfolio_file,
+        )
+        self.assertEqual(service.portfolio(), before_projection)
+        self.assertEqual(service.snapshot()["revision"], before_revision)
+
+        boundary = TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, 1, 5, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        )
+        accepted = service.record_trade(boundary, "future-skew-boundary")
+        accepted_revision = service.snapshot()["revision"]
+        accepted_trades = self.paths.trades.read_bytes()
+        accepted_portfolio = self.paths.portfolio_snapshot.read_bytes()
+
+        with self.assertRaisesRegex(Exception, "trusted clock"):
+            service.record_trade(replace(
+                boundary,
+                executed_at=datetime(
+                    2026, 9, 1, 10, 1, 6, tzinfo=SHANGHAI,
+                ),
+            ), "future-skew-exceeded")
+        self.assertEqual(service.snapshot()["revision"], accepted_revision)
+        self.assertEqual(self.paths.trades.read_bytes(), accepted_trades)
+        self.assertEqual(
+            self.paths.portfolio_snapshot.read_bytes(), accepted_portfolio,
+        )
+
+        service.clock = lambda: datetime(
+            2026, 9, 1, 9, 0, tzinfo=SHANGHAI,
+        )
+        self.assertEqual(
+            service.record_trade(boundary, "future-skew-boundary"), accepted,
+        )
+        self.assertEqual(service.snapshot()["revision"], accepted_revision)
+        self.assertEqual(self.paths.trades.read_bytes(), accepted_trades)
+        self.assertEqual(
+            self.paths.portfolio_snapshot.read_bytes(), accepted_portfolio,
+        )
 
     def test_inferred_stop_exit_retry_is_stable_and_still_checks_payload(self) -> None:
         service = self.make_service()

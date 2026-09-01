@@ -62,6 +62,7 @@ _FINAL_DAILY_TIME = time(15, 10)
 _DEFAULT_HISTORY_COUNT = 260
 _MAX_DAILY_QUOTE_LIMIT = 10_000
 _REALTIME_FUTURE_SKEW_SECONDS = 5.0
+_TRADE_FUTURE_SKEW_SECONDS = 5.0
 _READ_MODEL_KEY = "_published_read_model"
 _ACTION_STATES = frozenset({
     SwingState.TRIAL_ENTRY_CANDIDATE,
@@ -574,7 +575,8 @@ class SwingService:
                 event for event in ledger.load_events()
                 if event.idempotency_key == idempotency_key
             )
-            inference_now = self._safe_now() if not prior else None
+            if len(prior) > 1:
+                raise SwingServiceError("duplicate trade idempotency keys")
             if len(prior) == 1:
                 existing = prior[0]
                 if (
@@ -585,7 +587,13 @@ class SwingService:
                     and existing.payload.get("exit_reason") == "STOP_EXIT"
                 ):
                     normalized = replace(trade, exit_reason="STOP_EXIT")
-            elif not prior and (
+                return ledger.record_trade(
+                    normalized, idempotency_key,
+                ).to_dict()
+
+            inference_now = self._trusted_trade_now()
+            self._validate_trade_execution_time(trade, inference_now)
+            if (
                 type(trade) is TradeInput
                 and trade.side == "SELL"
                 and trade.exit_reason is None
@@ -600,8 +608,36 @@ class SwingService:
             event = ledger.record_trade(
                 normalized, idempotency_key,
             )
-            self._rebuild_after_portfolio_mutation(self._safe_now())
+            self._rebuild_after_portfolio_mutation(inference_now)
             return event.to_dict()
+
+    def _trusted_trade_now(self) -> datetime:
+        try:
+            value = self._local_time(self.clock())
+        except Exception as error:
+            self._health["service"] = "CLOCK_FAILED"
+            self._errors["service"] = self._safe_error(error)
+            raise SwingServiceError("trusted clock is unavailable") from error
+        self._mark_clock_success()
+        return value
+
+    @staticmethod
+    def _validate_trade_execution_time(
+        trade: TradeInput,
+        trusted_now: datetime,
+    ) -> None:
+        if type(trade) is not TradeInput:
+            return
+        try:
+            executed_at = trade.executed_at.astimezone(SHANGHAI)
+        except Exception as error:
+            raise SwingServiceError(
+                "trade executed_at cannot be compared with trusted clock",
+            ) from error
+        if executed_at > trusted_now + timedelta(
+            seconds=_TRADE_FUTURE_SKEW_SECONDS,
+        ):
+            raise SwingServiceError("trade executed_at exceeds trusted clock")
 
     def _sell_completes_position(self, trade: TradeInput) -> bool:
         projection = self._portfolio_projection
@@ -1480,10 +1516,14 @@ class SwingService:
             aggregate_health = "REALTIME"
         elif "UNAVAILABLE" in validated_statuses or not validated_statuses:
             aggregate_health = "UNAVAILABLE"
+        elif "OUTAGE" in validated_statuses:
+            aggregate_health = "OUTAGE"
         elif "STALE" in validated_statuses:
             aggregate_health = "STALE"
         elif "DELAYED" in validated_statuses:
             aggregate_health = "DELAYED"
+        elif "LUNCH_BREAK" in validated_statuses:
+            aggregate_health = "LUNCH_BREAK"
         else:
             aggregate_health = "CLOSED"
         self._health["intraday"] = aggregate_health
@@ -1515,11 +1555,20 @@ class SwingService:
     ) -> tuple[bool, str | None, str]:
         if self._closed_dates is None:
             return False, None, "UNAVAILABLE"
+        now_time = now.timetz().replace(tzinfo=None)
+        if (
+            self._is_trading_date(now.date())
+            and time(11, 30) < now_time < time(13, 0)
+        ):
+            timestamp = raw.get("timestamp") if raw is not None else None
+            return (
+                False,
+                timestamp if type(timestamp) is str else None,
+                "LUNCH_BREAK",
+            )
         if (
             not self._is_trading_date(now.date())
-            or not self._in_continuous_session(
-                now.timetz().replace(tzinfo=None),
-            )
+            or not self._in_continuous_session(now_time)
         ):
             timestamp = raw.get("timestamp") if raw is not None else None
             return (
@@ -1533,6 +1582,8 @@ class SwingService:
         raw_timestamp = raw.get("timestamp")
         if type(raw_timestamp) is not str:
             return False, None, "UNAVAILABLE"
+        if type(status) is not str:
+            return False, raw_timestamp, "UNAVAILABLE"
         try:
             timestamp = datetime.fromisoformat(raw_timestamp)
             if timestamp.tzinfo is None or timestamp.utcoffset() is None:
@@ -1540,6 +1591,10 @@ class SwingService:
             local_timestamp = timestamp.astimezone(SHANGHAI)
             age = (now - local_timestamp).total_seconds()
         except Exception:
+            return False, raw_timestamp, "UNAVAILABLE"
+        if status in {"DELAYED", "STALE", "OUTAGE"}:
+            return False, raw_timestamp, status
+        if status != "REALTIME":
             return False, raw_timestamp, "UNAVAILABLE"
         if (
             local_timestamp.date() != now.date()
@@ -1551,13 +1606,7 @@ class SwingService:
             return False, raw_timestamp, "STALE"
         if age < -_REALTIME_FUTURE_SKEW_SECONDS:
             return False, raw_timestamp, "UNAVAILABLE"
-        if type(status) is not str:
-            return False, raw_timestamp, "UNAVAILABLE"
-        if status == "REALTIME":
-            return True, raw_timestamp, "REALTIME"
-        if status in {"DELAYED", "STALE"}:
-            return False, raw_timestamp, "DELAYED"
-        return False, raw_timestamp, "UNAVAILABLE"
+        return True, raw_timestamp, "REALTIME"
 
     @staticmethod
     def _in_continuous_session(value: time) -> bool:
