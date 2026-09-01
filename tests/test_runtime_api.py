@@ -1192,6 +1192,10 @@ class RuntimeTests(unittest.TestCase):
             json.dumps(valid_completed_quote_payload(), ensure_ascii=False),
             encoding="utf-8",
         )
+        self.paths.metadata.write_text(
+            json.dumps(test_metadata_document("510300", "159915")),
+            encoding="utf-8",
+        )
         app = self.make_runtime_fixture(collector=None)
         before = {
             "quotes": self.paths.quotes.read_bytes(),
