@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time as _time
 from types import MappingProxyType
 from typing import Callable
 import uuid
@@ -34,6 +35,9 @@ _LEVELS = frozenset({"BLUE", "YELLOW", "GREEN", "RED", "GRAY"})
 _MAX_TEXT = 4096
 _MAX_KEY = 256
 _MAX_JSON_DEPTH = 32
+_WINDOWS_REPLACE_RETRY_SECONDS = 0.005
+_WINDOWS_REPLACE_MAX_ATTEMPTS = 20
+_WINDOWS_REPLACE_TRANSIENT_ERRORS = frozenset((5, 32, 33))
 
 
 class AlertStoreError(ValueError):
@@ -884,13 +888,34 @@ def _atomic_replace_bytes(path: Path, content: bytes) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
+        _replace_file(temporary_path, path)
         temporary_path = None
     except OSError as error:
         raise AlertStoreError(f"atomic alert write failed: {error}") from error
     finally:
         if temporary_path is not None:
-            try:
-                temporary_path.unlink()
-            except FileNotFoundError:
-                pass
+            _safe_unlink(temporary_path)
+
+
+def _replace_file(source: Path, destination: Path) -> None:
+    for attempt in range(_WINDOWS_REPLACE_MAX_ATTEMPTS):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as error:
+            retryable = (
+                os.name == "nt"
+                and getattr(error, "winerror", None)
+                in _WINDOWS_REPLACE_TRANSIENT_ERRORS
+                and attempt + 1 < _WINDOWS_REPLACE_MAX_ATTEMPTS
+            )
+            if not retryable:
+                raise
+        _time.sleep(_WINDOWS_REPLACE_RETRY_SECONDS)
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink()
+    except BaseException:
+        pass

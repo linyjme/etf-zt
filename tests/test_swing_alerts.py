@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from etf_rotation.swing_alerts import (
     AlertEvent,
@@ -325,6 +326,60 @@ class SwingAlertStoreTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=8) as pool:
             tuple(pool.map(self.store.publish_formal, alerts))
         self.assertEqual(len(self.store.current()), 20)
+
+    def test_transient_windows_replace_error_is_retried_then_succeeds(self) -> None:
+        real_replace = os.replace
+        attempts = 0
+
+        def transient_replace(source: object, destination: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                error = PermissionError(13, "transient sharing denial")
+                error.winerror = 5  # type: ignore[attr-defined]
+                raise error
+            real_replace(source, destination)
+
+        with (
+            patch("etf_rotation.swing_alerts.os.name", "nt"),
+            patch(
+                "etf_rotation.swing_alerts.os.replace",
+                side_effect=transient_replace,
+            ),
+            patch("etf_rotation.swing_alerts._time.sleep") as sleep,
+        ):
+            published = self.store.publish_formal(formal_alert())
+
+        self.assertEqual(attempts, 2)
+        sleep.assert_called_once_with(0.005)
+        self.assertEqual(self.store.current(), (published,))
+
+    def test_exhausted_windows_replace_retries_fail_closed_and_clean_temp(self) -> None:
+        original = self.store.publish_formal(formal_alert())
+        before = self.path.read_bytes()
+        error = PermissionError(13, "persistent sharing denial")
+        error.winerror = 32  # type: ignore[attr-defined]
+        with (
+            patch("etf_rotation.swing_alerts.os.name", "nt"),
+            patch(
+                "etf_rotation.swing_alerts.os.replace",
+                side_effect=error,
+            ) as replace,
+            patch("etf_rotation.swing_alerts._time.sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(AlertStoreError, "atomic alert write failed"):
+                self.store.publish_formal(
+                    formal_alert(trading_date=date(2026, 9, 1)),
+                )
+
+        self.assertEqual(replace.call_count, 20)
+        self.assertEqual(sleep.call_count, 19)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(
+            list(self.path.parent.glob(f".{self.path.name}.*.tmp")),
+            [],
+        )
+        self.assertEqual(self.store.current(), (original,))
 
     def test_process_publish_does_not_lose_alerts(self) -> None:
         script = """
