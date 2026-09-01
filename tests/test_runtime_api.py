@@ -254,6 +254,7 @@ class FailingStore:
 class ScriptedEventApplication:
     def __init__(self) -> None:
         self._stop_event = threading.Event()
+        self.snapshot_calls = 0
         self.waits: list[int] = []
         self.script: list[dict[str, object] | None | str] = [
             {"event": "delta", "revision": 8, "items": [], "upserts": {}},
@@ -263,6 +264,7 @@ class ScriptedEventApplication:
         ]
 
     def snapshot(self) -> dict[str, object]:
+        self.snapshot_calls += 1
         return {"revision": 7, "items": []}
 
     def wait_for_revision(
@@ -296,6 +298,24 @@ class ExplodingStream:
 
     def flush(self) -> None:
         raise AssertionError("flush must not run after write fails")
+
+
+class FlushAbortedStream:
+    def __init__(self) -> None:
+        self.flush_calls = 0
+        self.writes: list[bytes] = []
+
+    def write(self, value: bytes) -> None:
+        self.writes.append(value)
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+        raise ConnectionAbortedError(10053, "已建立的连接被主机中的软件中止")
+
+
+class SnapshotAbortedApplication(ScriptedEventApplication):
+    def snapshot(self) -> dict[str, object]:
+        raise ConnectionAbortedError(10053, "application failure")
 
 
 class RestartCursorApplication:
@@ -1312,6 +1332,53 @@ class RuntimeTests(unittest.TestCase):
         handler.end_headers = lambda: None
 
         with self.assertRaisesRegex(RuntimeError, "unexpected stream failure"):
+            handler._events()
+
+    def test_sse_ignores_windows_connection_abort_while_ending_headers(self) -> None:
+        application = ScriptedEventApplication()
+        handler = object.__new__(MonitorRequestHandler)
+        handler.server = SimpleNamespace(application=application)
+        handler.headers = {}
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+
+        def abort_headers() -> None:
+            raise ConnectionAbortedError(10053, "header connection aborted")
+
+        handler.end_headers = abort_headers
+
+        handler._events()
+
+        self.assertEqual(application.snapshot_calls, 0)
+        self.assertEqual(handler.wfile.getvalue(), b"")
+
+    def test_sse_ignores_windows_connection_abort_while_flushing(self) -> None:
+        application = ScriptedEventApplication()
+        handler = object.__new__(MonitorRequestHandler)
+        handler.server = SimpleNamespace(application=application)
+        handler.headers = {}
+        handler.wfile = FlushAbortedStream()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+
+        handler._events()
+
+        self.assertEqual(len(handler.wfile.writes), 1)
+        self.assertEqual(handler.wfile.flush_calls, 1)
+        self.assertEqual(application.waits, [])
+
+    def test_sse_propagates_connection_abort_from_application_logic(self) -> None:
+        handler = object.__new__(MonitorRequestHandler)
+        handler.server = SimpleNamespace(application=SnapshotAbortedApplication())
+        handler.headers = {}
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+
+        with self.assertRaisesRegex(ConnectionAbortedError, "application failure"):
             handler._events()
 
     def test_health_summary_tracks_latest_outage_revision(self) -> None:

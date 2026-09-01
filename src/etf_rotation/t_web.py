@@ -45,6 +45,11 @@ from .valuation import ValuationStore
 _DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "monitor"
 _DEFAULT_METADATA_PATH = _DATA_ROOT / "etf_metadata.json"
 _DEFAULT_CALENDAR_PATH = _DATA_ROOT / "market_calendar.json"
+_EXPECTED_SSE_DISCONNECTS = (
+    BrokenPipeError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+)
 
 
 @dataclass
@@ -1156,35 +1161,38 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
         try:
-            application = self.server.application
-            header = self.headers.get("Last-Event-ID")
-            if header is None:
+            self.end_headers()
+        except _EXPECTED_SSE_DISCONNECTS:
+            return
+        application = self.server.application
+        header = self.headers.get("Last-Event-ID")
+        if header is None:
+            payload = application.snapshot()
+            after_revision = int(payload["revision"])
+            if not self._write_snapshot_event(payload):
+                return
+        else:
+            try:
+                after_revision = int(header)
+            except (TypeError, ValueError):
                 payload = application.snapshot()
                 after_revision = int(payload["revision"])
-                self._write_snapshot_event(payload)
-            else:
-                try:
-                    after_revision = int(header)
-                except (TypeError, ValueError):
-                    payload = application.snapshot()
-                    after_revision = int(payload["revision"])
-                    self._write_snapshot_event(payload)
-            while not application.is_stopping():
-                payload = application.wait_for_revision(after_revision, timeout=5.0)
-                if payload is None:
-                    if application.is_stopping():
-                        return
-                    self.wfile.write(b": heartbeat\n\n")
-                    self.wfile.flush()
-                    continue
-                after_revision = int(payload["revision"])
-                self._write_snapshot_event(payload)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            return
+                if not self._write_snapshot_event(payload):
+                    return
+        while not application.is_stopping():
+            payload = application.wait_for_revision(after_revision, timeout=5.0)
+            if payload is None:
+                if application.is_stopping():
+                    return
+                if not self._write_sse(b": heartbeat\n\n"):
+                    return
+                continue
+            after_revision = int(payload["revision"])
+            if not self._write_snapshot_event(payload):
+                return
 
-    def _write_snapshot_event(self, payload: Mapping[str, Any]) -> None:
+    def _write_snapshot_event(self, payload: Mapping[str, Any]) -> bool:
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         revision = int(payload["revision"])
         event_name = (
@@ -1192,10 +1200,17 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             if payload.get("event") in {"delta", "reset"}
             else "snapshot"
         )
-        self.wfile.write(
+        return self._write_sse(
             f"id: {revision}\nevent: {event_name}\ndata: {content}\n\n".encode("utf-8"),
         )
-        self.wfile.flush()
+
+    def _write_sse(self, value: bytes) -> bool:
+        try:
+            self.wfile.write(value)
+            self.wfile.flush()
+        except _EXPECTED_SSE_DISCONNECTS:
+            return False
+        return True
 
     def _json(self, status: HTTPStatus, value: dict[str, Any]) -> None:
         body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
