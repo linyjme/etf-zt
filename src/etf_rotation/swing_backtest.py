@@ -551,6 +551,8 @@ class BacktestAccount:
         execution_index: int,
         raw_reference_price: float | None = None,
         forced_reason: str | None = None,
+        known_volume: float | None = None,
+        execution_phase: str = "NEXT_OPEN",
     ) -> SwingFill | None:
         if type(decision) is not SwingDecision or type(bar) is not DailyBar:
             raise SwingBacktestError("execute requires SwingDecision and DailyBar")
@@ -558,6 +560,10 @@ class BacktestAccount:
             "GAP_THROUGH_STOP", "STOP_EXIT",
         }:
             raise SwingBacktestError("forced_reason is invalid")
+        if execution_phase not in {
+            "NEXT_OPEN", "OPEN_GAP_STOP", "INTRADAY_STOP",
+        }:
+            raise SwingBacktestError("execution_phase is invalid")
         if decision.state not in _BUY_STATES | _SELL_STATES:
             return None
         side = "BUY" if decision.state in _BUY_STATES else "SELL"
@@ -590,14 +596,23 @@ class BacktestAccount:
         if rounded <= 0:
             self._reject(decision, bar, side, requested, "LOT_SIZE")
             return None
-        if bar.volume <= 0.0:
+        available_volume = (
+            bar.volume if known_volume is None
+            else _finite(known_volume, "known_volume")
+        )
+        if available_volume <= 0.0:
             self._reject(decision, bar, side, requested, "ZERO_VOLUME")
             return None
-        if self._limit_locked(bar, side):
+        limit_blocked = (
+            self._limit_locked(bar, side)
+            if execution_phase == "INTRADAY_STOP"
+            else self._open_limit_blocked(bar, side)
+        )
+        if limit_blocked:
             self._reject(decision, bar, side, requested, "LIMIT_LOCKED")
             return None
         capacity = _lot_floor(
-            bar.volume * self.trading.volume_unit_shares
+            available_volume * self.trading.volume_unit_shares
             * self.config.max_volume_participation,
             self.trading.lot_size,
         )
@@ -617,13 +632,22 @@ class BacktestAccount:
             lower_limit = bar.previous_close * (1.0 - self.trading.price_limit_pct)
             upper_limit = bar.previous_close * (1.0 + self.trading.price_limit_pct)
             if side == "BUY":
-                fill_price = min(fill_price, bar.high, upper_limit)
+                fill_price = min(
+                    fill_price,
+                    bar.high if execution_phase == "INTRADAY_STOP" else upper_limit,
+                    upper_limit,
+                )
             else:
-                fill_price = max(fill_price, bar.low, lower_limit)
-        elif side == "BUY":
-            fill_price = min(fill_price, bar.high)
-        else:
-            fill_price = max(fill_price, bar.low)
+                fill_price = max(
+                    fill_price,
+                    bar.low if execution_phase == "INTRADAY_STOP" else lower_limit,
+                    lower_limit,
+                )
+        elif execution_phase == "INTRADAY_STOP":
+            if side == "BUY":
+                fill_price = min(fill_price, bar.high)
+            else:
+                fill_price = max(fill_price, bar.low)
         execution_stop = self._execution_stop(decision, bar)
         if side == "BUY":
             if execution_stop is not None and (
@@ -652,6 +676,20 @@ class BacktestAccount:
             if affordable < executable:
                 executable = affordable
                 limit_reason = "CASH"
+            risk_capacity = self._actual_buy_capacity(
+                fill_price,
+                reference_price,
+                execution_stop,
+                executable,
+            )
+            if risk_capacity <= 0:
+                self._reject(
+                    decision, bar, side, requested, "ACTUAL_RISK_LIMIT",
+                )
+                return None
+            if risk_capacity < executable:
+                executable = risk_capacity
+                limit_reason = "ACTUAL_RISK_LIMIT"
         else:
             if self.shares <= 0:
                 self._reject(decision, bar, side, requested, "INVENTORY")
@@ -672,9 +710,10 @@ class BacktestAccount:
         fee_rate = self.buy_fee_rate if side == "BUY" else self.sell_fee_rate
         notional = executable * fill_price
         fee = max(notional * fee_rate, self.minimum_fee)
-        if side == "SELL" and notional <= fee:
+        if side == "SELL" and self.cash + notional - fee < -1e-9:
             self._reject(
-                decision, bar, side, requested, "NET_PROCEEDS_NONPOSITIVE",
+                decision, bar, side, requested,
+                "INSUFFICIENT_CASH_FOR_SELL_FEE",
             )
             return None
         spread_cost, slippage = _execution_cost_parts(
@@ -719,6 +758,57 @@ class BacktestAccount:
         self._last_index = max(self._last_index, execution_index)
         return fill
 
+    def execute_open_gap_stop(
+        self,
+        decision: SwingDecision,
+        bar: DailyBar,
+        *,
+        execution_index: int,
+        known_volume: float | None = None,
+    ) -> bool:
+        """Phase A: execute a pre-existing stop known to be crossed at open."""
+        if self.shares <= 0:
+            return False
+        execution_stop = self._effective_protective_stop(decision, bar)
+        if execution_stop is None or bar.open > execution_stop:
+            return False
+        protective = self._protective_decision(decision, execution_stop)
+        gap = bar.open < execution_stop
+        self.execute(
+            protective,
+            bar,
+            execution_index=execution_index,
+            raw_reference_price=bar.open,
+            forced_reason="GAP_THROUGH_STOP" if gap else "STOP_EXIT",
+            known_volume=known_volume,
+            execution_phase="OPEN_GAP_STOP",
+        )
+        return True
+
+    def execute_intraday_stop(
+        self,
+        decision: SwingDecision,
+        bar: DailyBar,
+        *,
+        execution_index: int,
+    ) -> bool:
+        """Phase C: after open orders, sell inventory available at a touched stop."""
+        if self.shares <= 0:
+            return False
+        execution_stop = self._effective_protective_stop(decision, bar)
+        if execution_stop is None or bar.low > execution_stop:
+            return False
+        protective = self._protective_decision(decision, execution_stop)
+        self.execute(
+            protective,
+            bar,
+            execution_index=execution_index,
+            raw_reference_price=execution_stop,
+            forced_reason="STOP_EXIT",
+            execution_phase="INTRADAY_STOP",
+        )
+        return True
+
     def execute_protective_stop(
         self,
         decision: SwingDecision,
@@ -726,19 +816,26 @@ class BacktestAccount:
         *,
         execution_index: int,
     ) -> bool:
-        """Exit before lower-priority actions when the completed bar touches stop."""
-        if self.shares <= 0 or decision.planned_stop is None:
-            return False
-        execution_stop = self._execution_stop(decision, bar)
-        if execution_stop is None or bar.low > execution_stop:
-            return False
+        """Compatibility helper applying phase A, then phase C if needed."""
+        if self.execute_open_gap_stop(
+            decision, bar, execution_index=execution_index,
+        ):
+            return True
+        return self.execute_intraday_stop(
+            decision, bar, execution_index=execution_index,
+        )
+
+    def _protective_decision(
+        self,
+        decision: SwingDecision,
+        execution_stop: float,
+    ) -> SwingDecision:
         evidence = dict(decision.evidence)
         evidence.update({
             "exit_any": True,
             "exit_hard_stop": True,
-            "protective_gap_at_open": True,
         })
-        protective = SwingDecision(
+        return SwingDecision(
             symbol=decision.symbol,
             strategy_version=decision.strategy_version,
             as_of_trading_date=decision.as_of_trading_date,
@@ -747,21 +844,12 @@ class BacktestAccount:
             blocked_reasons=(),
             planned_entry_low=None,
             planned_entry_high=None,
-            planned_stop=decision.planned_stop,
+            planned_stop=execution_stop,
             planned_shares=self.shares,
             planned_risk_rate=decision.planned_risk_rate,
             first_reduce_price=None,
             valid_for_trading_date=None,
         )
-        gap = bar.open < execution_stop
-        self.execute(
-            protective,
-            bar,
-            execution_index=execution_index,
-            raw_reference_price=bar.open if gap else execution_stop,
-            forced_reason="GAP_THROUGH_STOP" if gap else "STOP_EXIT",
-        )
-        return True
 
     def execute_protective_gap(
         self,
@@ -822,6 +910,20 @@ class BacktestAccount:
         )
         return locked and at_bound
 
+    def _open_limit_blocked(self, bar: DailyBar, side: str) -> bool:
+        """Conservatively reject an order opened at its adverse price limit."""
+        if self._is_scale_transition(bar):
+            return False
+        pct = self.trading.price_limit_pct
+        tick = self.trading.price_tick
+        bound = bar.previous_close * (
+            1.0 + pct if side == "BUY" else 1.0 - pct
+        )
+        return (
+            bar.open >= bound - tick if side == "BUY"
+            else bar.open <= bound + tick
+        )
+
     def _is_scale_transition(self, bar: DailyBar) -> bool:
         if self._last_mark_price <= 0.0 or self._last_adjusted_close <= 0.0:
             return False
@@ -840,6 +942,69 @@ class BacktestAccount:
                 return shares
             shares -= self.trading.lot_size
         return 0
+
+    def _actual_buy_capacity(
+        self,
+        fill_price: float,
+        reference_price: float,
+        execution_stop: float | None,
+        maximum: int,
+    ) -> int:
+        """Cap an opening order from actual fill, stop, equity and exposure."""
+        if execution_stop is None or execution_stop <= 0.0:
+            return 0
+        lot = self.trading.lot_size
+        candidate = _lot_floor(maximum, lot)
+        existing_risk = self.shares * max(
+            0.0, reference_price - execution_stop,
+        )
+        while candidate > 0:
+            notional = candidate * fill_price
+            fee = max(notional * self.buy_fee_rate, self.minimum_fee)
+            cash_after = self.cash - notional - fee
+            shares_after = self.shares + candidate
+            equity_after = cash_after + shares_after * reference_price
+            new_risk = candidate * max(0.0, fill_price - execution_stop)
+            total_risk = existing_risk + new_risk
+            market_value = shares_after * reference_price
+            if (
+                cash_after >= -1e-9
+                and equity_after > 0.0
+                and market_value <= (
+                    equity_after * self.config.max_symbol_weight + 1e-9
+                )
+                and market_value <= (
+                    equity_after * self.config.max_equity_weight + 1e-9
+                )
+                and total_risk <= (
+                    equity_after * self.config.risk_per_trade + 1e-9
+                )
+                and total_risk <= (
+                    equity_after * self.config.max_portfolio_risk + 1e-9
+                )
+            ):
+                return candidate
+            candidate -= lot
+        return 0
+
+    def _current_stop_raw(self, bar: DailyBar) -> float | None:
+        if self._hard_stop_adjusted <= 0.0:
+            return None
+        return self._hard_stop_adjusted * (bar.open / bar.adjusted_open)
+
+    def _effective_protective_stop(
+        self,
+        decision: SwingDecision,
+        bar: DailyBar,
+    ) -> float | None:
+        candidates = tuple(
+            value for value in (
+                self._current_stop_raw(bar),
+                self._execution_stop(decision, bar),
+            )
+            if value is not None and value > 0.0
+        )
+        return max(candidates) if candidates else None
 
     def _book_buy(self, fill: SwingFill, bar: DailyBar, index: int) -> None:
         cash_delta = -(fill.fill_price * fill.shares + fill.fee)
@@ -1044,7 +1209,8 @@ class SwingBacktester:
             "asset_type": self.trading.asset_type,
             "benchmark_liquidated_at_end": False,
             "benchmark_policy": (
-                "same_initial_cash_first_executable_buy_and_hold_to_end"
+                "same_initial_cash_first_executable_open_using_prior_completed_"
+                "volume_buy_and_hold_to_end"
             ),
             "buy_fill_price_formula": (
                 "ceil_to_tick((reference_price+half_spread_ticks*price_tick)"
@@ -1061,17 +1227,27 @@ class SwingBacktester:
             "entry_execution_policy": (
                 "reject_open_at_or_below_stop_or_above_entry_high_plus_one_tick"
             ),
+            "actual_buy_sizing_policy": (
+                "recompute_at_actual_fill_and_stop_then_cap_cash_lot_prior_"
+                "volume_symbol_weight_total_exposure_risk_per_trade_and_"
+                "portfolio_risk"
+            ),
             "exchange": self.trading.exchange,
             "execution_cost_order": (
                 "half_spread_then_percentage_slippage_then_single_adverse_"
                 "tick_rounding"
             ),
-            "execution_timing": "next_trading_day_raw_open",
+            "execution_day_phases": (
+                "A_open_preexisting_stop;B_next_open_formal_order;C_intraday_"
+                "stop_touch_with_metadata_sellability"
+            ),
+            "execution_timing": "next_trading_day_raw_open_then_intraday_stop",
             "fee_formula": (
                 "max(shares*fill_price*side_fee_rate,minimum_fee)"
             ),
             "fill_cap_policy": (
-                "buy_min_model_high_upper_limit;sell_max_model_low_lower_limit"
+                "open_orders_daily_limit_only_without_execution_day_high_low;"
+                "intraday_stop_final_ohlc_and_daily_limit"
             ),
             "financing_policy": "cash_only_no_negative_balance",
             "half_spread_ticks": self.costs["half_spread_ticks"],
@@ -1084,7 +1260,8 @@ class SwingBacktester:
             "minimum_fee": self.costs["minimum_fee"],
             "price_limit_pct": self.trading.price_limit_pct,
             "price_limit_policy": (
-                "reject_locked_side_and_cap_fill_to_daily_limit"
+                "open_reject_at_adverse_limit;intraday_reject_locked_side;"
+                "cap_fill_to_daily_limit"
             ),
             "price_tick": self.trading.price_tick,
             "raw_adjusted_policy": (
@@ -1098,6 +1275,10 @@ class SwingBacktester:
             "sellability_policy": (
                 "metadata_intraday_turnaround_and_sellable_delay_days"
             ),
+            "sell_fee_cash_policy": (
+                "allow_negative_leg_proceeds_if_total_cash_remains_nonnegative;"
+                "otherwise_reject_INSUFFICIENT_CASH_FOR_SELL_FEE"
+            ),
             "sellable_delay_days": self.trading.sellable_delay_days,
             "signal_bar_policy": "completed_daily_bars_through_signal_date",
             "slippage_rate": self.costs["slippage_rate"],
@@ -1107,9 +1288,13 @@ class SwingBacktester:
                 "cost;slippage_is_residual_adverse_cost"
             ),
             "stop_execution_policy": (
-                "raw_open_on_gap_else_stop_on_intraday_touch"
+                "preexisting_open_le_stop_first_and_suppress_stale_signal;"
+                "after_formal_open_order_intraday_low_le_current_stop_at_stop"
             ),
-            "volume_policy": "metadata_units_participation_then_lot_floor",
+            "volume_policy": (
+                "open_orders_prior_completed_bar_volume;intraday_stop_final_"
+                "bar_volume;metadata_units_participation_then_lot_floor"
+            ),
             "volume_unit_shares": self.trading.volume_unit_shares,
         }
 
@@ -1188,13 +1373,26 @@ class SwingBacktester:
                 last_stop_trading_date=context.last_stop_trading_date,
                 has_position=context.position is not None,
             )
-            protected = account.execute_protective_stop(
-                decision, execution_bar, execution_index=execution_index,
+            prior_completed_volume = normalized[index].volume
+            open_stop_triggered = account.execute_open_gap_stop(
+                decision,
+                execution_bar,
+                execution_index=execution_index,
+                known_volume=prior_completed_volume,
             )
-            if not protected:
+            if not open_stop_triggered:
                 account.record_blocked_decision(decision)
                 account.execute(
-                    decision, execution_bar, execution_index=execution_index,
+                    decision,
+                    execution_bar,
+                    execution_index=execution_index,
+                    known_volume=prior_completed_volume,
+                    execution_phase="NEXT_OPEN",
+                )
+                account.execute_intraday_stop(
+                    decision,
+                    execution_bar,
+                    execution_index=execution_index,
                 )
             account.mark(execution_bar, execution_index)
         ending_equity = account.cash + account.shares * normalized[-1].close
@@ -1409,6 +1607,7 @@ class SwingBacktester:
     ) -> SwingBenchmarkResult | None:
         for candidate_index in range(index, len(bars)):
             bar = bars[candidate_index]
+            known_volume = bars[candidate_index - 1].volume
             limit_account = BacktestAccount(
                 initial_cash, self.trading, self.config, **self.costs,
             )
@@ -1417,7 +1616,10 @@ class SwingBacktester:
                 limit_account._last_adjusted_close = (
                     bars[candidate_index - 1].adjusted_close
                 )
-            if bar.volume <= 0.0 or limit_account._limit_locked(bar, "BUY"):
+            if (
+                known_volume <= 0.0
+                or limit_account._open_limit_blocked(bar, "BUY")
+            ):
                 continue
             price = _execution_price(
                 bar.open,
@@ -1428,7 +1630,6 @@ class SwingBacktester:
             )
             price = min(
                 price,
-                bar.high,
                 bar.previous_close * (1.0 + self.trading.price_limit_pct),
             )
             maximum = _lot_floor(initial_cash / price, self.trading.lot_size)
@@ -1442,7 +1643,7 @@ class SwingBacktester:
                     break
                 maximum -= self.trading.lot_size
             capacity = _lot_floor(
-                bar.volume * self.trading.volume_unit_shares
+                known_volume * self.trading.volume_unit_shares
                 * self.config.max_volume_participation,
                 self.trading.lot_size,
             )
