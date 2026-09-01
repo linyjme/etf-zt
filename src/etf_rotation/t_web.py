@@ -1181,7 +1181,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
                     continue
                 after_revision = int(payload["revision"])
                 self._write_snapshot_event(payload)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
 
     def _write_snapshot_event(self, payload: Mapping[str, Any]) -> None:

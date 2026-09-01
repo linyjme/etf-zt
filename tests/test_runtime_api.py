@@ -279,6 +279,25 @@ class ScriptedEventApplication:
         return self._stop_event.is_set()
 
 
+class AbortedStream:
+    def __init__(self) -> None:
+        self.flush_calls = 0
+
+    def write(self, value: bytes) -> None:
+        raise ConnectionAbortedError(10053, "已建立的连接被主机中的软件中止")
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+
+
+class ExplodingStream:
+    def write(self, value: bytes) -> None:
+        raise RuntimeError("unexpected stream failure")
+
+    def flush(self) -> None:
+        raise AssertionError("flush must not run after write fails")
+
+
 class RestartCursorApplication:
     def __init__(self) -> None:
         self._stop_event = threading.Event()
@@ -1267,6 +1286,33 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("event: reset\n", stream)
         self.assertNotIn('"points"', stream)
         self.assertNotIn(": heartbeat", stream)
+
+    def test_sse_ignores_windows_connection_abort_without_flushing(self) -> None:
+        application = ScriptedEventApplication()
+        handler = object.__new__(MonitorRequestHandler)
+        handler.server = SimpleNamespace(application=application)
+        handler.headers = {}
+        handler.wfile = AbortedStream()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+
+        handler._events()
+
+        self.assertEqual(handler.wfile.flush_calls, 0)
+
+    def test_sse_propagates_unexpected_stream_errors(self) -> None:
+        application = ScriptedEventApplication()
+        handler = object.__new__(MonitorRequestHandler)
+        handler.server = SimpleNamespace(application=application)
+        handler.headers = {}
+        handler.wfile = ExplodingStream()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected stream failure"):
+            handler._events()
 
     def test_health_summary_tracks_latest_outage_revision(self) -> None:
         app = self.make_runtime_fixture()
