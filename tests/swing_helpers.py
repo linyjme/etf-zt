@@ -198,11 +198,45 @@ def swing_strategy_bars(
             low=raw_low,
             close=raw_close,
             volume=10_000.0 + index * 100.0,
-            amount=raw_close * (10_000.0 + index * 100.0),
+            amount=raw_close * (10_000.0 + index * 100.0) * 100.0,
             adjustment_scale=1.0 / raw_scale,
         )
         result.append(DailyBar.from_mapping(payload))
         previous_raw_close = raw_close
+    return tuple(result)
+
+
+def retime_daily_bars(
+    bars: Sequence[DailyBar],
+    *,
+    ending_on: date,
+) -> tuple[DailyBar, ...]:
+    """Move a contiguous weekday fixture so its last bar ends on ``ending_on``."""
+    if type(ending_on) is not date or ending_on.weekday() >= 5:
+        raise ValueError("ending_on must be a weekday date")
+    trading_days: list[date] = []
+    candidate = ending_on
+    while len(trading_days) < len(bars):
+        if candidate.weekday() < 5:
+            trading_days.append(candidate)
+        candidate -= timedelta(days=1)
+    trading_days.reverse()
+    result: list[DailyBar] = []
+    previous_close: float | None = None
+    for bar, trading_day in zip(bars, trading_days, strict=True):
+        payload = bar.to_dict()
+        payload.update({
+            "trading_date": trading_day.isoformat(),
+            "observed_at": datetime.combine(
+                trading_day, datetime.min.time(), SHANGHAI,
+            ).replace(hour=15, minute=10).isoformat(),
+            "previous_close": (
+                bar.previous_close if previous_close is None else previous_close
+            ),
+        })
+        normalized = DailyBar.from_mapping(payload)
+        result.append(normalized)
+        previous_close = normalized.close
     return tuple(result)
 
 
