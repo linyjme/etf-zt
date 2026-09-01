@@ -83,9 +83,13 @@ _POSITIVE_NUMBER_FIELDS = (
 
 def _load_json_object(path: Path, label: str) -> dict[str, object]:
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
         raise SwingConfigError(f"{label}读取失败: {error}") from error
+    try:
+        payload = json.loads(text)
+    except ValueError as error:
+        raise SwingConfigError(f"{label}JSON解析失败: {error}") from error
     if not isinstance(payload, dict):
         raise SwingConfigError(f"{label}必须是JSON对象")
     return payload
@@ -117,7 +121,7 @@ def load_watchlist(
 
     try:
         metadata = EtfMetadataStore(metadata_path).load()
-    except MetadataError as error:
+    except (MetadataError, UnicodeDecodeError) as error:
         raise SwingConfigError(
             f"波段监控列表ETF元数据加载失败: {error}",
         ) from error

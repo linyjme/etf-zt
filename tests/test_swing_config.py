@@ -132,6 +132,25 @@ class SwingConfigurationTests(unittest.TestCase):
                 error = self.configuration_error_from(lambda: loader(*arguments))
                 self.assertIsInstance(error.__cause__, json.JSONDecodeError)
 
+    def test_loaders_normalize_invalid_utf8_with_cause(self) -> None:
+        for loader, arguments in (
+            (load_strategy, (self.root / "strategy.json",)),
+            (load_watchlist, (self.root / "watchlist.json", self.metadata_path)),
+        ):
+            path = arguments[0]
+            path.write_bytes(b"\xff")
+            with self.subTest(loader=loader.__name__):
+                error = self.configuration_error_from(lambda: loader(*arguments))
+                self.assertIsInstance(error.__cause__, UnicodeDecodeError)
+
+    def test_strategy_normalizes_json_integer_digit_limit_with_cause(self) -> None:
+        path = self.root / "strategy.json"
+        path.write_text("1" * 5_000, encoding="utf-8")
+
+        error = self.configuration_error_from(lambda: load_strategy(path))
+
+        self.assertIs(type(error.__cause__), ValueError)
+
     def test_watchlist_normalizes_metadata_validation_errors_with_cause(self) -> None:
         watchlist_path = self.write("watchlist.json", {
             "schema_version": 1,
@@ -145,6 +164,20 @@ class SwingConfigurationTests(unittest.TestCase):
 
         self.assertIn("ETF元数据", str(error))
         self.assertIsInstance(error.__cause__, MetadataError)
+
+    def test_watchlist_normalizes_metadata_invalid_utf8_with_cause(self) -> None:
+        watchlist_path = self.write("watchlist.json", {
+            "schema_version": 1,
+            "items": [{"symbol": "510300", "enabled": True}],
+        })
+        self.metadata_path.write_bytes(b"\xff")
+
+        error = self.configuration_error_from(
+            lambda: load_watchlist(watchlist_path, self.metadata_path),
+        )
+
+        self.assertIn("ETF元数据", str(error))
+        self.assertIsInstance(error.__cause__, UnicodeDecodeError)
 
     def test_repository_defaults_are_exact_and_independent(self) -> None:
         watchlist_path = PROJECT_ROOT / "data" / "swing" / "watchlist.json"
