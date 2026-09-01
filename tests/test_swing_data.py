@@ -27,6 +27,36 @@ class BrokenMapping(Mapping[str, object]):
         return 1
 
 
+class OSErrorMapping(Mapping[str, object]):
+    def __getitem__(self, key: str) -> object:
+        raise OSError("mapping unavailable")
+
+    def __iter__(self) -> Iterator[str]:
+        yield "schema_version"
+
+    def __len__(self) -> int:
+        return 1
+
+
+class OSErrorMetadataMapping(Mapping[str, EtfMetadata]):
+    def __getitem__(self, key: str) -> EtfMetadata:
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
+    def get(self, key: str, default: object = None) -> EtfMetadata | None:
+        raise OSError("metadata unavailable")
+
+
+class HostileKey:
+    def __repr__(self) -> str:
+        raise OSError("repr unavailable")
+
+
 class DailyBarTests(unittest.TestCase):
     def test_parses_valid_final_bar_and_is_frozen(self) -> None:
         bar = DailyBar.from_mapping(daily_bar_mapping())
@@ -89,6 +119,16 @@ class DailyBarTests(unittest.TestCase):
         payload[None] = 1  # type: ignore[index]
         payload[1] = 2  # type: ignore[index]
         with self.assertRaisesRegex(SwingDataError, "字段"):
+            DailyBar.from_mapping(payload)
+
+    def test_wraps_oserror_mapping_and_avoids_hostile_key_repr(self) -> None:
+        with self.assertRaises(SwingDataError) as raised:
+            DailyBar.from_mapping(OSErrorMapping())
+        self.assertIsInstance(raised.exception.__cause__, OSError)
+
+        payload = daily_bar_mapping()
+        payload[HostileKey()] = 1  # type: ignore[index]
+        with self.assertRaisesRegex(SwingDataError, "字段名"):
             DailyBar.from_mapping(payload)
 
     def test_rejects_raw_and_adjusted_ohlc_shape_violations(self) -> None:
@@ -169,6 +209,22 @@ class DailyBarTests(unittest.TestCase):
         self.assertEqual(payload["observed_at"], "2026-08-28T15:10:00+08:00")
         self.assertEqual(DailyBar.from_mapping(payload), original)
 
+    def test_normalizes_utc_observation_to_canonical_shanghai_time(self) -> None:
+        bar = DailyBar.from_mapping(daily_bar_mapping(
+            observed_at="2026-08-28T07:10:00+00:00",
+        ))
+        self.assertEqual(bar.observed_at.isoformat(), "2026-08-28T15:10:00+08:00")
+        self.assertEqual(bar.to_dict()["observed_at"], "2026-08-28T15:10:00+08:00")
+
+        direct_utc = replace(
+            DailyBar.from_mapping(daily_bar_mapping()),
+            observed_at=datetime(2026, 8, 28, 7, 10, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            direct_utc.to_dict()["observed_at"],
+            "2026-08-28T15:10:00+08:00",
+        )
+
 
 class DailyBarValidatorTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -195,6 +251,13 @@ class DailyBarValidatorTests(unittest.TestCase):
 
     def metadata_for(self, symbol: str = "510300") -> EtfMetadata:
         return self.metadata[symbol]
+
+    def metadata_with(self, **trading_changes: object) -> EtfMetadata:
+        metadata = self.metadata_for()
+        return replace(
+            metadata,
+            trading=replace(metadata.trading, **trading_changes),
+        )
 
     def test_accepts_valid_bar_and_all_price_limit_boundaries(self) -> None:
         metadata = self.metadata_for()
@@ -235,6 +298,96 @@ class DailyBarValidatorTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaisesRegex(SwingDataError, "涨跌幅"):
                 self.validator.validate(DailyBar.from_mapping(payload), metadata)
 
+    def test_price_limit_uses_one_tick_plus_only_local_ulps(self) -> None:
+        metadata = self.metadata_for()
+        boundary = 12.001
+        exact = daily_bar_mapping(
+            open_price=boundary,
+            high=boundary,
+            low=boundary,
+            close=boundary,
+            volume=0.0,
+            amount=0.0,
+            adjustment_scale=1.0,
+        )
+        self.validator.validate(DailyBar.from_mapping(exact), metadata)
+
+        beyond = math.nextafter(boundary, math.inf)
+        for _ in range(32):
+            beyond = math.nextafter(beyond, math.inf)
+        payload = daily_bar_mapping(
+            open_price=beyond,
+            high=beyond,
+            low=beyond,
+            close=beyond,
+            volume=0.0,
+            amount=0.0,
+            adjustment_scale=1.0,
+        )
+        with self.assertRaisesRegex(SwingDataError, "涨跌幅"):
+            self.validator.validate(DailyBar.from_mapping(payload), metadata)
+
+    def test_tiny_prices_cannot_use_fixed_epsilon_for_many_tick_violations(self) -> None:
+        metadata = self.metadata_with(price_tick=1e-15)
+        previous = 1e-9
+        beyond_limit = previous * 1.2 + 100e-15
+        limit_payload = daily_bar_mapping(
+            previous_close=previous,
+            open_price=beyond_limit,
+            high=beyond_limit,
+            low=beyond_limit,
+            close=beyond_limit,
+            volume=0.0,
+            amount=0.0,
+            adjustment_scale=1.0,
+        )
+        with self.assertRaisesRegex(SwingDataError, "涨跌幅"):
+            self.validator.validate(DailyBar.from_mapping(limit_payload), metadata)
+
+        price = 1e-9
+        volume = 1_000_000_000.0
+        amount_payload = daily_bar_mapping(
+            previous_close=price,
+            open_price=price,
+            high=price,
+            low=price,
+            close=price,
+            volume=volume,
+            amount=(price + 100e-15) * volume * 100.0,
+            adjustment_scale=1.0,
+        )
+        with self.assertRaisesRegex(SwingDataError, "量价"):
+            self.validator.validate(DailyBar.from_mapping(amount_payload), metadata)
+
+    def test_rejects_unrepresentable_tick_and_nonfinite_price_limit_products(self) -> None:
+        unrepresentable = self.metadata_with(price_tick=1e-10)
+        huge_payload = daily_bar_mapping(
+            previous_close=1e308,
+            open_price=1e308,
+            high=1e308,
+            low=1e308,
+            close=1e308,
+            volume=0.0,
+            amount=0.0,
+            adjustment_scale=1.0,
+        )
+        with self.assertRaisesRegex(SwingDataError, "最小价位|精度"):
+            self.validator.validate(DailyBar.from_mapping(huge_payload), unrepresentable)
+
+        overflowing = self.metadata_with(price_tick=1e293)
+        overflow_payload = daily_bar_mapping(
+            previous_close=1.7e308,
+            open_price=1.7e308,
+            high=1.7e308,
+            low=1.7e308,
+            close=1.7e308,
+            volume=0.0,
+            amount=0.0,
+            adjustment_scale=1.0,
+        )
+        with self.assertRaisesRegex(SwingDataError, "有限|溢出"):
+            self.validator.validate(DailyBar.from_mapping(overflow_payload), overflowing)
+
     def test_rejects_zero_mismatch_and_impossible_amount_price_relation(self) -> None:
         metadata = self.metadata_for()
         for volume, amount in ((0.0, 1.0), (1.0, 0.0)):
@@ -244,6 +397,12 @@ class DailyBarValidatorTests(unittest.TestCase):
         self.validator.validate(self.bar(volume=0.0, amount=0.0), metadata)
         with self.assertRaisesRegex(SwingDataError, "量价"):
             self.validator.validate(self.bar(amount=500_000.0), metadata)
+
+    def test_wraps_huge_volume_unit_arithmetic_overflow(self) -> None:
+        metadata = self.metadata_with(volume_unit_shares=10**400)
+        with self.assertRaises(SwingDataError) as raised:
+            self.validator.validate(self.bar(), metadata)
+        self.assertIsNotNone(raised.exception.__cause__)
 
     def test_rejects_closed_date_and_weekend(self) -> None:
         closed = date(2026, 8, 28)
@@ -316,6 +475,35 @@ class DailyBarValidatorTests(unittest.TestCase):
             (friday, tuesday), metadata,
         )
 
+    def test_tiny_tick_previous_close_continuity_rejects_many_ticks(self) -> None:
+        metadata = self.metadata_with(price_tick=1e-15)
+        first = DailyBar.from_mapping(daily_bar_mapping(
+            trading_date="2026-08-27",
+            observed_at="2026-08-27T15:10:00+08:00",
+            previous_close=1e-9,
+            open_price=1e-9,
+            high=1e-9,
+            low=1e-9,
+            close=1e-9,
+            volume=0.0,
+            amount=0.0,
+            adjustment_scale=1.0,
+        ))
+        second = DailyBar.from_mapping(daily_bar_mapping(
+            previous_close=1e-9 + 100e-15,
+            open_price=1e-9,
+            high=1e-9,
+            low=1e-9,
+            close=1e-9,
+            volume=0.0,
+            amount=0.0,
+            adjustment_scale=1.0,
+        ))
+        with self.assertRaisesRegex(SwingDataError, "昨收"):
+            self.validator.validate_sequence(
+                (first, second), {"510300": metadata},
+            )
+
     def test_previous_close_continuity_allows_one_tick_only(self) -> None:
         first = self.bar(
             trading_date="2026-08-27",
@@ -343,6 +531,11 @@ class DailyBarValidatorTests(unittest.TestCase):
                 (second_symbol, first_symbol), self.metadata,
             )
 
+    def test_wraps_oserror_from_metadata_mapping_get(self) -> None:
+        with self.assertRaises(SwingDataError) as raised:
+            self.validator.validate_sequence((self.bar(),), OSErrorMetadataMapping())
+        self.assertIsInstance(raised.exception.__cause__, OSError)
+
     def test_sequence_wraps_malformed_direct_fields_before_ordering(self) -> None:
         valid = self.bar()
         malformed = replace(valid, symbol=1)  # type: ignore[arg-type]
@@ -350,6 +543,15 @@ class DailyBarValidatorTests(unittest.TestCase):
             self.validator.validate_sequence(
                 (valid, malformed), {"510300": self.metadata_for()},
             )
+
+    def test_wraps_oserror_from_closed_dates_iterable(self) -> None:
+        def broken_dates() -> Iterator[date]:
+            raise OSError("calendar unavailable")
+            yield date(2026, 8, 28)
+
+        with self.assertRaises(SwingDataError) as raised:
+            DailyBarValidator(broken_dates())
+        self.assertIsInstance(raised.exception.__cause__, OSError)
 
 
 if __name__ == "__main__":

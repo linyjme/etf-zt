@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 import math
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from .etf_metadata import EtfMetadata
@@ -14,6 +14,7 @@ from .etf_metadata import EtfMetadata
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FINAL_OBSERVATION_TIME = time(15, 10)
+_ULP_MULTIPLIER = 4.0
 _PRICE_FIELDS = (
     "open",
     "high",
@@ -76,13 +77,15 @@ class DailyBar:
             raise SwingDataError("日线记录必须是映射")
         try:
             payload = dict(value)
-        except (TypeError, ValueError, KeyError, AttributeError, RuntimeError) as error:
+        except Exception as error:
             raise SwingDataError(f"日线记录映射读取失败: {error}") from error
 
+        if any(type(key) is not str for key in payload):
+            raise SwingDataError("日线记录字段名必须是字符串")
         actual_keys = frozenset(payload)
         if actual_keys != _DAILY_BAR_KEYS:
             missing = sorted(_DAILY_BAR_KEYS - actual_keys)
-            extra = sorted(repr(item) for item in actual_keys - _DAILY_BAR_KEYS)
+            extra = sorted(actual_keys - _DAILY_BAR_KEYS)
             raise SwingDataError(
                 f"日线记录字段无效: missing={missing}, extra={extra}",
             )
@@ -151,11 +154,14 @@ class DailyBar:
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-safe primitives using ISO date/time strings."""
+        observed_at = self.observed_at
+        if observed_at.tzinfo is not None and observed_at.utcoffset() is not None:
+            observed_at = observed_at.astimezone(SHANGHAI)
         return {
             "schema_version": self.schema_version,
             "symbol": self.symbol,
             "trading_date": self.trading_date.isoformat(),
-            "observed_at": self.observed_at.isoformat(),
+            "observed_at": observed_at.isoformat(),
             "source": self.source,
             "open": self.open,
             "high": self.high,
@@ -178,7 +184,7 @@ class DailyBarValidator:
     def __init__(self, closed_dates: Iterable[date]):
         try:
             closures = frozenset(closed_dates)
-        except (TypeError, ValueError) as error:
+        except Exception as error:
             raise SwingDataError(f"休市日期集合无效: {error}") from error
         if any(type(item) is not date for item in closures):
             raise SwingDataError("休市日期必须是date")
@@ -194,14 +200,29 @@ class DailyBarValidator:
         if normalized.trading_date in self.closed_dates:
             raise SwingDataError("日线trading_date是配置休市日")
 
-        tick = trading.price_tick
+        tick = _positive_number(trading.price_tick, "price_tick")
+        price_limit_pct = _positive_number(
+            trading.price_limit_pct, "price_limit_pct",
+        )
         previous = normalized.previous_close
-        lower_limit = previous * (1.0 - trading.price_limit_pct) - tick
-        upper_limit = previous * (1.0 + trading.price_limit_pct) + tick
-        epsilon = max(1.0, previous) * 1e-12
+        lower_factor = _safe_subtract(1.0, price_limit_pct, "涨跌幅下限因子")
+        upper_factor = _safe_add(1.0, price_limit_pct, "涨跌幅上限因子")
+        lower_limit = _safe_product(previous, lower_factor, "涨跌幅下限")
+        upper_limit = _safe_product(previous, upper_factor, "涨跌幅上限")
         for field in _RAW_OHLC_FIELDS:
             value = getattr(normalized, field)
-            if value < lower_limit - epsilon or value > upper_limit + epsilon:
+            tolerance = _one_tick_tolerance(
+                tick, previous, value, lower_limit, upper_limit,
+            )
+            below = (
+                value < lower_limit
+                and _safe_subtract(lower_limit, value, "价格下限差") > tolerance
+            )
+            above = (
+                value > upper_limit
+                and _safe_subtract(value, upper_limit, "价格上限差") > tolerance
+            )
+            if below or above:
                 raise SwingDataError(f"{field}价格越过涨跌幅限制")
 
         volume = normalized.volume
@@ -209,17 +230,47 @@ class DailyBarValidator:
         if (volume == 0.0) != (amount == 0.0):
             raise SwingDataError("成交量和成交额必须同时为零或同时非零")
         if volume > 0.0:
-            lowest_possible_price = amount / (
-                (volume + 1.0) * trading.volume_unit_shares
+            unit_shares = trading.volume_unit_shares
+            if type(unit_shares) is not int or unit_shares <= 0:
+                raise SwingDataError("volume_unit_shares必须是正整数")
+            low_denominator = _safe_product(
+                _safe_add(volume, 1.0, "成交量上界"),
+                unit_shares,
+                "成交量单位换算上界",
             )
-            highest_possible_price = amount / max(
-                (volume - 1.0) * trading.volume_unit_shares,
+            high_denominator = max(
+                _safe_product(
+                    _safe_subtract(volume, 1.0, "成交量下界"),
+                    unit_shares,
+                    "成交量单位换算下界",
+                ),
                 1.0,
             )
-            if (
-                highest_possible_price < normalized.low - tick - epsilon
-                or lowest_possible_price > normalized.high + tick + epsilon
-            ):
+            lowest_possible_price = _safe_divide(
+                amount, low_denominator, "最低可能成交价",
+            )
+            highest_possible_price = _safe_divide(
+                amount, high_denominator, "最高可能成交价",
+            )
+            low_tolerance = _one_tick_tolerance(
+                tick, normalized.low, highest_possible_price,
+            )
+            high_tolerance = _one_tick_tolerance(
+                tick, normalized.high, lowest_possible_price,
+            )
+            too_low = (
+                highest_possible_price < normalized.low
+                and _safe_subtract(
+                    normalized.low, highest_possible_price, "量价下界差",
+                ) > low_tolerance
+            )
+            too_high = (
+                lowest_possible_price > normalized.high
+                and _safe_subtract(
+                    lowest_possible_price, normalized.high, "量价上界差",
+                ) > high_tolerance
+            )
+            if too_low or too_high:
                 raise SwingDataError("日线量价校验失败")
 
     def validate_sequence(
@@ -243,7 +294,7 @@ class DailyBarValidator:
 
             try:
                 metadata = metadata_by_symbol.get(normalized.symbol)
-            except (AttributeError, TypeError, RuntimeError) as error:
+            except Exception as error:
                 raise SwingDataError(f"ETF元数据映射读取失败: {error}") from error
             if metadata is None:
                 raise SwingDataError(f"缺少ETF元数据: {normalized.symbol}")
@@ -281,8 +332,15 @@ class DailyBarValidator:
             candidate += timedelta(days=1)
 
         tick = metadata.trading.price_tick
-        epsilon = max(1.0, previous.close, current.previous_close) * 1e-12
-        if abs(current.previous_close - previous.close) > tick + epsilon:
+        tolerance = _one_tick_tolerance(
+            tick, previous.close, current.previous_close,
+        )
+        difference = _safe_subtract(
+            max(previous.close, current.previous_close),
+            min(previous.close, current.previous_close),
+            "昨收连续性差值",
+        )
+        if difference > tolerance:
             raise SwingDataError(
                 f"{current.symbol}昨收与前一交易日收盘价不连续",
             )
@@ -323,7 +381,10 @@ def _iso_datetime(value: object) -> datetime:
         raise SwingDataError("日线observed_at时区无效") from error
     if parsed.tzinfo is None or offset is None:
         raise SwingDataError("日线observed_at必须带时区")
-    return parsed
+    try:
+        return parsed.astimezone(SHANGHAI)
+    except Exception as error:
+        raise SwingDataError("日线observed_at时区转换失败") from error
 
 
 def _positive_number(value: object, field: str) -> float:
@@ -389,3 +450,45 @@ def _validate_observation_time(trading_date: date, observed_at: datetime) -> Non
     )
     if local_observed < earliest:
         raise SwingDataError("日线观测时间不得早于交易日15:10 Asia/Shanghai")
+
+
+def _safe_add(left: object, right: object, label: str) -> float:
+    return _safe_arithmetic(lambda: left + right, label)
+
+
+def _safe_subtract(left: object, right: object, label: str) -> float:
+    return _safe_arithmetic(lambda: left - right, label)
+
+
+def _safe_product(left: object, right: object, label: str) -> float:
+    return _safe_arithmetic(lambda: left * right, label)
+
+
+def _safe_divide(left: object, right: object, label: str) -> float:
+    return _safe_arithmetic(lambda: left / right, label)
+
+
+def _safe_arithmetic(operation: Callable[[], object], label: str) -> float:
+    try:
+        result = operation()
+        if isinstance(result, bool) or not isinstance(result, (int, float)):
+            raise TypeError("结果不是数字")
+        number = float(result)
+    except Exception as error:
+        raise SwingDataError(f"{label}数值运算失败: {error}") from error
+    if not math.isfinite(number):
+        raise SwingDataError(f"{label}数值运算结果必须有限")
+    return number
+
+
+def _one_tick_tolerance(tick: object, *operands: object) -> float:
+    tick_value = _positive_number(tick, "price_tick")
+    values = tuple(_finite_number(value, "价格边界") for value in operands)
+    try:
+        max_ulp = max(math.ulp(value) for value in values)
+    except Exception as error:
+        raise SwingDataError(f"价格边界精度计算失败: {error}") from error
+    resolution = _safe_product(max_ulp, _ULP_MULTIPLIER, "价格边界ULP容差")
+    if tick_value < resolution:
+        raise SwingDataError("最小价位低于当前价格数量级的可表示精度")
+    return _safe_add(tick_value, resolution, "一个最小价位容差")
