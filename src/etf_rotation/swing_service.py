@@ -242,6 +242,13 @@ class SwingService:
             next_watchlist = tuple(candidate)
             now = self._safe_now()
             try:
+                self._retract_symbol_overlays(
+                    symbol, "WATCHLIST_MEMBERSHIP_CHANGED",
+                )
+                next_health = dict(self._health)
+                next_errors = dict(self._errors)
+                next_health["alerts"] = "OK"
+                next_errors.pop("alerts", None)
                 next_formal = self._calculate_formal(
                     self._history,
                     self._portfolio_projection,
@@ -251,16 +258,40 @@ class SwingService:
                     watchlist=next_watchlist,
                 )
                 snapshot = self._candidate_snapshot(
-                    now, watchlist=next_watchlist, formal=next_formal,
+                    now,
+                    watchlist=next_watchlist,
+                    formal=next_formal,
+                    health=next_health,
+                    errors=next_errors,
                 )
                 self._write_watchlist(next_watchlist)
             except Exception as error:
+                self._health["alerts"] = "BLOCKED"
+                self._errors["alerts"] = self._safe_error(error)
+                failed_snapshot = self._build_snapshot(now)
+                for item in failed_snapshot["items"]:  # type: ignore[index]
+                    if item.get("symbol") == symbol:
+                        item["intraday_overlay"] = None
+                self._publish(failed_snapshot)
                 raise SwingServiceError("watchlist update failed") from error
             with self.publish_condition:
                 self._watchlist = next_watchlist
                 self._formal = next_formal
+                self._health = next_health
+                self._errors = next_errors
                 self._publish_locked(snapshot)
             return self.watchlist()
+
+    def _retract_symbol_overlays(self, symbol: str, reason: str) -> None:
+        store = self._require_alert_store()
+        active = tuple(
+            item for item in store.current()
+            if item.scope == "INTRADAY"
+            and item.symbol == symbol
+            and not item.retracted
+        )
+        for item in active:
+            store.retract_overlay(item.alert_id, reason)
 
     def portfolio(self) -> dict[str, object]:
         with self.publish_condition:
@@ -476,16 +507,33 @@ class SwingService:
         self, trade: TradeInput, idempotency_key: str,
     ) -> dict[str, object]:
         with self.producer_lock:
+            ledger = self._require_ledger()
             normalized = trade
-            if (
+            prior = tuple(
+                event for event in ledger.load_events()
+                if event.idempotency_key == idempotency_key
+            )
+            if len(prior) == 1:
+                existing = prior[0]
+                if (
+                    type(trade) is TradeInput
+                    and trade.side == "SELL"
+                    and trade.exit_reason is None
+                    and existing.event_type is PortfolioEventType.SELL_CONFIRMED
+                    and existing.payload.get("exit_reason") == "STOP_EXIT"
+                ):
+                    normalized = replace(trade, exit_reason="STOP_EXIT")
+            elif not prior and (
                 type(trade) is TradeInput
                 and trade.side == "SELL"
                 and trade.exit_reason is None
                 and self._sell_completes_position(trade)
-                and self._stop_exit_is_active(trade.symbol)
+                and self._stop_exit_is_current(
+                    trade.symbol, self._safe_now(),
+                )
             ):
                 normalized = replace(trade, exit_reason="STOP_EXIT")
-            event = self._require_ledger().record_trade(
+            event = ledger.record_trade(
                 normalized, idempotency_key,
             )
             self._rebuild_after_portfolio_mutation(self._safe_now())
@@ -498,23 +546,38 @@ class SwingService:
         position = projection.positions.get(trade.symbol)
         return position is not None and trade.shares == position.shares
 
-    def _stop_exit_is_active(self, symbol: str) -> bool:
+    def _stop_exit_is_current(self, symbol: str, now: datetime) -> bool:
         formal = self._formal.get(symbol)
-        if formal is not None and (
-            formal.evidence.get("exit_hard_stop") is True
-            or formal.evidence.get("exit_trailing_stop") is True
+        expected = self._last_completed_trading_date(now)
+        if (
+            formal is not None
+            and self._health["daily"] == "OK"
+            and self._health["portfolio"] == "OK"
+            and expected is not None
+            and formal.as_of_trading_date == expected
+            and (
+                formal.evidence.get("exit_hard_stop") is True
+                or formal.evidence.get("exit_trailing_stop") is True
+            )
         ):
             return True
-        store = self._alert_store
-        if store is None:
-            return False
         try:
-            return any(
-                item.scope == "INTRADAY"
-                and item.symbol == symbol
-                and item.state == IntradayOverlay.PREDEFINED_STOP_TOUCHED.value
-                and not item.retracted
-                for item in store.current()
+            published_item = next(
+                item for item in self.published.get("items", ())
+                if isinstance(item, Mapping) and item.get("symbol") == symbol
+            )
+            raw_timestamp = published_item.get("current_price_time")
+            if type(raw_timestamp) is not str:
+                return False
+            timestamp = datetime.fromisoformat(raw_timestamp)
+            if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                return False
+            return bool(
+                self._is_trading_date(now.date())
+                and published_item.get("intraday_overlay")
+                == IntradayOverlay.PREDEFINED_STOP_TOUCHED.value
+                and published_item.get("intraday_health_status") == "REALTIME"
+                and timestamp.astimezone(SHANGHAI).date() == now.date()
             )
         except Exception:
             return False
@@ -642,6 +705,8 @@ class SwingService:
         self,
         history: Sequence[DailyBar],
         now: datetime,
+        *,
+        persist: bool = True,
     ) -> tuple[PortfolioProjection | None, str, str | None]:
         ledger = self._require_ledger()
         if self._closed_dates is None:
@@ -653,8 +718,12 @@ class SwingService:
         as_of = self._portfolio_as_of(now)
         marks = self._latest_marks(history)
         try:
-            projection = ledger.load_or_rebuild_projection(
-                self.paths.portfolio_snapshot, as_of, marks,
+            projection = (
+                ledger.load_or_rebuild_projection(
+                    self.paths.portfolio_snapshot, as_of, marks,
+                )
+                if persist
+                else ledger.project(as_of, marks)
             )
         except PortfolioLedgerError as error:
             text = str(error).lower()
@@ -953,7 +1022,9 @@ class SwingService:
             next_errors.pop("daily", None)
             next_errors.pop("minute_crosscheck", None)
             projection, portfolio_status, portfolio_error = (
-                self._calculate_portfolio_projection(merged, now)
+                self._calculate_portfolio_projection(
+                    merged, now, persist=False,
+                )
             )
             next_health["portfolio"] = portfolio_status
             if portfolio_error is None:
@@ -994,6 +1065,30 @@ class SwingService:
                 "daily", "PERSISTENCE_FAILED", error, now=now,
             )
             return False
+
+        try:
+            persisted_portfolio = self._calculate_portfolio_projection(
+                merged, now, persist=True,
+            )
+        except Exception as error:
+            self._publish_component_failure(
+                "portfolio", "PERSISTENCE_FAILED", error, now=now,
+            )
+            return False
+        candidate_portfolio = (
+            projection, portfolio_status, portfolio_error,
+        )
+        if persisted_portfolio != candidate_portfolio:
+            self._publish_component_failure(
+                "portfolio",
+                "PERSISTENCE_FAILED",
+                SwingServiceError(
+                    "persisted portfolio projection differs from staged projection",
+                ),
+                now=now,
+            )
+            return False
+        projection, portfolio_status, portfolio_error = persisted_portfolio
 
         next_by_symbol = {
             symbol: self._next_trading_date(decision.as_of_trading_date)

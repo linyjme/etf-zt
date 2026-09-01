@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -624,8 +625,19 @@ class SwingServiceTests(unittest.TestCase):
         )
 
     def test_formal_recompute_failure_cannot_commit_or_publish_partial_batch(self) -> None:
+        PortfolioLedger(
+            self.paths.trades,
+            self.metadata,
+            clock=lambda: datetime(2026, 8, 31, 16, tzinfo=SHANGHAI),
+            closed_dates=frozenset(),
+        ).record_trade(TradeInput(
+            "510300", "BUY", 100, self.initial_bars[-1].close, 0.0,
+            datetime(2026, 8, 31, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        ), "projection-counterexample-buy")
         service = self.make_service(collector=StaticDailyCollector(self.final_bars))
         before_file = self.paths.daily_history.read_bytes()
+        before_portfolio = self.paths.portfolio_snapshot.read_bytes()
         before_snapshot = service.snapshot()
         with patch(
             "etf_rotation.swing_service.evaluate_swing",
@@ -635,8 +647,82 @@ class SwingServiceTests(unittest.TestCase):
                 2026, 9, 1, 15, 10, tzinfo=SHANGHAI,
             )))
         self.assertEqual(self.paths.daily_history.read_bytes(), before_file)
+        self.assertEqual(
+            self.paths.portfolio_snapshot.read_bytes(), before_portfolio,
+        )
         after = service.snapshot()
         self.assertEqual(after["items"], before_snapshot["items"])
+
+    def test_inferred_stop_exit_retry_is_stable_and_still_checks_payload(self) -> None:
+        service = self.make_service()
+        service.record_trade(TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        ), "stable-stop-buy")
+        service.clock = lambda: datetime(2026, 9, 2, 10, tzinfo=SHANGHAI)
+        with service.publish_condition:
+            item = service.published["items"][0]
+            item["intraday_overlay"] = "PREDEFINED_STOP_TOUCHED"
+            item["intraday_health_status"] = "REALTIME"
+            item["current_price_time"] = "2026-09-02T09:59:00+08:00"
+        sell = TradeInput(
+            "510300", "SELL", 100, 98.0, 0.0,
+            datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+        )
+        first = service.record_trade(sell, "stable-stop-sell")
+        self.assertEqual(first["payload"]["exit_reason"], "STOP_EXIT")
+        self.assertEqual(
+            service.record_trade(sell, "stable-stop-sell"), first,
+        )
+        with self.assertRaisesRegex(Exception, "different request"):
+            service.record_trade(replace(sell, price=97.0), "stable-stop-sell")
+
+    def test_yesterday_overlay_does_not_reclassify_an_ordinary_exit(self) -> None:
+        service = self.make_service()
+        service.record_trade(TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        ), "ordinary-after-old-overlay-buy")
+        SwingAlertStore(self.paths.alerts).publish_overlay(AlertInput(
+            trading_date=date(2026, 9, 1),
+            symbol="510300",
+            state="PREDEFINED_STOP_TOUCHED",
+            strategy_version="SWING_V1",
+            level="RED",
+            label="old stop",
+            evidence={},
+        ))
+        service.clock = lambda: datetime(2026, 9, 2, 10, tzinfo=SHANGHAI)
+        event = service.record_trade(TradeInput(
+            "510300", "SELL", 100, 101.0, 0.0,
+            datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+        ), "ordinary-after-old-overlay-sell")
+        self.assertNotIn("exit_reason", event["payload"])
+
+    def test_current_healthy_formal_stop_can_classify_a_full_exit(self) -> None:
+        service = self.make_service(
+            collector=StaticDailyCollector(self.final_bars),
+        )
+        self.assertTrue(service.refresh_once(datetime(
+            2026, 9, 1, 15, 10, tzinfo=SHANGHAI,
+        )))
+        service.clock = lambda: datetime(2026, 9, 2, 10, tzinfo=SHANGHAI)
+        service.record_trade(TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        ), "formal-stop-buy")
+        formal = service._formal["510300"]
+        evidence = dict(formal.evidence)
+        evidence["exit_hard_stop"] = True
+        service._formal["510300"] = replace(formal, evidence=evidence)
+        event = service.record_trade(TradeInput(
+            "510300", "SELL", 100, 98.0, 0.0,
+            datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+        ), "formal-stop-sell")
+        self.assertEqual(event["payload"]["exit_reason"], "STOP_EXIT")
 
     def test_active_formal_alert_must_match_current_decision_identity(self) -> None:
         SwingAlertStore(self.paths.alerts).publish_formal(AlertInput(
@@ -691,7 +777,9 @@ class SwingServiceTests(unittest.TestCase):
     def test_watchlist_update_is_atomic_validated_and_published(self) -> None:
         service = self.make_service()
         service.refresh_intraday()
-        self.assertTrue(service.snapshot()["active_alerts"])
+        active_before = service.snapshot()["active_alerts"]
+        self.assertTrue(active_before)
+        old_overlay = active_before[0]
         before_revision = service.snapshot()["revision"]
         result = service.update_watchlist("510300", False)
         self.assertFalse(result["items"][0]["enabled"])
@@ -703,6 +791,29 @@ class SwingServiceTests(unittest.TestCase):
             "schema_version": 1,
             "items": [{"symbol": "510300", "enabled": False}],
         })
+        service.update_watchlist("510300", True)
+        self.assertEqual(service.snapshot()["active_alerts"], [])
+        history = {
+            item["alert_id"]: item
+            for item in service.alerts(include_retracted=True)["items"]
+        }
+        self.assertTrue(history[old_overlay["alert_id"]]["retracted"])
+        refreshed = service.refresh_intraday()
+        replacement = refreshed["active_alerts"][0]
+        self.assertNotEqual(replacement["alert_id"], old_overlay["alert_id"])
+        self.assertEqual(
+            (
+                replacement["trading_date"], replacement["symbol"],
+                replacement["state"], replacement["strategy_version"],
+            ),
+            (
+                old_overlay["trading_date"], old_overlay["symbol"],
+                old_overlay["state"], old_overlay["strategy_version"],
+            ),
+        )
+        self.assertGreater(
+            replacement["generation"], old_overlay["generation"],
+        )
         for symbol, enabled in (("999999", True), ("510300", 1)):
             with self.subTest(symbol=symbol, enabled=enabled):
                 before = self.paths.watchlist.read_bytes()
@@ -719,7 +830,17 @@ class SwingServiceTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 service.update_watchlist("510300", True)
         self.assertEqual(self.paths.watchlist.read_bytes(), before)
-        self.assertEqual(service.snapshot(), before_snapshot)
+        failed = service.snapshot()
+        self.assertEqual(service.watchlist()["items"], [
+            {"symbol": "510300", "enabled": True},
+        ])
+        self.assertEqual(failed["active_alerts"], [])
+        self.assertEqual(failed["health"]["alerts"], "BLOCKED")
+        self.assertIsNone(failed["items"][0]["intraday_overlay"])
+        self.assertEqual(
+            failed["items"][0]["formal_decision"],
+            before_snapshot["items"][0]["formal_decision"],
+        )
 
     def test_watchlist_update_can_add_a_metadata_verified_symbol(self) -> None:
         self.paths.metadata.write_text(json.dumps(
@@ -735,6 +856,22 @@ class SwingServiceTests(unittest.TestCase):
             [item["symbol"] for item in service.snapshot()["items"]],
             ["510300", "159915"],
         )
+
+    def test_watchlist_retraction_failure_is_fail_closed(self) -> None:
+        service = self.make_service()
+        service.refresh_intraday()
+        before = self.paths.watchlist.read_bytes()
+        with patch.object(
+            service._alert_store, "retract_overlay",
+            side_effect=RuntimeError("retract failed"),
+        ):
+            with self.assertRaises(Exception):
+                service.update_watchlist("510300", False)
+        self.assertEqual(self.paths.watchlist.read_bytes(), before)
+        failed = service.snapshot()
+        self.assertEqual(failed["health"]["alerts"], "BLOCKED")
+        self.assertEqual(failed["active_alerts"], [])
+        self.assertIsNone(failed["items"][0]["intraday_overlay"])
 
     def test_blocking_producer_reference_survives_stop_timeout(self) -> None:
         entered = threading.Event()
