@@ -429,6 +429,41 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
                     (9.5, 10.5),
                 )
 
+    def test_rejects_raw_or_adjusted_duplicate_dates_before_filtering(self) -> None:
+        cases = (
+            (
+                "raw future duplicate",
+                ("2026-08-27", "2026-08-28", "2026-09-01", "2026-09-01"),
+                ("2026-08-27", "2026-08-28"),
+                "2026-08-31T15:10:00+08:00",
+                date(2026, 9, 1),
+            ),
+            (
+                "adjusted current-incomplete duplicate",
+                ("2026-08-27", "2026-08-28"),
+                ("2026-08-27", "2026-08-28", "2026-08-31", "2026-08-31"),
+                "2026-08-31T15:09:59+08:00",
+                date(2026, 8, 31),
+            ),
+        )
+        for label, raw_dates, adjusted_dates, now_text, last_completed in cases:
+            with self.subTest(label=label):
+                def transport(request: Request, timeout: float) -> bytes:
+                    query = parse_qs(urlsplit(request.full_url).query)
+                    adjusted = query["fqt"] == ["1"]
+                    return payload_bytes(kline_payload(
+                        "510300",
+                        1,
+                        adjusted=adjusted,
+                        dates=adjusted_dates if adjusted else raw_dates,
+                    ))
+
+                with self.assertRaisesRegex(SwingDataError, "日期重复"):
+                    self.collector(
+                        transport,
+                        now=lambda value=now_text: datetime.fromisoformat(value),
+                    ).collect((SwingWatchItem("510300", True),), last_completed)
+
     def test_rejects_one_sided_retained_dates(self) -> None:
         cases = (
             (

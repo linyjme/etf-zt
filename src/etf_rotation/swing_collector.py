@@ -279,6 +279,9 @@ class EastmoneyDailyCollector:
         if type(klines) is not list or not klines:
             raise SwingDataError(f"{symbol} kline缺少日线")
         bars = tuple(self._parse_line(symbol, line) for line in klines)
+        dates = [bar.trading_date for bar in bars]
+        if len(set(dates)) != len(dates):
+            raise SwingDataError(f"{symbol} kline日期重复")
         return _Response(pre_close, bars)
 
     def _parse_line(self, symbol: str, value: Any) -> _ParsedKline:
