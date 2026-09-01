@@ -834,7 +834,7 @@ class SwingServiceTests(unittest.TestCase):
             side_effect=OSError("replace failed"),
         ):
             with self.assertRaises(Exception):
-                service.update_watchlist("510300", True)
+                service.update_watchlist("510300", False)
         self.assertEqual(self.paths.watchlist.read_bytes(), before)
         failed = service.snapshot()
         self.assertEqual(service.watchlist()["items"], [
@@ -898,6 +898,55 @@ class SwingServiceTests(unittest.TestCase):
         self.assertFalse(disabled_history[0]["retracted"])
         self.assertFalse(disabled_history[0]["active_notification"])
         self.assertEqual(service.snapshot()["active_alerts"], [])
+
+    def test_same_watchlist_value_is_idempotent_without_overlay_churn(self) -> None:
+        service = self.make_service()
+        first_refresh = service.refresh_intraday()
+        overlay = next(
+            item for item in first_refresh["active_alerts"]
+            if item["scope"] == "INTRADAY"
+        )
+
+        service.update_watchlist("510300", True)
+        after_ensure = service.snapshot()
+        retained = next(
+            item for item in after_ensure["active_alerts"]
+            if item["scope"] == "INTRADAY"
+        )
+        self.assertEqual(
+            (retained["alert_id"], retained["generation"]),
+            (overlay["alert_id"], overlay["generation"]),
+        )
+        self.assertTrue(any(
+            item["scope"] == "FORMAL"
+            for item in after_ensure["active_alerts"]
+        ))
+        store = SwingAlertStore(self.paths.alerts)
+        ensured_event_count = len(store.load_events())
+        ensured_revision = after_ensure["revision"]
+
+        service.update_watchlist("510300", True)
+        self.assertEqual(len(store.load_events()), ensured_event_count)
+        self.assertEqual(service.snapshot()["revision"], ensured_revision)
+        refreshed = service.refresh_intraday()
+        still_active = next(
+            item for item in refreshed["active_alerts"]
+            if item["scope"] == "INTRADAY"
+        )
+        self.assertEqual(
+            (still_active["alert_id"], still_active["generation"]),
+            (overlay["alert_id"], overlay["generation"]),
+        )
+        self.assertEqual(len(store.load_events()), ensured_event_count)
+
+        service.update_watchlist("510300", False)
+        disabled_file = self.paths.watchlist.read_bytes()
+        disabled_events = len(store.load_events())
+        disabled_snapshot = service.snapshot()
+        service.update_watchlist("510300", False)
+        self.assertEqual(self.paths.watchlist.read_bytes(), disabled_file)
+        self.assertEqual(len(store.load_events()), disabled_events)
+        self.assertEqual(service.snapshot(), disabled_snapshot)
 
     def test_watchlist_retraction_failure_is_fail_closed(self) -> None:
         service = self.make_service()

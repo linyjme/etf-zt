@@ -235,6 +235,10 @@ class SwingService:
                  if item.symbol == symbol),
                 None,
             )
+            if index is not None and candidate[index].enabled is enabled:
+                if enabled:
+                    self._ensure_current_formal_alerts(self._safe_now())
+                return self.watchlist()
             if index is None:
                 candidate.append(SwingWatchItem(symbol, enabled))
             else:
@@ -299,6 +303,48 @@ class SwingService:
                 self._errors = next_errors
                 self._publish_locked(snapshot)
             return self.watchlist()
+
+    def _ensure_current_formal_alerts(self, now: datetime) -> None:
+        store = self._alert_store
+        try:
+            before_events = store.load_events() if store is not None else ()
+        except Exception:
+            before_events = ()
+        next_by_symbol = {
+            symbol: (
+                self._next_trading_date(decision.as_of_trading_date)
+                if decision.as_of_trading_date is not None else None
+            )
+            for symbol, decision in self._formal.items()
+        }
+        alert_error = self._persist_formal_alerts(
+            self._formal, next_by_symbol, self._health["portfolio"],
+        )
+        next_health = dict(self._health)
+        next_errors = dict(self._errors)
+        if alert_error is None:
+            next_health["alerts"] = "OK"
+            next_errors.pop("alerts", None)
+        else:
+            next_health["alerts"] = "BLOCKED"
+            next_errors["alerts"] = alert_error
+        try:
+            after_events = store.load_events() if store is not None else ()
+        except Exception:
+            after_events = ()
+        if (
+            before_events == after_events
+            and next_health == self._health
+            and next_errors == self._errors
+        ):
+            return
+        snapshot = self._candidate_snapshot(
+            now, health=next_health, errors=next_errors,
+        )
+        with self.publish_condition:
+            self._health = next_health
+            self._errors = next_errors
+            self._publish_locked(snapshot)
 
     def _retract_symbol_overlays(self, symbol: str, reason: str) -> None:
         store = self._require_alert_store()
