@@ -62,6 +62,7 @@ _FINAL_DAILY_TIME = time(15, 10)
 _DEFAULT_HISTORY_COUNT = 260
 _MAX_DAILY_QUOTE_LIMIT = 10_000
 _REALTIME_FUTURE_SKEW_SECONDS = 5.0
+_READ_MODEL_KEY = "_published_read_model"
 _ACTION_STATES = frozenset({
     SwingState.TRIAL_ENTRY_CANDIDATE,
     SwingState.ADD_CANDIDATE,
@@ -83,6 +84,9 @@ _OVERLAY_ALERT_STYLE: Mapping[IntradayOverlay, tuple[str, str]] = {
     IntradayOverlay.APPROACHING_ENTRY_ZONE: ("BLUE", "接近计划买入区"),
     IntradayOverlay.PREDEFINED_STOP_TOUCHED: ("RED", "盘中触及预设止损"),
 }
+_OVERLAY_ALERT_STATES = frozenset(
+    overlay.value for overlay in _OVERLAY_ALERT_STYLE
+)
 
 
 class SwingServiceError(ValueError):
@@ -186,7 +190,12 @@ class SwingService:
             "intraday": "UNAVAILABLE",
         }
         self._errors: dict[str, str] = {}
-        self.published = self._bootstrap()
+        self.published: dict[str, object] = {}
+        self._published_watchlist_view: dict[str, object] = {}
+        self._published_portfolio_view: dict[str, object] = {}
+        self._published_alerts_current: dict[str, object] = {}
+        self._published_alerts_history: dict[str, object] = {}
+        self._install_published(self._bootstrap(), revision=0)
 
     # ---- Public read and lifecycle API ---------------------------------
 
@@ -209,7 +218,7 @@ class SwingService:
 
     def watchlist(self) -> dict[str, object]:
         with self.publish_condition:
-            return copy.deepcopy(self.published["watchlist"])
+            return copy.deepcopy(self._published_watchlist_view)
 
     def update_watchlist(self, symbol: str, enabled: bool) -> dict[str, object]:
         """Atomically persist and publish one validated watchlist toggle."""
@@ -354,30 +363,17 @@ class SwingService:
 
     def portfolio(self) -> dict[str, object]:
         with self.publish_condition:
-            return {
-                "status": self.published["health"]["portfolio"],
-                "projection": copy.deepcopy(self.published["portfolio"]),
-                "error": copy.deepcopy(
-                    self.published.get("errors", {}).get("portfolio"),
-                ),
-                "revision": self.published["revision"],
-                "local_only": True,
-            }
+            return copy.deepcopy(self._published_portfolio_view)
 
     def alerts(self, *, include_retracted: bool = False) -> dict[str, object]:
         if type(include_retracted) is not bool:
             raise SwingServiceError("include_retracted must be boolean")
         with self.publish_condition:
-            return {
-                "status": self.published["health"]["alerts"],
-                "items": copy.deepcopy(
-                    self.published[
-                        "alert_history" if include_retracted else "alerts"
-                    ],
-                ),
-                "revision": self.published["revision"],
-                "local_only": True,
-            }
+            source = (
+                self._published_alerts_history
+                if include_retracted else self._published_alerts_current
+            )
+            return copy.deepcopy(source)
 
     def daily_quotes(
         self,
@@ -597,7 +593,7 @@ class SwingService:
                 and inference_now is not None
                 and self._trade_executes_today(trade, inference_now)
                 and self._stop_exit_is_current(
-                    trade.symbol, inference_now,
+                    trade.symbol, inference_now, trade.executed_at,
                 )
             ):
                 normalized = replace(trade, exit_reason="STOP_EXIT")
@@ -627,13 +623,19 @@ class SwingService:
         except Exception:
             return False
 
-    def _stop_exit_is_current(self, symbol: str, now: datetime) -> bool:
+    def _stop_exit_is_current(
+        self,
+        symbol: str,
+        now: datetime,
+        executed_at: datetime,
+    ) -> bool:
         if not self._is_trading_date(now.date()):
             return False
         formal = self._formal.get(symbol)
         expected = self._last_completed_trading_date(now)
         if (
             formal is not None
+            and formal.state is SwingState.EXIT_CANDIDATE
             and self._health["daily"] == "OK"
             and self._health["portfolio"] == "OK"
             and expected is not None
@@ -655,11 +657,14 @@ class SwingService:
             timestamp = datetime.fromisoformat(raw_timestamp)
             if timestamp.tzinfo is None or timestamp.utcoffset() is None:
                 return False
+            trigger_time = timestamp.astimezone(SHANGHAI)
+            execution_time = executed_at.astimezone(SHANGHAI)
             return bool(
                 published_item.get("intraday_overlay")
                 == IntradayOverlay.PREDEFINED_STOP_TOUCHED.value
                 and published_item.get("intraday_health_status") == "REALTIME"
-                and timestamp.astimezone(SHANGHAI).date() == now.date()
+                and trigger_time.date() == now.date()
+                and execution_time >= trigger_time
             )
         except Exception:
             return False
@@ -1413,10 +1418,11 @@ class SwingService:
         overlays: dict[str, str | None] = {}
         current: dict[str, tuple[float | None, str | None, str, str]] = {}
         desired_alerts: list[AlertInput] = []
-        all_realtime = True
         for symbol, formal in self._formal.items():
             raw = by_symbol.get(symbol)
-            healthy, timestamp = self._validated_realtime_quote(raw, now)
+            healthy, timestamp, validated_health = (
+                self._validated_realtime_quote(raw, now)
+            )
             price = raw.get("price") if raw is not None else None
             intraday = evaluate_intraday_overlay(
                 formal,
@@ -1437,17 +1443,11 @@ class SwingService:
                 overlays[symbol] = None
                 normalized_price = intraday.price
                 status = resolved_status
-                raw_health = (
-                    raw.get("health_status")
-                    if raw is not None and type(raw.get("health_status")) is str
-                    else "UNAVAILABLE"
-                )
                 current[symbol] = (
-                    normalized_price, timestamp, status, raw_health,
+                    normalized_price, timestamp, status, validated_health,
                 )
                 continue
             if intraday.overlay is IntradayOverlay.INTRADAY_FEED_UNAVAILABLE:
-                all_realtime = False
                 overlays[symbol] = None
                 normalized_price = intraday.price
                 status = "PAUSED_MARKET_NOT_REALTIME"
@@ -1469,18 +1469,30 @@ class SwingService:
                         label=style[1],
                         evidence=intraday.to_dict()["evidence"],
                     ))
-            raw_health = (
-                raw.get("health_status")
-                if raw is not None and type(raw.get("health_status")) is str
-                else "UNAVAILABLE"
+            current[symbol] = (
+                normalized_price, timestamp, status, validated_health,
             )
-            current[symbol] = (normalized_price, timestamp, status, raw_health)
 
-        self._health["intraday"] = "REALTIME" if all_realtime else "UNAVAILABLE"
-        if all_realtime:
+        validated_statuses = tuple(value[3] for value in current.values())
+        if validated_statuses and all(
+            status == "REALTIME" for status in validated_statuses
+        ):
+            aggregate_health = "REALTIME"
+        elif "UNAVAILABLE" in validated_statuses or not validated_statuses:
+            aggregate_health = "UNAVAILABLE"
+        elif "STALE" in validated_statuses:
+            aggregate_health = "STALE"
+        elif "DELAYED" in validated_statuses:
+            aggregate_health = "DELAYED"
+        else:
+            aggregate_health = "CLOSED"
+        self._health["intraday"] = aggregate_health
+        if aggregate_health == "REALTIME":
             self._errors.pop("intraday", None)
         else:
-            self._errors["intraday"] = "one or more intraday quotes are not realtime"
+            self._errors["intraday"] = (
+                f"intraday quotes are {aggregate_health.lower()}"
+            )
         self._sync_overlay_alerts(desired_alerts)
         snapshot = self._build_snapshot(now)
         for item in snapshot["items"]:  # type: ignore[index]
@@ -1500,34 +1512,52 @@ class SwingService:
         self,
         raw: Mapping[str, object] | None,
         now: datetime,
-    ) -> tuple[bool, str | None]:
+    ) -> tuple[bool, str | None, str]:
+        if self._closed_dates is None:
+            return False, None, "UNAVAILABLE"
+        if (
+            not self._is_trading_date(now.date())
+            or not self._in_continuous_session(
+                now.timetz().replace(tzinfo=None),
+            )
+        ):
+            timestamp = raw.get("timestamp") if raw is not None else None
+            return (
+                False,
+                timestamp if type(timestamp) is str else None,
+                "CLOSED",
+            )
         if raw is None:
-            return False, None
+            return False, None, "UNAVAILABLE"
         status = raw.get("health_status")
         raw_timestamp = raw.get("timestamp")
         if type(raw_timestamp) is not str:
-            return False, None
-        if type(status) is not str or status != "REALTIME":
-            return False, raw_timestamp
+            return False, None, "UNAVAILABLE"
         try:
             timestamp = datetime.fromisoformat(raw_timestamp)
             if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-                return False, raw_timestamp
+                return False, raw_timestamp, "UNAVAILABLE"
             local_timestamp = timestamp.astimezone(SHANGHAI)
             age = (now - local_timestamp).total_seconds()
         except Exception:
-            return False, raw_timestamp
-        healthy = bool(
-            self._is_trading_date(now.date())
-            and self._in_continuous_session(now.timetz().replace(tzinfo=None))
-            and local_timestamp.date() == now.date()
-            and self._in_continuous_session(
+            return False, raw_timestamp, "UNAVAILABLE"
+        if (
+            local_timestamp.date() != now.date()
+            or not self._in_continuous_session(
                 local_timestamp.timetz().replace(tzinfo=None),
             )
-            and -_REALTIME_FUTURE_SKEW_SECONDS
-            <= age <= REALTIME_MAX_AGE_SECONDS
-        )
-        return healthy, raw_timestamp
+            or age > REALTIME_MAX_AGE_SECONDS
+        ):
+            return False, raw_timestamp, "STALE"
+        if age < -_REALTIME_FUTURE_SKEW_SECONDS:
+            return False, raw_timestamp, "UNAVAILABLE"
+        if type(status) is not str:
+            return False, raw_timestamp, "UNAVAILABLE"
+        if status == "REALTIME":
+            return True, raw_timestamp, "REALTIME"
+        if status in {"DELAYED", "STALE"}:
+            return False, raw_timestamp, "DELAYED"
+        return False, raw_timestamp, "UNAVAILABLE"
 
     @staticmethod
     def _in_continuous_session(value: time) -> bool:
@@ -1725,6 +1755,36 @@ class SwingService:
             copy.deepcopy(item) for item in alert_history
             if not item.get("retracted")
         ]
+        watchlist_view = {
+            "items": [
+                {"symbol": item.symbol, "enabled": item.enabled}
+                for item in self._watchlist
+            ],
+            "read_only": False,
+            "revision": self.revision,
+        }
+        portfolio_view = {
+            "status": self._health["portfolio"],
+            "projection": (
+                self._portfolio_projection.to_dict()
+                if self._portfolio_projection is not None else None
+            ),
+            "error": copy.deepcopy(self._errors.get("portfolio")),
+            "revision": self.revision,
+            "local_only": True,
+        }
+        alert_current_view = {
+            "status": self._health["alerts"],
+            "items": alert_items,
+            "revision": self.revision,
+            "local_only": True,
+        }
+        alert_history_view = {
+            "status": self._health["alerts"],
+            "items": alert_history,
+            "revision": self.revision,
+            "local_only": True,
+        }
         return {
             "mode": "MONITOR_ONLY",
             "auto_trade": False,
@@ -1742,18 +1802,21 @@ class SwingService:
                 if self._portfolio_projection is not None else None
             ),
             "items": items,
-            "alerts": alert_items,
-            "alert_history": alert_history,
+            "alerts": copy.deepcopy(active_alerts),
             "active_alerts": active_alerts,
-            "watchlist": {
-                "items": [
-                    {"symbol": item.symbol, "enabled": item.enabled}
-                    for item in self._watchlist
-                ],
-                "read_only": False,
-                "revision": self.revision,
+            "alert_counts": {
+                "active": len(active_alerts),
+                "current": len(alert_items),
+                "history": len(alert_history),
             },
+            "watchlist": watchlist_view,
             "read_only_market_data": True,
+            _READ_MODEL_KEY: {
+                "watchlist": watchlist_view,
+                "portfolio": portfolio_view,
+                "alerts_current": alert_current_view,
+                "alerts_history": alert_history_view,
+            },
         }
 
     def _publish(
@@ -1777,11 +1840,10 @@ class SwingService:
         force_reset: bool = False,
     ) -> None:
         value = copy.deepcopy(dict(snapshot))
-        self.revision += 1
-        value["revision"] = self.revision
-        value["watchlist"]["revision"] = self.revision
-        self.published = value
-        event = copy.deepcopy(value)
+        next_revision = self.revision + 1
+        self._install_published(value, revision=next_revision)
+        self.revision = next_revision
+        event = copy.deepcopy(self.published)
         event.update({
             "event": "reset" if force_reset else "update",
             "reset": bool(force_reset),
@@ -1790,6 +1852,38 @@ class SwingService:
         })
         self.events.append(event)
         self.publish_condition.notify_all()
+
+    def _install_published(
+        self,
+        snapshot: Mapping[str, object],
+        *,
+        revision: int,
+    ) -> None:
+        """Install the public snapshot and all private GET views as one revision."""
+        value = copy.deepcopy(dict(snapshot))
+        read_model = value.pop(_READ_MODEL_KEY)
+        if not isinstance(read_model, Mapping):
+            raise SwingServiceError("published read model is unavailable")
+
+        def endpoint(name: str) -> dict[str, object]:
+            raw = read_model.get(name)
+            if not isinstance(raw, Mapping):
+                raise SwingServiceError(f"published {name} view is unavailable")
+            result = copy.deepcopy(dict(raw))
+            result["revision"] = revision
+            return result
+
+        value["revision"] = revision
+        watchlist = endpoint("watchlist")
+        value["watchlist"] = copy.deepcopy(watchlist)
+        portfolio = endpoint("portfolio")
+        alerts_current = endpoint("alerts_current")
+        alerts_history = endpoint("alerts_history")
+        self.published = value
+        self._published_watchlist_view = watchlist
+        self._published_portfolio_view = portfolio
+        self._published_alerts_current = alerts_current
+        self._published_alerts_history = alerts_history
 
     def _publish_component_failure(
         self,
@@ -1945,6 +2039,7 @@ class SwingService:
                     currently_active
                     and item.symbol in enabled_symbols
                     and item.trading_date == now.date()
+                    and item.state in _OVERLAY_ALERT_STATES
                     and self._health["intraday"] == "REALTIME"
                     and formal is not None
                     and formal.strategy_version == item.strategy_version
@@ -1988,6 +2083,8 @@ class SwingService:
         return value
 
     def _mark_clock_success(self) -> bool:
+        if self._health.get("service") != "CLOCK_FAILED":
+            return False
         before = (
             self._health.get("service"), self._errors.get("service"),
         )
@@ -2002,6 +2099,15 @@ class SwingService:
         return before != (
             self._health.get("service"), self._errors.get("service"),
         )
+
+    def _mark_producer_success(self) -> bool:
+        if self._health.get("service") != "PRODUCER_FAILED":
+            return False
+        self._errors.pop("service", None)
+        self._health["service"] = (
+            "OK" if self._health.get("configuration") == "OK" else "BLOCKED"
+        )
+        return True
 
     def _fallback_now(self) -> datetime:
         latest = max(
@@ -2176,6 +2282,10 @@ class SwingService:
             try:
                 self.refresh_once()
                 self.refresh_intraday()
+                with self.producer_lock:
+                    now = self._safe_now()
+                    if self._mark_producer_success():
+                        self._publish(self._build_snapshot(now))
             except Exception as error:
                 with self.producer_lock:
                     self._publish_component_failure(

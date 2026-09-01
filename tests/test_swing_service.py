@@ -17,7 +17,10 @@ from etf_rotation.swing_config import SwingWatchItem
 from etf_rotation.swing_data import DailyBar, DailyHistoryStore
 from etf_rotation.swing_portfolio import PortfolioLedger, TradeInput
 from etf_rotation.swing_service import SwingPaths, SwingService
-from etf_rotation.swing_strategy import evaluate_swing as real_evaluate_swing
+from etf_rotation.swing_strategy import (
+    SwingState,
+    evaluate_swing as real_evaluate_swing,
+)
 
 from tests.swing_helpers import (
     metadata_fixture,
@@ -372,40 +375,81 @@ class SwingServiceTests(unittest.TestCase):
         service = self.make_service(intraday_provider=lambda: {
             "items": [{
                 "symbol": "510300", "price": 105.9,
-                "timestamp": "2026-09-01T09:31:00+08:00",
+                "timestamp": "2026-09-01T13:59:30+08:00",
                 "health_status": "DELAYED",
             }],
         })
-        item = service.refresh_intraday()["items"][0]
+        snapshot = service.refresh_intraday()
+        item = snapshot["items"][0]
         self.assertEqual(item["current_price"], 105.9)
         self.assertEqual(item["intraday_health_status"], "DELAYED")
+        self.assertEqual(snapshot["health"]["intraday"], "DELAYED")
         self.assertIsNone(item["intraday_overlay"])
         self.assertEqual(item["execution_status"], "PAUSED_MARKET_NOT_REALTIME")
+
+    def test_intraday_item_health_is_derived_instead_of_echoed(self) -> None:
+        cases = (
+            (
+                "stale", datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI),
+                "2026-09-01T13:57:00+08:00", "REALTIME", "STALE",
+            ),
+            (
+                "closed", datetime(2026, 9, 1, 15, 1, tzinfo=SHANGHAI),
+                "2026-09-01T15:00:00+08:00", "REALTIME", "CLOSED",
+            ),
+            (
+                "untrusted-source",
+                datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI),
+                "2026-09-01T13:59:30+08:00", "CLOSED", "UNAVAILABLE",
+            ),
+            (
+                "malformed", datetime(2026, 9, 1, 14, 0, tzinfo=SHANGHAI),
+                "not-an-iso-time", "REALTIME", "UNAVAILABLE",
+            ),
+        )
+        for label, now, timestamp, source_status, expected in cases:
+            with self.subTest(label=label):
+                service = self.make_service(
+                    clock=lambda now=now: now,
+                    intraday_provider=lambda timestamp=timestamp,
+                    source_status=source_status: {"items": [{
+                        "symbol": "510300", "price": 105.9,
+                        "timestamp": timestamp,
+                        "health_status": source_status,
+                    }]},
+                )
+                snapshot = service.refresh_intraday()
+                item = snapshot["items"][0]
+                self.assertEqual(item["intraday_health_status"], expected)
+                self.assertEqual(snapshot["health"]["intraday"], expected)
+                self.assertEqual(
+                    item["execution_status"], "PAUSED_MARKET_NOT_REALTIME",
+                )
 
     def test_realtime_quote_requires_current_fresh_continuous_session(self) -> None:
         cases = (
             (
                 "yesterday", datetime(2026, 9, 1, 10, 0, tzinfo=SHANGHAI),
-                "2026-08-31T10:00:00+08:00",
+                "2026-08-31T10:00:00+08:00", "STALE",
             ),
             (
                 "weekend", datetime(2026, 9, 5, 10, 0, tzinfo=SHANGHAI),
-                "2026-09-05T10:00:00+08:00",
+                "2026-09-05T10:00:00+08:00", "CLOSED",
             ),
             (
                 "lunch", datetime(2026, 9, 1, 12, 0, tzinfo=SHANGHAI),
-                "2026-09-01T11:59:30+08:00",
+                "2026-09-01T11:59:30+08:00", "CLOSED",
             ),
             (
                 "stale", datetime(2026, 9, 1, 10, 0, tzinfo=SHANGHAI),
-                "2026-09-01T09:58:00+08:00",
+                "2026-09-01T09:58:00+08:00", "STALE",
             ),
             (
                 "future", datetime(2026, 9, 1, 10, 0, tzinfo=SHANGHAI),
-                "2026-09-01T10:01:00+08:00",
+                "2026-09-01T10:01:00+08:00", "UNAVAILABLE",
             ),
         )
-        for label, now, timestamp in cases:
+        for label, now, timestamp, expected_health in cases:
             with self.subTest(label=label):
                 service = self.make_service(
                     clock=lambda now=now: now,
@@ -419,7 +463,12 @@ class SwingServiceTests(unittest.TestCase):
                 )
                 snapshot = service.refresh_intraday()
                 item = snapshot["items"][0]
-                self.assertEqual(snapshot["health"]["intraday"], "UNAVAILABLE")
+                self.assertEqual(
+                    snapshot["health"]["intraday"], expected_health,
+                )
+                self.assertEqual(
+                    item["intraday_health_status"], expected_health,
+                )
                 self.assertIsNone(item["intraday_overlay"])
                 self.assertEqual(
                     item["execution_status"], "PAUSED_MARKET_NOT_REALTIME",
@@ -615,6 +664,29 @@ class SwingServiceTests(unittest.TestCase):
         self.assertNotIn("service", recovered_again["errors"])
         self.assertEqual(recovered_again["revision"], failed_revision + 1)
 
+    def test_producer_failure_survives_clock_success_until_a_good_cycle(self) -> None:
+        service = self.make_service(refresh_interval=0.01)
+        service._publish_component_failure(
+            "service", "PRODUCER_FAILED", RuntimeError("producer exploded"),
+            now=None,
+        )
+        failed = service.snapshot()
+        self.assertEqual(failed["health"]["service"], "PRODUCER_FAILED")
+        self.assertIn("producer exploded", failed["errors"]["service"])
+
+        service.start_refresh()
+        deadline = time.monotonic() + 2.0
+        with service.publish_condition:
+            while (
+                service.published["health"]["service"] == "PRODUCER_FAILED"
+                and time.monotonic() < deadline
+            ):
+                service.publish_condition.wait(0.05)
+        service.stop_refresh()
+        recovered = service.snapshot()
+        self.assertEqual(recovered["health"]["service"], "OK")
+        self.assertNotIn("service", recovered["errors"])
+
     def test_snapshot_and_cursor_payloads_are_deep_copies(self) -> None:
         service = self.make_service()
         snapshot = service.snapshot()
@@ -669,6 +741,97 @@ class SwingServiceTests(unittest.TestCase):
         event = service.wait_for_event(0, timeout=0.0)
         self.assertIsNotNone(event)
         self.assertTrue(event["reset"])
+
+    def test_public_snapshots_stay_bounded_while_alert_history_is_revisioned(self) -> None:
+        service = self.make_service(event_limit=4)
+        store = service._alert_store
+        self.assertIsNotNone(store)
+        assert store is not None
+        alert = AlertInput(
+            trading_date=date(2026, 9, 1),
+            symbol="510300",
+            state="LOAD_TEST_OVERLAY",
+            strategy_version="LOAD_TEST_V1",
+            level="YELLOW",
+            label="load test",
+            evidence={},
+        )
+        baseline = len(service.alerts(include_retracted=True)["items"])
+
+        def add_generations(count: int) -> None:
+            for index in range(count):
+                projection = store.publish_overlay(alert)
+                store.retract_overlay(projection.alert_id, f"cycle-{index}")
+            service._refresh_alert_snapshot(datetime(
+                2026, 9, 1, 14, 0, tzinfo=SHANGHAI,
+            ))
+
+        add_generations(20)
+        first = service.snapshot()
+        first_event = service.wait_for_event(first["revision"] - 1, timeout=0.0)
+        self.assertNotIn("alert_history", first)
+        self.assertNotIn("alert_history", first_event)
+        self.assertNotIn("_published_read_model", first)
+        self.assertNotIn("_published_read_model", first_event)
+        self.assertLessEqual(len(first["alerts"]), len(first["active_alerts"]))
+        self.assertEqual(
+            len(service.alerts(include_retracted=True)["items"]), baseline + 20,
+        )
+        self.assertEqual(
+            service.alerts(include_retracted=True)["revision"], first["revision"],
+        )
+        first_size = len(json.dumps(first, ensure_ascii=False, sort_keys=True))
+
+        add_generations(80)
+        second = service.snapshot()
+        second_event = service.wait_for_event(
+            second["revision"] - 1, timeout=0.0,
+        )
+        self.assertNotIn("alert_history", second)
+        self.assertNotIn("alert_history", second_event)
+        self.assertNotIn("_published_read_model", second)
+        self.assertNotIn("_published_read_model", second_event)
+        self.assertLessEqual(len(second["alerts"]), len(second["active_alerts"]))
+        self.assertEqual(
+            len(service.alerts(include_retracted=True)["items"]), baseline + 100,
+        )
+        self.assertEqual(
+            service.alerts(include_retracted=True)["revision"], second["revision"],
+        )
+        self.assertLess(
+            len(json.dumps(second, ensure_ascii=False, sort_keys=True)),
+            first_size + 128,
+        )
+
+    def test_unknown_overlay_state_is_history_but_never_publicly_active(self) -> None:
+        service = self.make_service()
+        store = service._alert_store
+        self.assertIsNotNone(store)
+        assert store is not None
+        rogue = store.publish_overlay(AlertInput(
+            trading_date=date(2026, 9, 1),
+            symbol="510300",
+            state="UNRECOGNIZED_OVERLAY",
+            strategy_version="SWING_V1",
+            level="RED",
+            label="rogue",
+            evidence={},
+        ))
+        service._health["intraday"] = "REALTIME"
+        service._refresh_alert_snapshot(datetime(
+            2026, 9, 1, 14, 0, tzinfo=SHANGHAI,
+        ))
+        self.assertIn(
+            rogue.alert_id,
+            {
+                item["alert_id"]
+                for item in service.alerts(include_retracted=True)["items"]
+            },
+        )
+        self.assertNotIn(
+            rogue.alert_id,
+            {item["alert_id"] for item in service.snapshot()["active_alerts"]},
+        )
 
     def test_invalid_calendar_fails_closed_for_portfolio_and_candidates(self) -> None:
         self.paths.calendar.write_text("{broken", encoding="utf-8")
@@ -950,6 +1113,69 @@ class SwingServiceTests(unittest.TestCase):
         ), "historical-stop-sell")
         self.assertNotIn("exit_reason", event["payload"])
 
+    def test_overlay_stop_only_classifies_sales_after_the_trigger_time(self) -> None:
+        original_trades = self.paths.trades.read_bytes()
+        original_portfolio = (
+            self.paths.portfolio_snapshot.read_bytes()
+            if self.paths.portfolio_snapshot.exists() else None
+        )
+        for label, executed_at, expected_stop in (
+            (
+                "before-trigger",
+                datetime(2026, 9, 2, 9, 35, tzinfo=SHANGHAI), False,
+            ),
+            (
+                "after-trigger",
+                datetime(2026, 9, 2, 10, 0, tzinfo=SHANGHAI), True,
+            ),
+        ):
+            with self.subTest(label=label):
+                self.paths.trades.write_bytes(original_trades)
+                if original_portfolio is None:
+                    self.paths.portfolio_snapshot.unlink(missing_ok=True)
+                else:
+                    self.paths.portfolio_snapshot.write_bytes(original_portfolio)
+                service = self.make_service()
+                service.record_trade(TradeInput(
+                    "510300", "BUY", 100, 100.0, 0.0,
+                    datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+                    planned_risk_per_share=2.0,
+                ), f"{label}-buy")
+                service.clock = lambda: datetime(
+                    2026, 9, 2, 10, 1, tzinfo=SHANGHAI,
+                )
+                with service.publish_condition:
+                    item = service.published["items"][0]
+                    item["intraday_overlay"] = "PREDEFINED_STOP_TOUCHED"
+                    item["intraday_health_status"] = "REALTIME"
+                    item["current_price_time"] = (
+                        "2026-09-02T09:59:30+08:00"
+                    )
+                event = service.record_trade(TradeInput(
+                    "510300", "SELL", 100, 98.0, 0.0, executed_at,
+                ), f"{label}-sell")
+                if expected_stop:
+                    self.assertEqual(
+                        event["payload"]["exit_reason"], "STOP_EXIT",
+                    )
+                else:
+                    self.assertNotIn("exit_reason", event["payload"])
+
+    def test_explicit_historical_stop_exit_is_preserved(self) -> None:
+        service = self.make_service()
+        service.record_trade(TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        ), "explicit-historical-buy")
+        service.clock = lambda: datetime(2026, 9, 3, 10, tzinfo=SHANGHAI)
+        event = service.record_trade(TradeInput(
+            "510300", "SELL", 100, 98.0, 0.0,
+            datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+            exit_reason="STOP_EXIT",
+        ), "explicit-historical-sell")
+        self.assertEqual(event["payload"]["exit_reason"], "STOP_EXIT")
+
     def test_current_healthy_formal_stop_can_classify_a_full_exit(self) -> None:
         service = self.make_service(
             collector=StaticDailyCollector(self.final_bars),
@@ -966,12 +1192,43 @@ class SwingServiceTests(unittest.TestCase):
         formal = service._formal["510300"]
         evidence = dict(formal.evidence)
         evidence["exit_hard_stop"] = True
-        service._formal["510300"] = replace(formal, evidence=evidence)
+        service._formal["510300"] = replace(
+            formal,
+            state=SwingState.EXIT_CANDIDATE,
+            evidence=evidence,
+            blocked_reasons=(),
+            valid_for_trading_date=None,
+        )
         event = service.record_trade(TradeInput(
             "510300", "SELL", 100, 98.0, 0.0,
             datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
         ), "formal-stop-sell")
         self.assertEqual(event["payload"]["exit_reason"], "STOP_EXIT")
+
+    def test_non_exit_formal_state_cannot_infer_stop_from_evidence_alone(self) -> None:
+        service = self.make_service(
+            collector=StaticDailyCollector(self.final_bars),
+        )
+        self.assertTrue(service.refresh_once(datetime(
+            2026, 9, 1, 15, 10, tzinfo=SHANGHAI,
+        )))
+        service.clock = lambda: datetime(2026, 9, 2, 10, tzinfo=SHANGHAI)
+        service.record_trade(TradeInput(
+            "510300", "BUY", 100, 100.0, 0.0,
+            datetime(2026, 9, 1, 10, tzinfo=SHANGHAI),
+            planned_risk_per_share=2.0,
+        ), "non-exit-evidence-buy")
+        formal = service._formal["510300"]
+        evidence = dict(formal.evidence)
+        evidence["exit_hard_stop"] = True
+        service._formal["510300"] = replace(
+            formal, state=SwingState.HOLDING, evidence=evidence,
+        )
+        event = service.record_trade(TradeInput(
+            "510300", "SELL", 100, 98.0, 0.0,
+            datetime(2026, 9, 2, 10, tzinfo=SHANGHAI),
+        ), "non-exit-evidence-sell")
+        self.assertNotIn("exit_reason", event["payload"])
 
     def test_active_formal_alert_must_match_current_decision_identity(self) -> None:
         SwingAlertStore(self.paths.alerts).publish_formal(AlertInput(
