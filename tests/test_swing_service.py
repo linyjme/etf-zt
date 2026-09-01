@@ -792,14 +792,20 @@ class SwingServiceTests(unittest.TestCase):
             "items": [{"symbol": "510300", "enabled": False}],
         })
         service.update_watchlist("510300", True)
-        self.assertEqual(service.snapshot()["active_alerts"], [])
+        self.assertFalse(any(
+            item["scope"] == "INTRADAY"
+            for item in service.snapshot()["active_alerts"]
+        ))
         history = {
             item["alert_id"]: item
             for item in service.alerts(include_retracted=True)["items"]
         }
         self.assertTrue(history[old_overlay["alert_id"]]["retracted"])
         refreshed = service.refresh_intraday()
-        replacement = refreshed["active_alerts"][0]
+        replacement = next(
+            item for item in refreshed["active_alerts"]
+            if item["scope"] == "INTRADAY"
+        )
         self.assertNotEqual(replacement["alert_id"], old_overlay["alert_id"])
         self.assertEqual(
             (
@@ -856,6 +862,42 @@ class SwingServiceTests(unittest.TestCase):
             [item["symbol"] for item in service.snapshot()["items"]],
             ["510300", "159915"],
         )
+
+    def test_enabling_existing_history_persists_one_current_formal_alert(self) -> None:
+        self.paths.watchlist.write_text(json.dumps({
+            "schema_version": 1,
+            "items": [{"symbol": "510300", "enabled": False}],
+        }), encoding="utf-8")
+        service = self.make_service()
+        self.assertEqual(service.snapshot()["items"], [])
+
+        service.update_watchlist("510300", True)
+        enabled = service.snapshot()
+        self.assertEqual(
+            enabled["items"][0]["formal_state"], "TRIAL_ENTRY_CANDIDATE",
+        )
+        formal = [
+            item for item in service.alerts()["items"]
+            if item["scope"] == "FORMAL"
+        ]
+        self.assertEqual(len(formal), 1)
+        self.assertEqual(formal[0]["state"], "TRIAL_ENTRY_CANDIDATE")
+        self.assertTrue(formal[0]["active_notification"])
+        self.assertEqual(enabled["active_alerts"], formal)
+        event_count = len(SwingAlertStore(self.paths.alerts).load_events())
+
+        service.update_watchlist("510300", True)
+        self.assertEqual(
+            len(SwingAlertStore(self.paths.alerts).load_events()), event_count,
+        )
+        self.assertEqual(len(service.snapshot()["active_alerts"]), 1)
+
+        service.update_watchlist("510300", False)
+        disabled_history = service.alerts(include_retracted=True)["items"]
+        self.assertEqual(len(disabled_history), 1)
+        self.assertFalse(disabled_history[0]["retracted"])
+        self.assertFalse(disabled_history[0]["active_notification"])
+        self.assertEqual(service.snapshot()["active_alerts"], [])
 
     def test_watchlist_retraction_failure_is_fail_closed(self) -> None:
         service = self.make_service()

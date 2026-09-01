@@ -257,6 +257,24 @@ class SwingService:
                     now,
                     watchlist=next_watchlist,
                 )
+                next_by_symbol = {
+                    formal_symbol: (
+                        self._next_trading_date(decision.as_of_trading_date)
+                        if decision.as_of_trading_date is not None else None
+                    )
+                    for formal_symbol, decision in next_formal.items()
+                }
+                alert_error = self._persist_formal_alerts(
+                    next_formal,
+                    next_by_symbol,
+                    self._health["portfolio"],
+                )
+                if alert_error is None:
+                    next_health["alerts"] = "OK"
+                    next_errors.pop("alerts", None)
+                else:
+                    next_health["alerts"] = "BLOCKED"
+                    next_errors["alerts"] = alert_error
                 snapshot = self._candidate_snapshot(
                     now,
                     watchlist=next_watchlist,
