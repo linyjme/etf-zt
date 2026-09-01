@@ -1193,18 +1193,201 @@ def _existing_projection_is_newer(
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError, RecursionError):
         return False
-    if not isinstance(payload, dict):
-        return False
-    if payload.get("last_event_id") != projected.last_event_id:
-        return False
-    raw_date = payload.get("as_of_trading_date")
-    if type(raw_date) is not str:
-        return False
     try:
-        existing_date = date.fromisoformat(raw_date)
-    except ValueError:
+        existing = _parse_projection(payload)
+    except PortfolioLedgerError:
         return False
-    return existing_date > projected.as_of_trading_date
+    return (
+        existing.last_event_id == projected.last_event_id
+        and existing.as_of_trading_date > projected.as_of_trading_date
+    )
+
+
+def _parse_projection(value: object) -> PortfolioProjection:
+    if not isinstance(value, Mapping):
+        raise PortfolioLedgerError("projection must be an object")
+    expected = {
+        "schema_version", "name", "default_risk_per_trade",
+        "as_of_trading_date", "cash", "positions", "realized_pnl",
+        "etf_market_value", "equity", "planned_risk", "warnings",
+        "last_event_id",
+    }
+    if set(value) != expected:
+        raise PortfolioLedgerError("projection fields are invalid")
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise PortfolioLedgerError("projection schema_version must be integer 1")
+    name = _nonblank_text(value["name"], "projection name")
+    default_risk = _projection_number(
+        value["default_risk_per_trade"],
+        "projection default_risk_per_trade",
+        positive=True,
+    )
+    if default_risk > Decimal("1"):
+        raise PortfolioLedgerError(
+            "projection default_risk_per_trade must not exceed 1",
+        )
+    raw_date = value["as_of_trading_date"]
+    if type(raw_date) is not str:
+        raise PortfolioLedgerError(
+            "projection as_of_trading_date must be an ISO date string",
+        )
+    try:
+        as_of = date.fromisoformat(raw_date)
+    except ValueError as error:
+        raise PortfolioLedgerError(
+            "projection as_of_trading_date must be an ISO date string",
+        ) from error
+    if as_of.isoformat() != raw_date:
+        raise PortfolioLedgerError(
+            "projection as_of_trading_date must be canonical",
+        )
+    cash = _projection_number(value["cash"], "projection cash")
+    realized = _projection_number(
+        value["realized_pnl"], "projection realized_pnl", signed=True,
+    )
+    market_value = _projection_number(
+        value["etf_market_value"], "projection etf_market_value",
+    )
+    equity = _projection_number(value["equity"], "projection equity")
+    planned_risk = _projection_number(
+        value["planned_risk"], "projection planned_risk",
+    )
+    positions = _parse_projection_positions(value["positions"])
+    position_market_value = sum(
+        (_decimal(position.market_value) for position in positions.values()),
+        Decimal("0"),
+    )
+    position_planned_risk = sum(
+        (_decimal(position.planned_risk) for position in positions.values()),
+        Decimal("0"),
+    )
+    if not _projection_numbers_equal(market_value, position_market_value):
+        raise PortfolioLedgerError("projection market value is inconsistent")
+    if not _projection_numbers_equal(equity, cash + market_value):
+        raise PortfolioLedgerError("projection equity is inconsistent")
+    if not _projection_numbers_equal(planned_risk, position_planned_risk):
+        raise PortfolioLedgerError("projection planned risk is inconsistent")
+    raw_warnings = value["warnings"]
+    if type(raw_warnings) is not list or any(
+        type(warning) is not str or not warning
+        for warning in raw_warnings
+    ):
+        raise PortfolioLedgerError("projection warnings must be a string list")
+    last_event_id = value["last_event_id"]
+    _require_uuid4(last_event_id, "projection last_event_id")
+    return PortfolioProjection(
+        schema_version=1,
+        name=name,
+        default_risk_per_trade=_public_float(
+            default_risk, "projection default_risk_per_trade",
+        ),
+        as_of_trading_date=as_of,
+        cash=_public_float(cash, "projection cash"),
+        positions=MappingProxyType(positions),
+        realized_pnl=_public_float(realized, "projection realized_pnl"),
+        etf_market_value=_public_float(
+            market_value, "projection etf_market_value",
+        ),
+        equity=_public_float(equity, "projection equity"),
+        planned_risk=_public_float(planned_risk, "projection planned_risk"),
+        warnings=tuple(raw_warnings),
+        last_event_id=last_event_id,
+    )
+
+
+def _parse_projection_positions(value: object) -> dict[str, PortfolioPosition]:
+    if type(value) is not dict:
+        raise PortfolioLedgerError("projection positions must be an object")
+    expected = {
+        "symbol", "shares", "sellable_shares", "today_bought_shares",
+        "average_cost", "market_price", "market_value", "planned_risk",
+    }
+    positions: dict[str, PortfolioPosition] = {}
+    for symbol, raw_position in value.items():
+        if (
+            type(symbol) is not str or len(symbol) != 6
+            or not symbol.isascii() or not symbol.isdigit()
+        ):
+            raise PortfolioLedgerError("projection position symbol is invalid")
+        if not isinstance(raw_position, Mapping) or set(raw_position) != expected:
+            raise PortfolioLedgerError("projection position fields are invalid")
+        if raw_position["symbol"] != symbol:
+            raise PortfolioLedgerError("projection position symbol is inconsistent")
+        shares = _projection_integer(raw_position["shares"], "position shares")
+        if shares <= 0:
+            raise PortfolioLedgerError("projection position shares must be positive")
+        sellable = _projection_integer(
+            raw_position["sellable_shares"], "position sellable_shares",
+        )
+        today_bought = _projection_integer(
+            raw_position["today_bought_shares"], "position today_bought_shares",
+        )
+        if sellable + today_bought > shares:
+            raise PortfolioLedgerError("projection position inventory is inconsistent")
+        average_cost = _projection_number(
+            raw_position["average_cost"], "position average_cost", positive=True,
+        )
+        market_price = _projection_number(
+            raw_position["market_price"], "position market_price", positive=True,
+        )
+        position_market_value = _projection_number(
+            raw_position["market_value"], "position market_value", positive=True,
+        )
+        position_risk = _projection_number(
+            raw_position["planned_risk"], "position planned_risk",
+        )
+        if not _projection_numbers_equal(
+            position_market_value, market_price * shares,
+        ):
+            raise PortfolioLedgerError("projection position value is inconsistent")
+        positions[symbol] = PortfolioPosition(
+            symbol=symbol,
+            shares=shares,
+            sellable_shares=sellable,
+            today_bought_shares=today_bought,
+            average_cost=_public_float(average_cost, "position average_cost"),
+            market_price=_public_float(market_price, "position market_price"),
+            market_value=_public_float(
+                position_market_value, "position market_value",
+            ),
+            planned_risk=_public_float(position_risk, "position planned_risk"),
+        )
+    return positions
+
+
+def _projection_integer(value: object, field: str) -> int:
+    if type(value) is not int or value < 0:
+        raise PortfolioLedgerError(f"{field} must be a nonnegative integer")
+    return value
+
+
+def _projection_number(
+    value: object,
+    field: str,
+    *,
+    positive: bool = False,
+    signed: bool = False,
+) -> Decimal:
+    if type(value) not in (int, float):
+        raise PortfolioLedgerError(f"{field} must be a finite number")
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError, OverflowError) as error:
+        raise PortfolioLedgerError(f"{field} must be a finite number") from error
+    if not number.is_finite():
+        raise PortfolioLedgerError(f"{field} must be a finite number")
+    _public_float(number, field)
+    if positive and number <= 0:
+        raise PortfolioLedgerError(f"{field} must be positive")
+    if not positive and not signed and number < 0:
+        raise PortfolioLedgerError(f"{field} must be nonnegative")
+    return number
+
+
+def _projection_numbers_equal(left: Decimal, right: Decimal) -> bool:
+    difference = abs(left - right)
+    scale = max(abs(left), abs(right), Decimal("1"))
+    return difference <= scale * Decimal("1e-12")
 
 
 def _atomic_replace_bytes(path: Path, content: bytes) -> None:

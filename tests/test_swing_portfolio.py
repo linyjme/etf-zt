@@ -417,6 +417,102 @@ print(ledger.record_trade(trade, 'subprocess-same-key').event_id, flush=True)
         on_disk = json.loads(projection_path.read_text(encoding="utf-8"))
         self.assertEqual(on_disk["positions"]["510300"]["shares"], 1000)
 
+    def test_newer_projection_with_missing_or_wrong_fields_is_rebuilt(self) -> None:
+        self.initialize()
+        projection_path = self.root / "portfolio.json"
+        valid = self.ledger.project(self.wednesday.date(), {}).to_dict()
+        corruptions = (
+            lambda payload: payload.pop("cash"),
+            lambda payload: payload.__setitem__("schema_version", True),
+            lambda payload: payload.__setitem__("warnings", "not-a-list"),
+        )
+        for corrupt in corruptions:
+            with self.subTest(corrupt=corrupt):
+                payload = dict(valid)
+                payload["as_of_trading_date"] = "2026-09-03"
+                corrupt(payload)
+                projection_path.write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+                )
+                rebuilt = self.ledger.load_or_rebuild_projection(
+                    projection_path, self.tuesday.date(), {},
+                )
+                self.assertEqual(
+                    json.loads(projection_path.read_text(encoding="utf-8")),
+                    rebuilt.to_dict(),
+                )
+
+    def test_newer_projection_with_non_finite_numbers_is_rebuilt(self) -> None:
+        self.ledger.initialize(
+            "波段账户",
+            cash=100_000.0,
+            idempotency_key="init-finite-projection",
+            initial_positions={"510300": InitialPositionInput(100, 4.0)},
+        )
+        projection_path = self.root / "portfolio.json"
+        valid = self.ledger.project(
+            self.wednesday.date(), {"510300": 4.1},
+        ).to_dict()
+        corruptions = (
+            lambda payload: payload.__setitem__("cash", float("nan")),
+            lambda payload: payload["positions"]["510300"].__setitem__(
+                "market_value", float("inf"),
+            ),
+        )
+        for corrupt in corruptions:
+            with self.subTest(corrupt=corrupt):
+                payload = json.loads(json.dumps(valid))
+                payload["as_of_trading_date"] = "2026-09-03"
+                corrupt(payload)
+                projection_path.write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+                )
+                rebuilt = self.ledger.load_or_rebuild_projection(
+                    projection_path,
+                    self.tuesday.date(),
+                    {"510300": 4.1},
+                )
+                self.assertEqual(
+                    json.loads(projection_path.read_text(encoding="utf-8")),
+                    rebuilt.to_dict(),
+                )
+
+    def test_newer_projection_with_malformed_positions_is_rebuilt(self) -> None:
+        self.ledger.initialize(
+            "波段账户",
+            cash=100_000.0,
+            idempotency_key="init-position-projection",
+            initial_positions={"510300": InitialPositionInput(100, 4.0)},
+        )
+        projection_path = self.root / "portfolio.json"
+        valid = self.ledger.project(
+            self.wednesday.date(), {"510300": 4.1},
+        ).to_dict()
+        corruptions = (
+            lambda payload: payload.__setitem__("positions", []),
+            lambda payload: payload["positions"]["510300"].__setitem__(
+                "sellable_shares", 101,
+            ),
+            lambda payload: payload.__setitem__("etf_market_value", 999.0),
+        )
+        for corrupt in corruptions:
+            with self.subTest(corrupt=corrupt):
+                payload = json.loads(json.dumps(valid))
+                payload["as_of_trading_date"] = "2026-09-03"
+                corrupt(payload)
+                projection_path.write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+                )
+                rebuilt = self.ledger.load_or_rebuild_projection(
+                    projection_path,
+                    self.tuesday.date(),
+                    {"510300": 4.1},
+                )
+                self.assertEqual(
+                    json.loads(projection_path.read_text(encoding="utf-8")),
+                    rebuilt.to_dict(),
+                )
+
     def test_projection_path_must_not_alias_authoritative_event_log(self) -> None:
         self.initialize()
         with self.assertRaisesRegex(PortfolioLedgerError, "alias"):
