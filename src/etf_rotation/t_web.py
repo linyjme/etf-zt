@@ -53,6 +53,10 @@ _EXPECTED_CLIENT_DISCONNECTS = (
 )
 
 
+class MissingWatchMetadataError(Exception):
+    """Raised when a watch item has no verified trading metadata."""
+
+
 @dataclass
 class MonitorApplication:
     quotes_path: Path
@@ -1121,6 +1125,10 @@ class MonitorApplication:
             watchlist = load_watchlist(self.watchlist_path)
             if any(current.symbol == normalized_symbol for current in watchlist):
                 raise FileExistsError(f"代码已在监控列表中: {normalized_symbol}")
+            if normalized_symbol not in self.metadata_store.load():
+                raise MissingWatchMetadataError(
+                    f"缺少交易元数据，无法添加: {normalized_symbol}",
+                )
             self._atomic_write_watchlist([*watchlist, item])
         if self.collector is None:
             self._bootstrap(increment_revision=True)
@@ -1271,6 +1279,11 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.CREATED, {"item": item})
         except FileExistsError as error:
             self._json(HTTPStatus.CONFLICT, {"error": "duplicate", "message": str(error)})
+        except MissingWatchMetadataError as error:
+            self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {
+                "error": "missing_metadata",
+                "message": str(error),
+            })
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
             self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_request", "message": str(error)})
         except OSError as error:

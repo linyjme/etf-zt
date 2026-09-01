@@ -1522,6 +1522,25 @@ console.log(JSON.stringify({failedState,quotesOnly,summarized,sseRecovered,pollR
                 error.close()
 
     def test_watchlist_post_persists_valid_item(self) -> None:
+        metadata = json.loads(self.metadata.read_text(encoding="utf-8"))
+        metadata["items"].append({
+            "symbol": "159915",
+            "name": "创业板ETF",
+            "index": {"code": "399006", "name": "创业板指", "provider": "深交所"},
+            "trading": {
+                "exchange": "SZSE",
+                "asset_type": "DOMESTIC_EQUITY_ETF",
+                "intraday_turnaround": False,
+                "sellable_delay_days": 1,
+                "lot_size": 100,
+                "price_tick": 0.001,
+                "price_limit_pct": 0.20,
+                "volume_unit_shares": 100,
+            },
+        })
+        self.metadata.write_text(
+            json.dumps(metadata, ensure_ascii=False), encoding="utf-8",
+        )
         self.watchlist.write_text(json.dumps([{
             "symbol": "510300",
             "name": "沪深300ETF",
@@ -1567,6 +1586,17 @@ console.log(JSON.stringify({failedState,quotesOnly,summarized,sseRecovered,pollR
         })
         self.assertEqual(status, 409)
         self.assertEqual(payload["error"], "duplicate")
+        self.assertEqual(self.watchlist.read_bytes(), original)
+
+    def test_watchlist_post_rejects_missing_metadata_without_changing_file(self) -> None:
+        original = self.watchlist.read_bytes()
+        status, payload = self.post("/api/watchlist", {
+            "symbol": "515180",
+            "name": "中证红利",
+        })
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["error"], "missing_metadata")
+        self.assertEqual(payload["message"], "缺少交易元数据，无法添加: 515180")
         self.assertEqual(self.watchlist.read_bytes(), original)
 
     def test_trading_post_is_still_rejected(self) -> None:
