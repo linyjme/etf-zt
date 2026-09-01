@@ -298,10 +298,12 @@ def formal_alert_id(
 
 def overlay_alert_id(alert: AlertInput, generation: int = 0) -> str:
     """Return a stable intraday identity in a namespace separate from formal IDs."""
+    normalized_alert = _alert_input(alert)
     normalized_generation = _generation(generation)
     identity = (
-        f"INTRADAY|{alert.trading_date.isoformat()}|{alert.symbol}|"
-        f"{alert.state}|{alert.strategy_version}|{normalized_generation}"
+        f"INTRADAY|{normalized_alert.trading_date.isoformat()}|"
+        f"{normalized_alert.symbol}|{normalized_alert.state}|"
+        f"{normalized_alert.strategy_version}|{normalized_generation}"
     )
     return hashlib.sha256(identity.encode("ascii")).hexdigest()[:24]
 
@@ -660,19 +662,55 @@ class SwingAlertStore:
                 sort_keys=True,
                 separators=(",", ":"),
             )
-        except (TypeError, ValueError, OverflowError) as error:
+        except AlertStoreError:
+            raise
+        except Exception as error:
             raise AlertStoreError("alert event serialization failed") from error
 
     def _atomic_replace_events(self, events: tuple[AlertEvent, ...]) -> None:
-        content = "".join(self._encode_event(event) + "\n" for event in events)
-        _atomic_replace_bytes(self.path, content.encode("utf-8"))
+        try:
+            content = "".join(
+                self._encode_event(event) + "\n" for event in events
+            )
+            encoded = content.encode("utf-8", errors="strict")
+        except AlertStoreError:
+            raise
+        except Exception as error:
+            raise AlertStoreError("alert event serialization failed") from error
+        _atomic_replace_bytes(self.path, encoded)
 
 
 def _alert_input(value: object) -> AlertInput:
     if type(value) is not AlertInput:
         raise AlertStoreError("alert must be an AlertInput")
-    # Rebuild to catch a maliciously constructed or mutated instance.
-    return AlertInput.from_mapping(value.to_dict())
+    # Read only declared fields and rebuild.  Never dispatch through a possibly
+    # shadowed ``to_dict`` method on a mutated frozen instance.
+    try:
+        fields = (
+            value.trading_date,
+            value.symbol,
+            value.state,
+            value.strategy_version,
+            value.level,
+            value.label,
+            value.evidence,
+        )
+    except Exception as error:
+        raise AlertStoreError("alert fields could not be read") from error
+    try:
+        return AlertInput(
+            trading_date=fields[0],
+            symbol=fields[1],
+            state=fields[2],
+            strategy_version=fields[3],
+            level=fields[4],
+            label=fields[5],
+            evidence=fields[6],
+        )
+    except AlertStoreError:
+        raise
+    except Exception as error:
+        raise AlertStoreError("alert fields could not be normalized") from error
 
 
 def _published_payload(value: object, expected_scope: str) -> Mapping[str, object]:
@@ -784,6 +822,7 @@ def _ascii_token(value: object, field: str) -> str:
 def _nonblank(value: object, field: str) -> str:
     if type(value) is not str or not value.strip() or len(value) > _MAX_TEXT:
         raise AlertStoreError(f"{field} must be nonblank text")
+    _validate_utf8(value, field)
     return value
 
 
@@ -796,6 +835,7 @@ def _idempotency_key(value: object) -> str:
         or any(ord(character) < 32 for character in value)
     ):
         raise AlertStoreError("idempotency_key is invalid")
+    _validate_utf8(value, "idempotency_key")
     return value
 
 
@@ -810,11 +850,15 @@ def _aware_datetime(value: object, field: str) -> datetime:
         raise AlertStoreError(f"{field} must be a timezone-aware datetime")
     try:
         offset = value.utcoffset()
-    except (OverflowError, ValueError) as error:
+        if offset is None:
+            raise AlertStoreError(
+                f"{field} must be a timezone-aware datetime",
+            )
+        return value.astimezone(SHANGHAI)
+    except AlertStoreError:
+        raise
+    except Exception as error:
         raise AlertStoreError(f"{field} timezone is invalid") from error
-    if offset is None:
-        raise AlertStoreError(f"{field} must be a timezone-aware datetime")
-    return value.astimezone(SHANGHAI)
 
 
 def _parse_datetime(value: object, field: str) -> datetime:
@@ -845,7 +889,10 @@ def _uuid4(value: object, field: str) -> str:
 def _freeze_json(value: object, field: str, depth: int = 0) -> object:
     if depth > _MAX_JSON_DEPTH:
         raise AlertStoreError(f"{field} exceeds maximum nesting depth")
-    if value is None or type(value) in (str, bool, int):
+    if value is None or type(value) in (bool, int):
+        return value
+    if type(value) is str:
+        _validate_utf8(value, field)
         return value
     if type(value) is float:
         if not math.isfinite(value):
@@ -858,6 +905,7 @@ def _freeze_json(value: object, field: str, depth: int = 0) -> object:
             for key, item in items:
                 if type(key) is not str:
                     raise AlertStoreError(f"{field} keys must be strings")
+                _validate_utf8(key, f"{field} key")
                 result[key] = _freeze_json(item, field, depth + 1)
         except AlertStoreError:
             raise
@@ -875,6 +923,13 @@ def _thaw_json(value: object) -> object:
     if type(value) is tuple:
         return [_thaw_json(item) for item in value]
     return value
+
+
+def _validate_utf8(value: str, field: str) -> None:
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as error:
+        raise AlertStoreError(f"{field} must be valid UTF-8 text") from error
 
 
 def _atomic_replace_bytes(path: Path, content: bytes) -> None:

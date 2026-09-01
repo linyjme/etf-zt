@@ -304,6 +304,83 @@ class SwingAlertStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(AlertStoreError, "JSON values"):
             formal_alert(evidence=HostileMapping())
 
+    def test_all_persisted_text_rejects_unpaired_surrogates(self) -> None:
+        surrogate = "\ud800"
+        invalid_alerts = (
+            {"label": surrogate},
+            {"evidence": {surrogate: "value"}},
+            {"evidence": {"nested": ["valid", surrogate]}},
+        )
+        for changes in invalid_alerts:
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(AlertStoreError, "UTF-8"):
+                    formal_alert(**changes)
+
+        formal = self.store.publish_formal(formal_alert())
+        with self.assertRaisesRegex(AlertStoreError, "UTF-8"):
+            self.store.acknowledge(formal.alert_id, surrogate)
+        self.store.publish_overlay(overlay_alert())
+        with self.assertRaisesRegex(AlertStoreError, "UTF-8"):
+            self.store.retract_overlays(surrogate)
+
+    def test_atomic_event_encoding_wraps_unicode_failure(self) -> None:
+        self.store.publish_formal(formal_alert())
+        events = self.store.load_events()
+        with patch.object(self.store, "_encode_event", return_value="\ud800"):
+            with self.assertRaisesRegex(AlertStoreError, "serialization"):
+                self.store._atomic_replace_events(events)
+
+    def test_extreme_datetime_is_wrapped_during_construction_and_replay(self) -> None:
+        extreme = datetime.max.replace(tzinfo=timezone.utc)
+        with self.assertRaisesRegex(AlertStoreError, "recorded_at"):
+            SwingAlertStore(self.path, clock=lambda: extreme).publish_formal(
+                formal_alert(),
+            )
+
+        self.store.publish_formal(formal_alert())
+        event = json.loads(self.path.read_text(encoding="utf-8"))
+        event["recorded_at"] = extreme.isoformat()
+        self.path.write_bytes(
+            (json.dumps(
+                event, ensure_ascii=False, allow_nan=False,
+                sort_keys=True, separators=(",", ":"),
+            ) + "\n").encode("utf-8"),
+        )
+        with self.assertRaisesRegex(AlertStoreError, "recorded_at"):
+            self.store.current()
+
+    def test_mutated_alert_and_hostile_to_dict_are_revalidated_without_leaks(self) -> None:
+        class HostileMapping(Mapping[str, object]):
+            def __getitem__(self, key: str) -> object:
+                raise RuntimeError("hostile lookup")
+
+            def __iter__(self):
+                raise RuntimeError("hostile iteration")
+
+            def __len__(self) -> int:
+                return 1
+
+            def items(self):
+                raise RuntimeError("hostile items")
+
+        alert = formal_alert()
+        object.__setattr__(alert, "evidence", HostileMapping())
+        object.__setattr__(
+            alert,
+            "to_dict",
+            lambda: (_ for _ in ()).throw(RuntimeError("hostile to_dict")),
+        )
+        for action in (
+            lambda: self.store.publish_formal(alert),
+            lambda: overlay_alert_id(alert),
+        ):
+            with self.subTest(action=action):
+                with self.assertRaisesRegex(AlertStoreError, "JSON values"):
+                    action()
+
+        with self.assertRaisesRegex(AlertStoreError, "AlertInput"):
+            overlay_alert_id(object())  # type: ignore[arg-type]
+
     def test_corrupt_or_noncanonical_jsonl_fails_closed(self) -> None:
         valid = self.store.publish_formal(formal_alert())
         canonical = self.path.read_text(encoding="utf-8")
