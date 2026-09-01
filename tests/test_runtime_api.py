@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -179,6 +180,27 @@ class RecordingWaitEvent:
         if len(self.waits) >= self.stop_after:
             self.stopped = True
         return self.stopped
+
+
+class ObservableWaitEvent:
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self.wait_entered = threading.Event()
+        self.waits: list[float] = []
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def set(self) -> None:
+        self._event.set()
+
+    def clear(self) -> None:
+        self._event.clear()
+
+    def wait(self, timeout: float) -> bool:
+        self.waits.append(timeout)
+        self.wait_entered.set()
+        return self._event.wait(timeout)
 
 
 class FailingStore:
@@ -486,6 +508,35 @@ class RuntimeTests(unittest.TestCase):
         app._refresh_loop(1)
 
         self.assertEqual(waits.waits, [60.0, 60.0])
+
+    def test_scheduling_error_publishes_outage_without_stopping_producer(self) -> None:
+        app = self.make_runtime_fixture()
+        app.clock = lambda: datetime.fromisoformat("2026-08-28T15:10:00+08:00")
+        app.refresh_interval = 60.0
+        wait_event = ObservableWaitEvent()
+        app._stop_event = wait_event
+        self.paths.watchlist.write_text("{", encoding="utf-8")
+
+        app.start_refresh()
+        try:
+            revision = app.wait_for_revision(0, timeout=0.5)
+            self.assertIsNotNone(revision)
+            snapshot = app.snapshot()
+            self.assertGreaterEqual(snapshot["revision"], 1)
+            self.assertIsNotNone(snapshot["refresh_error"])
+            self.assertEqual(snapshot["items"][0]["health_status"], "OUTAGE")
+            self.assertTrue(wait_event.wait_entered.wait(0.5))
+            self.assertEqual(wait_event.waits, [60.0])
+            thread = app._refresh_thread
+            self.assertIsNotNone(thread)
+            self.assertTrue(thread.is_alive())
+        finally:
+            stop_started = time.monotonic()
+            app.stop_refresh()
+            stop_elapsed = time.monotonic() - stop_started
+
+        self.assertLess(stop_elapsed, 0.5)
+        self.assertIsNone(app._refresh_thread)
 
     def test_stop_cancels_blocked_generation_without_any_commit_side_effect(self) -> None:
         collector = LifecycleCollector(valid_completed_quote_payload())

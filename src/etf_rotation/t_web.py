@@ -373,9 +373,19 @@ class MonitorApplication:
                 with self.lifecycle_gate:
                     if self._generation_cancelled(generation):
                         break
-                attempted = self.collection_due()
+                try:
+                    attempted = self.collection_due()
+                except Exception as error:
+                    with self.lifecycle_gate:
+                        if self._generation_cancelled(generation):
+                            break
+                        self._publish_outage(str(error))
+                    attempted = True
+                    succeeded = False
+                else:
+                    if attempted:
+                        succeeded = self._refresh_once(generation)
                 if attempted:
-                    succeeded = self._refresh_once(generation)
                     failure_count = 0 if succeeded else failure_count + 1
                 else:
                     failure_count = 0
