@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Sequence
 
+from etf_rotation.swing_data import DailyBar
+
 
 SHANGHAI = timezone(timedelta(hours=8))
 SWING_SYMBOLS = (
@@ -115,3 +117,121 @@ def daily_bar_mapping(
         "adjusted_close": close * adjustment_scale,
         "is_final": True,
     }
+
+
+def swing_strategy_bars(
+    count: int = 70,
+    *,
+    symbol: str = "510300",
+    pattern: str = "pullback_reclaim",
+    raw_scale: float = 1.0,
+) -> tuple[DailyBar, ...]:
+    """Return strict completed bars with deterministic strategy patterns."""
+    if count < 1:
+        return ()
+    closes = [100.0 + index * 0.1 for index in range(count)]
+    highs = [close + 0.6 for close in closes]
+    lows = [close - 0.6 for close in closes]
+    opens = [close - 0.1 for close in closes]
+
+    if pattern == "pullback_reclaim":
+        if count >= 2:
+            closes[-1] = highs[-2] + 0.1
+            opens[-1] = closes[-1] - 0.2
+            highs[-1] = closes[-1] + 0.6
+            ma20 = sum(closes[-20:]) / min(20, count)
+            lows[-1] = ma20
+    elif pattern == "falling_ma60":
+        closes = [120.0 - index * 0.1 for index in range(count)]
+        highs = [close + 0.6 for close in closes]
+        lows = [close - 0.6 for close in closes]
+        opens = [close + 0.1 for close in closes]
+    elif pattern == "gap":
+        if count >= 15:
+            closes[-14] = closes[-15] + 4.0
+            opens[-14] = closes[-14]
+            highs[-14] = closes[-14] + 0.2
+            lows[-14] = closes[-14] - 0.2
+    elif pattern == "exit":
+        if count >= 2:
+            prior_ma20 = sum(closes[-21:-1]) / 20
+            closes[-2] = prior_ma20 - 0.2
+            closes[-1] = prior_ma20 - 0.3
+            for index in (-2, -1):
+                opens[index] = closes[index] + 0.1
+                highs[index] = closes[index] + 0.6
+                lows[index] = closes[index] - 0.6
+    elif pattern == "flat":
+        closes = [100.0 for _ in range(count)]
+        highs = [100.6 for _ in range(count)]
+        lows = [99.4 for _ in range(count)]
+        opens = [100.0 for _ in range(count)]
+    elif pattern != "rising":
+        raise ValueError(f"unknown strategy pattern: {pattern}")
+
+    first_day = date(2026, 1, 5)
+    days: list[date] = []
+    candidate = first_day
+    while len(days) < count:
+        if candidate.weekday() < 5:
+            days.append(candidate)
+        candidate += timedelta(days=1)
+
+    result: list[DailyBar] = []
+    previous_raw_close = closes[0] * raw_scale
+    for index, trading_day in enumerate(days):
+        raw_open = opens[index] * raw_scale
+        raw_high = highs[index] * raw_scale
+        raw_low = lows[index] * raw_scale
+        raw_close = closes[index] * raw_scale
+        payload = daily_bar_mapping(
+            symbol=symbol,
+            trading_date=trading_day,
+            observed_at=(
+                datetime.combine(trading_day, datetime.min.time(), SHANGHAI)
+                .replace(hour=15, minute=10)
+                .isoformat()
+            ),
+            previous_close=previous_raw_close,
+            open_price=raw_open,
+            high=raw_high,
+            low=raw_low,
+            close=raw_close,
+            volume=10_000.0 + index * 100.0,
+            amount=raw_close * (10_000.0 + index * 100.0),
+            adjustment_scale=1.0 / raw_scale,
+        )
+        result.append(DailyBar.from_mapping(payload))
+        previous_raw_close = raw_close
+    return tuple(result)
+
+
+def replace_latest_adjusted(
+    bars: Sequence[DailyBar],
+    *,
+    open_price: float | None = None,
+    high: float | None = None,
+    low: float | None = None,
+    close: float | None = None,
+) -> tuple[DailyBar, ...]:
+    """Replace the latest adjusted OHLC while retaining its raw scale."""
+    if not bars:
+        raise ValueError("bars must not be empty")
+    latest = bars[-1]
+    scale = latest.close / latest.adjusted_close
+    adjusted_open = latest.adjusted_open if open_price is None else open_price
+    adjusted_high = latest.adjusted_high if high is None else high
+    adjusted_low = latest.adjusted_low if low is None else low
+    adjusted_close = latest.adjusted_close if close is None else close
+    payload = latest.to_dict()
+    payload.update({
+        "open": adjusted_open * scale,
+        "high": adjusted_high * scale,
+        "low": adjusted_low * scale,
+        "close": adjusted_close * scale,
+        "adjusted_open": adjusted_open,
+        "adjusted_high": adjusted_high,
+        "adjusted_low": adjusted_low,
+        "adjusted_close": adjusted_close,
+    })
+    return (*bars[:-1], DailyBar.from_mapping(payload))
