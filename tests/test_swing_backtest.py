@@ -131,6 +131,33 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         self.assertLess(exit_trade.fill_price, exit_trade.planned_stop)
         self.assertEqual(exit_trade.reason, "GAP_THROUGH_STOP")
 
+    def test_open_equal_to_stop_executes_as_stop_not_gap(self) -> None:
+        bars = swing_strategy_bars(3, pattern="rising")
+        account = BacktestAccount(100_000.0, self.trading, self.config)
+        account.execute(
+            _decision(SwingState.TRIAL_ENTRY_CANDIDATE,
+                      bars[0].trading_date, bars[1].trading_date,
+                      shares=100, stop=90.0),
+            bars[1], execution_index=1,
+        )
+        account.mark(bars[1], 1)
+        at_stop = replace(
+            bars[2], open=99.0, high=100.0, low=98.0, close=99.5,
+            adjusted_open=99.0, adjusted_high=100.0,
+            adjusted_low=98.0, adjusted_close=99.5,
+        )
+        self.assertTrue(account.execute_protective_gap(
+            _decision(SwingState.HOLDING, bars[1].trading_date,
+                      bars[2].trading_date, stop=99.0),
+            at_stop, execution_index=2,
+        ))
+        fill = account.trades[-1]
+        self.assertEqual(fill.raw_reference_price, 99.0)
+        self.assertLess(fill.fill_price, fill.raw_reference_price)
+        self.assertEqual(fill.reason, "STOP_EXIT")
+        self.assertEqual(account.context().last_stop_trading_date,
+                         bars[2].trading_date)
+
     def test_protective_gap_respects_t_plus_one_volume_and_limit_lock(self) -> None:
         bars = swing_strategy_bars(3, pattern="rising")
 
@@ -218,6 +245,64 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         })
         self.assertEqual(signal_fill.reason, "EXIT_SIGNAL")
         self.assertIsNone(signal_account.context().last_stop_trading_date)
+
+    def test_partial_stop_does_not_precommit_future_cooldown(self) -> None:
+        bars = swing_strategy_bars(4, pattern="rising")
+
+        def opened_account():
+            account = BacktestAccount(100_000.0, self.trading, self.config)
+            account.execute(
+                _decision(SwingState.TRIAL_ENTRY_CANDIDATE,
+                          bars[0].trading_date, bars[1].trading_date,
+                          shares=300, stop=90.0),
+                bars[1], execution_index=1,
+            )
+            account.mark(bars[1], 1)
+            return account
+
+        partial_bar = replace(
+            bars[2], open=95.0, high=100.0, low=94.0, close=98.0,
+            volume=10.0, adjusted_open=95.0, adjusted_high=100.0,
+            adjusted_low=94.0, adjusted_close=98.0,
+        )
+        ordinary = opened_account()
+        ordinary.execute_protective_gap(
+            _decision(SwingState.HOLDING, bars[1].trading_date,
+                      bars[2].trading_date, stop=99.0),
+            partial_bar, execution_index=2,
+        )
+        self.assertEqual(ordinary.shares, 200)
+        self.assertIsNone(ordinary.context().last_stop_trading_date)
+        final_signal = ordinary.execute(
+            _decision(SwingState.EXIT_CANDIDATE,
+                      bars[2].trading_date, bars[3].trading_date,
+                      shares=200, stop=90.0,
+                      evidence={"exit_close_below_ma60": True}),
+            bars[3], execution_index=3,
+        )
+        self.assertEqual(final_signal.reason, "EXIT_SIGNAL")
+        self.assertEqual(ordinary.shares, 0)
+        self.assertIsNone(ordinary.context().last_stop_trading_date)
+
+        final_stop = opened_account()
+        final_stop.execute_protective_gap(
+            _decision(SwingState.HOLDING, bars[1].trading_date,
+                      bars[2].trading_date, stop=99.0),
+            partial_bar, execution_index=2,
+        )
+        last_bar = replace(
+            bars[3], open=95.0, high=100.0, low=94.0, close=98.0,
+            adjusted_open=95.0, adjusted_high=100.0,
+            adjusted_low=94.0, adjusted_close=98.0,
+        )
+        final_stop.execute_protective_gap(
+            _decision(SwingState.HOLDING, bars[2].trading_date,
+                      bars[3].trading_date, stop=99.0),
+            last_bar, execution_index=3,
+        )
+        self.assertEqual(final_stop.shares, 0)
+        self.assertEqual(final_stop.context().last_stop_trading_date,
+                         bars[3].trading_date)
 
     def test_no_completed_trade_reports_insufficient_sample(self) -> None:
         result = self.backtester.run_symbol(

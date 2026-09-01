@@ -362,7 +362,6 @@ class BacktestAccount:
         self._last_adjusted_close = 0.0
         self._last_index = -1
         self._last_stop_date: date | None = None
-        self._pending_stop_exit_date: date | None = None
         self._equity_curve: list[float] = []
         self._utilization: list[float] = []
         self._blocked_counts: dict[str, int] = {}
@@ -566,7 +565,7 @@ class BacktestAccount:
         if self.shares <= 0 or decision.planned_stop is None:
             return False
         execution_stop = self._execution_stop(decision, bar)
-        if execution_stop is None or bar.open >= execution_stop:
+        if execution_stop is None or bar.open > execution_stop:
             return False
         evidence = dict(decision.evidence)
         evidence.update({
@@ -703,9 +702,6 @@ class BacktestAccount:
             if shares:
                 new_lots.append((acquired, shares))
         self._lots = new_lots
-        if fill.reason in {"GAP_THROUGH_STOP", "STOP_EXIT"}:
-            if self._pending_stop_exit_date is None:
-                self._pending_stop_exit_date = fill.execution_date
         if self.shares == 0:
             holding = max(0, index - self._entry_index)
             self.round_trips.append(CompletedRoundTrip(
@@ -714,8 +710,8 @@ class BacktestAccount:
                 net_pnl=self._cycle_cash_flow,
                 holding_days=holding,
             ))
-            if self._pending_stop_exit_date is not None:
-                self._last_stop_date = self._pending_stop_exit_date
+            if fill.reason in {"GAP_THROUGH_STOP", "STOP_EXIT"}:
+                self._last_stop_date = fill.execution_date
             self._average_cost_adjusted = 0.0
             self._initial_risk_adjusted = 0.0
             self._entry_date = None
@@ -724,7 +720,6 @@ class BacktestAccount:
             self._hard_stop_adjusted = 0.0
             self._first_reduction_completed = False
             self._cycle_cash_flow = 0.0
-            self._pending_stop_exit_date = None
         elif fill.reason == "REDUCE":
             self._first_reduction_completed = True
 
