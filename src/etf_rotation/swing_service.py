@@ -646,22 +646,6 @@ class SwingService:
                     candidates.append(generated.astimezone(SHANGHAI))
             except (TypeError, ValueError, OverflowError):
                 pass
-        try:
-            payload = json.loads(
-                self.paths.portfolio_snapshot.read_text(encoding="utf-8"),
-            )
-            raw_as_of = payload.get("as_of_trading_date")
-            if type(raw_as_of) is str:
-                as_of = date.fromisoformat(raw_as_of)
-                if as_of > max(candidate.date() for candidate in candidates):
-                    candidates.append(datetime.combine(
-                        as_of, time.min, SHANGHAI,
-                    ))
-        except (
-            FileNotFoundError, OSError, UnicodeDecodeError, ValueError,
-            OverflowError, AttributeError,
-        ):
-            pass
         return max(candidates)
 
     def _trade_derivations_are_current(self, now: datetime) -> bool:

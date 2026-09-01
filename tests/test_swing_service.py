@@ -1252,11 +1252,15 @@ class SwingServiceTests(unittest.TestCase):
                 if corruption == "boolean-schema":
                     payload = json.loads(valid_text)
                     payload["schema_version"] = True
+                    payload["as_of_trading_date"] = "2099-01-01"
                     corrupt_text = json.dumps(payload, ensure_ascii=False)
                 else:
                     corrupt_text = '{"schema_version":1,' + valid_text.lstrip()[1:]
                 self.paths.portfolio_snapshot.write_text(
                     corrupt_text, encoding="utf-8",
+                )
+                service.clock = lambda: datetime(
+                    2026, 9, 1, 9, 0, tzinfo=SHANGHAI,
                 )
                 revision_before_repair = service.snapshot()["revision"]
                 self.assertEqual(
@@ -1272,6 +1276,19 @@ class SwingServiceTests(unittest.TestCase):
                     self.paths.portfolio_snapshot.read_text(encoding="utf-8"),
                 )
                 self.assertIs(type(repaired["schema_version"]), int)
+                self.assertEqual(
+                    repaired["as_of_trading_date"], "2026-09-01",
+                )
+                repaired_snapshot = service.snapshot()
+                self.assertEqual(
+                    repaired_snapshot["generated_at"],
+                    "2026-09-01T14:00:00+08:00",
+                )
+                self.assertEqual(
+                    repaired_snapshot["items"][0]["formal_decision"]
+                    ["as_of_trading_date"],
+                    "2026-08-31",
+                )
                 stable_revision = service.snapshot()["revision"]
                 self.assertEqual(
                     service.record_trade(
