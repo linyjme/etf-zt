@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+import json
 import math
+import os
+from pathlib import Path
+import tempfile
+import threading
+from types import MappingProxyType
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -44,6 +50,8 @@ _DAILY_BAR_KEYS = frozenset((
     "amount",
     "is_final",
 ))
+_FILE_LOCKS_GUARD = threading.Lock()
+_FILE_LOCKS: dict[str, threading.RLock] = {}
 
 
 class SwingDataError(ValueError):
@@ -367,6 +375,270 @@ class DailyBarValidator:
                 f"ETF元数据symbol不匹配: {record.symbol}/{metadata.symbol}",
             )
         return metadata.trading
+
+
+def _process_file_lock(path: Path) -> threading.RLock:
+    key = os.path.normcase(str(path.resolve(strict=False)))
+    with _FILE_LOCKS_GUARD:
+        lock = _FILE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _FILE_LOCKS[key] = lock
+        return lock
+
+
+class _SiblingFileLock:
+    """Cross-instance and cross-process lock held on a stable sibling file."""
+
+    def __init__(self, path: Path, shared: bool):
+        canonical = Path(path).resolve(strict=False)
+        self.path = canonical.parent / f".{canonical.name}.lock"
+        self.shared = bool(shared)
+        self._process_lock = _process_file_lock(self.path)
+        self._handle: Any | None = None
+
+    def __enter__(self) -> _SiblingFileLock:
+        self._process_lock.acquire()
+        try:
+            self._handle = self.path.open("a+b")
+            self._acquire_platform_lock()
+        except BaseException:
+            handle = self._handle
+            self._handle = None
+            if handle is not None:
+                try:
+                    handle.close()
+                except BaseException:
+                    pass
+            self._process_lock.release()
+            raise
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+        release_error: BaseException | None = None
+        handle = self._handle
+        self._handle = None
+        try:
+            if handle is not None:
+                try:
+                    self._release_platform_lock(handle)
+                except BaseException as error:
+                    release_error = error
+                try:
+                    handle.close()
+                except BaseException as error:
+                    if release_error is None:
+                        release_error = error
+        finally:
+            self._process_lock.release()
+        if release_error is not None and exc_type is None:
+            raise release_error
+        return False
+
+    def _acquire_platform_lock(self) -> None:
+        handle = self._handle
+        if handle is None:
+            raise RuntimeError("lock file is not open")
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            if os.fstat(handle.fileno()).st_size == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            mode = msvcrt.LK_RLCK if self.shared else msvcrt.LK_LOCK
+            msvcrt.locking(handle.fileno(), mode, 1)
+        else:
+            import fcntl
+
+            mode = fcntl.LOCK_SH if self.shared else fcntl.LOCK_EX
+            fcntl.flock(handle.fileno(), mode)
+
+    @staticmethod
+    def _release_platform_lock(handle: Any) -> None:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+class DailyHistoryStore:
+    """Persist an authoritative canonical JSONL history of completed daily bars."""
+
+    def __init__(
+        self,
+        path: Path,
+        metadata: Mapping[str, EtfMetadata],
+        closed_dates: Iterable[date],
+    ):
+        self.path = Path(path)
+        self.metadata = self._snapshot_metadata(metadata)
+        self.validator = DailyBarValidator(closed_dates)
+
+    def load(self) -> tuple[DailyBar, ...]:
+        if not self.path.parent.exists():
+            return ()
+        with _SiblingFileLock(self.path, shared=True):
+            return self._load_unlocked()
+
+    def query(self, symbol: str) -> tuple[DailyBar, ...]:
+        if (
+            type(symbol) is not str
+            or len(symbol) != 6
+            or not symbol.isascii()
+            or not symbol.isdigit()
+        ):
+            raise SwingDataError("查询symbol必须是6位ASCII数字")
+        return tuple(record for record in self.load() if record.symbol == symbol)
+
+    def upsert(self, records: Sequence[DailyBar]) -> tuple[DailyBar, ...]:
+        incoming = self._materialize_incoming(records)
+        if not incoming:
+            return self.load()
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with _SiblingFileLock(self.path, shared=False):
+            current = self._load_unlocked()
+            indexed = {
+                (record.symbol, record.trading_date): record for record in current
+            }
+            for record in incoming:
+                key = (record.symbol, record.trading_date)
+                existing = indexed.get(key)
+                if existing is None or record.observed_at >= existing.observed_at:
+                    indexed[key] = record
+            merged = tuple(indexed[key] for key in sorted(indexed))
+            self.validator.validate_sequence(merged, self.metadata)
+            if merged != current:
+                self._atomic_replace(merged)
+            return merged
+
+    @staticmethod
+    def _snapshot_metadata(
+        metadata: Mapping[str, EtfMetadata],
+    ) -> Mapping[str, EtfMetadata]:
+        if not isinstance(metadata, Mapping):
+            raise SwingDataError("ETF元数据必须是映射")
+        try:
+            items = tuple(metadata.items())
+            snapshot: dict[str, EtfMetadata] = {}
+            for key, value in items:
+                if type(key) is not str:
+                    raise SwingDataError("ETF元数据symbol必须是字符串")
+                snapshot[key] = value
+        except SwingDataError:
+            raise
+        except Exception as error:
+            raise SwingDataError("ETF元数据映射读取失败") from error
+        return MappingProxyType(snapshot)
+
+    def _materialize_incoming(
+        self, records: Sequence[DailyBar],
+    ) -> tuple[DailyBar, ...]:
+        try:
+            materialized = tuple(records)
+        except Exception as error:
+            raise SwingDataError("日线批次读取失败") from error
+
+        reduced: dict[tuple[str, date], DailyBar] = {}
+        for record in materialized:
+            if type(record) is not DailyBar:
+                raise SwingDataError("日线record必须是DailyBar")
+            try:
+                metadata = self.metadata.get(record.symbol)
+            except Exception as error:
+                raise SwingDataError("ETF元数据映射读取失败") from error
+            if metadata is None:
+                raise SwingDataError(f"缺少ETF元数据: {record.symbol}")
+            self.validator.validate(record, metadata)
+            key = (record.symbol, record.trading_date)
+            existing = reduced.get(key)
+            if existing is None or record.observed_at >= existing.observed_at:
+                reduced[key] = record
+        return tuple(reduced[key] for key in sorted(reduced))
+
+    def _load_unlocked(self) -> tuple[DailyBar, ...]:
+        try:
+            content = self.path.read_bytes()
+        except FileNotFoundError:
+            return ()
+        if content == b"":
+            return ()
+        if not content.endswith(b"\n"):
+            raise SwingDataError("日线历史末行不完整")
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise SwingDataError("日线历史不是有效UTF-8") from error
+
+        records: list[DailyBar] = []
+        for line_number, line in enumerate(text[:-1].split("\n"), start=1):
+            if not line:
+                raise SwingDataError(f"日线历史第{line_number}行为空")
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise SwingDataError(f"日线历史第{line_number}行JSON无效") from error
+            if type(value) is not dict:
+                raise SwingDataError(f"日线历史第{line_number}行必须是对象")
+            try:
+                record = DailyBar.from_mapping(value)
+            except SwingDataError as error:
+                raise SwingDataError(f"日线历史第{line_number}行无效") from error
+            if line != self._encode_record(record):
+                raise SwingDataError(f"日线历史第{line_number}行不是规范JSON")
+            records.append(record)
+        result = tuple(records)
+        self.validator.validate_sequence(result, self.metadata)
+        return result
+
+    def _atomic_replace(self, records: Sequence[DailyBar]) -> None:
+        lines = tuple(self._encode_record(record) + "\n" for record in records)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="",
+                delete=False,
+                dir=self.path.parent,
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
+            ) as handle:
+                temporary_path = Path(handle.name)
+                for line in lines:
+                    handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, self.path)
+            temporary_path = None
+        except BaseException:
+            if temporary_path is not None:
+                self._safe_unlink(temporary_path)
+            raise
+
+    @staticmethod
+    def _encode_record(record: DailyBar) -> str:
+        return json.dumps(
+            record.to_dict(),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @staticmethod
+    def _safe_unlink(path: Path) -> None:
+        try:
+            path.unlink()
+        except BaseException:
+            pass
 
 
 def _iso_date(value: object) -> date:

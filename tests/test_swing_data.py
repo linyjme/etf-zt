@@ -3,14 +3,22 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError, replace
 from datetime import date, datetime, timedelta, timezone
+import json
 import math
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest.mock import patch
 
 from etf_rotation.etf_metadata import EtfMetadata, EtfMetadataStore
 from etf_rotation.swing_data import (
     DailyBar,
+    DailyHistoryStore,
     DailyBarValidator,
     SwingDataError,
     _safe_product,
@@ -734,6 +742,398 @@ class DailyBarValidatorTests(unittest.TestCase):
         with self.assertRaises(SwingDataError) as raised:
             DailyBarValidator(broken_dates())
         self.assertIsInstance(raised.exception.__cause__, OSError)
+
+
+class DailyHistoryStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.metadata_path = self.root / "metadata.json"
+        self.metadata_path.write_text(
+            json.dumps(metadata_fixture(("510300", "510500"))),
+            encoding="utf-8",
+        )
+        self.metadata = EtfMetadataStore(self.metadata_path).load()
+        self.path = self.root / "daily.jsonl"
+        self.store = DailyHistoryStore(self.path, self.metadata, ())
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def bar(
+        self,
+        symbol: str = "510300",
+        trading_date: str = "2026-08-28",
+        observed_at: str | None = None,
+        **changes: object,
+    ) -> DailyBar:
+        observed = observed_at or f"{trading_date}T15:10:00+08:00"
+        payload = daily_bar_mapping(
+            symbol=symbol,
+            trading_date=trading_date,
+            observed_at=observed,
+        )
+        payload.update(changes)
+        for field in ("open", "high", "low", "close"):
+            if field in changes and f"adjusted_{field}" not in changes:
+                payload[f"adjusted_{field}"] = float(payload[field]) * 1.1
+        return DailyBar.from_mapping(payload)
+
+    def temp_artifacts(self) -> list[Path]:
+        return list(self.root.glob(f".{self.path.name}.*.tmp"))
+
+    def test_absent_empty_and_query_validation(self) -> None:
+        self.assertEqual(self.store.load(), ())
+        self.assertEqual(self.store.query("510300"), ())
+        self.assertEqual(self.store.upsert(()), ())
+        self.assertFalse(self.path.exists())
+
+        self.path.touch()
+        self.assertEqual(self.store.load(), ())
+        before = self.path.read_bytes()
+        self.assertEqual(self.store.upsert(()), ())
+        self.assertEqual(self.path.read_bytes(), before)
+        for invalid in ("", "51030", "510300 ", "５１０３００", 510300):
+            with self.subTest(symbol=invalid), self.assertRaises(SwingDataError):
+                self.store.query(invalid)  # type: ignore[arg-type]
+
+    def test_upsert_uses_newest_observation_and_equal_time_later_wins(self) -> None:
+        original = self.bar(source="FIRST")
+        newer = self.bar(
+            observed_at="2026-08-28T15:12:00+08:00", source="NEWER",
+        )
+        older = self.bar(
+            observed_at="2026-08-28T15:11:00+08:00", source="OLDER",
+        )
+        equal_later = self.bar(
+            observed_at="2026-08-28T15:12:00+08:00", source="EQUAL_LATER",
+        )
+
+        self.assertEqual(self.store.upsert((original, newer, older, equal_later)), (equal_later,))
+        self.assertEqual(self.store.upsert((older,)), (equal_later,))
+
+    def test_primary_keys_are_unique_and_output_is_canonically_ordered(self) -> None:
+        records = (
+            self.bar("510500", "2026-08-28"),
+            self.bar("510300", "2026-08-28"),
+            self.bar("510300", "2026-08-27", close=10.0),
+        )
+        result = self.store.upsert(records)
+
+        self.assertEqual(
+            [(item.symbol, item.trading_date.isoformat()) for item in result],
+            [
+                ("510300", "2026-08-27"),
+                ("510300", "2026-08-28"),
+                ("510500", "2026-08-28"),
+            ],
+        )
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(self.path.read_bytes().endswith(b"\n"))
+        self.assertEqual(
+            lines[0],
+            json.dumps(result[0].to_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        )
+
+    def test_invalid_mixed_batch_makes_zero_byte_changes(self) -> None:
+        self.store.upsert((self.bar(),))
+        before = self.path.read_bytes()
+        invalid = self.bar(symbol="999999")
+
+        with self.assertRaises(SwingDataError):
+            self.store.upsert((self.bar(source="REPLACEMENT"), invalid))
+
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_corrupt_or_noncanonical_existing_history_is_never_overwritten(self) -> None:
+        bad_histories = (
+            b"{not json}\n",
+            b"\xff\n",
+            b"\n",
+            b"[]\n",
+            json.dumps(self.bar().to_dict()).encode() + b"\n" + json.dumps(self.bar().to_dict()).encode() + b"\n",
+        )
+        for content in bad_histories:
+            with self.subTest(content=content):
+                self.path.write_bytes(content)
+                with self.assertRaises(SwingDataError):
+                    self.store.upsert((self.bar(source="NEW"),))
+                self.assertEqual(self.path.read_bytes(), content)
+
+    def test_round_trip_load_validates_every_line(self) -> None:
+        records = self.store.upsert((
+            self.bar("510300", "2026-08-27", close=10.0),
+            self.bar("510300", "2026-08-28"),
+        ))
+        self.assertEqual(self.store.load(), records)
+        self.assertEqual(self.store.query("510300"), records)
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        malformed = json.loads(lines[1])
+        malformed["is_final"] = False
+        self.path.write_text(lines[0] + "\n" + json.dumps(malformed) + "\n", encoding="utf-8")
+        with self.assertRaises(SwingDataError):
+            self.store.load()
+
+    def test_round_trip_accepts_unicode_line_separator_inside_source(self) -> None:
+        record = self.bar(source="FEED\u2028SECONDARY\u2029SOURCE")
+
+        self.assertEqual(self.store.upsert((record,)), (record,))
+        self.assertEqual(self.store.load(), (record,))
+
+    def test_load_rejects_noncanonical_json_encoding_without_rewriting(self) -> None:
+        payload = self.bar().to_dict()
+        noncanonical = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+        self.path.write_bytes(noncanonical)
+
+        with self.assertRaises(SwingDataError):
+            self.store.load()
+        with self.assertRaises(SwingDataError):
+            self.store.upsert((self.bar(source="NEW"),))
+
+        self.assertEqual(self.path.read_bytes(), noncanonical)
+
+    def test_replace_and_fsync_failures_preserve_history_and_clean_temp(self) -> None:
+        original = self.store.upsert((self.bar(source="ORIGINAL"),))
+        before = self.path.read_bytes()
+        replacement = self.bar(source="REPLACEMENT")
+        for target, error in (
+            ("etf_rotation.swing_data.os.replace", OSError("replace failed")),
+            ("etf_rotation.swing_data.os.fsync", OSError("fsync failed")),
+        ):
+            with self.subTest(target=target), patch(target, side_effect=error):
+                with self.assertRaisesRegex(OSError, str(error)):
+                    self.store.upsert((replacement,))
+            self.assertEqual(self.path.read_bytes(), before)
+            self.assertEqual(self.temp_artifacts(), [])
+            self.assertEqual(self.store.load(), original)
+
+    def test_write_flush_and_close_failures_preserve_history_and_clean_temp(self) -> None:
+        self.store.upsert((self.bar(source="ORIGINAL"),))
+        before = self.path.read_bytes()
+        real_named_temporary = tempfile.NamedTemporaryFile
+
+        for failed_method in ("write", "flush", "close"):
+            class FaultyTemporary:
+                def __init__(inner_self, *args: object, **kwargs: object) -> None:
+                    inner_self.handle = real_named_temporary(*args, **kwargs)
+
+                def __enter__(inner_self) -> object:
+                    handle = inner_self.handle
+                    if failed_method == "close":
+                        return handle
+
+                    class Wrapper:
+                        name = handle.name
+
+                        def write(self, value: str) -> int:
+                            if failed_method == "write":
+                                raise OSError("write failed")
+                            return handle.write(value)
+
+                        def flush(self) -> None:
+                            if failed_method == "flush":
+                                raise OSError("flush failed")
+                            handle.flush()
+
+                        def fileno(self) -> int:
+                            return handle.fileno()
+
+                    return Wrapper()
+
+                def __exit__(inner_self, exc_type: object, exc: object, traceback: object) -> None:
+                    inner_self.handle.close()
+                    if failed_method == "close" and exc is None:
+                        raise OSError("close failed")
+
+            with self.subTest(failed_method=failed_method), patch(
+                "etf_rotation.swing_data.tempfile.NamedTemporaryFile",
+                FaultyTemporary,
+            ):
+                with self.assertRaisesRegex(OSError, f"{failed_method} failed"):
+                    self.store.upsert((self.bar(source="REPLACEMENT"),))
+            self.assertEqual(self.path.read_bytes(), before)
+            self.assertEqual(self.temp_artifacts(), [])
+
+    def test_cleanup_failure_does_not_mask_replace_error_or_target_canonical(self) -> None:
+        self.store.upsert((self.bar(source="ORIGINAL"),))
+        before = self.path.read_bytes()
+        unlinked: list[Path] = []
+        real_unlink = Path.unlink
+
+        def fail_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+            unlinked.append(path)
+            if path == self.path:
+                raise AssertionError("canonical history must never be cleanup target")
+            raise OSError("cleanup failed")
+
+        with (
+            patch("etf_rotation.swing_data.os.replace", side_effect=OSError("replace failed")),
+            patch("etf_rotation.swing_data.Path.unlink", new=fail_cleanup),
+        ):
+            with self.assertRaisesRegex(OSError, "replace failed"):
+                self.store.upsert((self.bar(source="REPLACEMENT"),))
+
+        self.assertTrue(unlinked)
+        self.assertNotIn(self.path, unlinked)
+        self.assertEqual(self.path.read_bytes(), before)
+        for artifact in self.temp_artifacts():
+            real_unlink(artifact)
+
+    def test_two_instances_do_not_lose_updates_and_newest_same_key_wins(self) -> None:
+        second = DailyHistoryStore(self.path, self.metadata, ())
+        barrier = threading.Barrier(3)
+        failures: list[BaseException] = []
+
+        def update(store: DailyHistoryStore, record: DailyBar) -> None:
+            try:
+                barrier.wait()
+                store.upsert((record,))
+            except BaseException as error:
+                failures.append(error)
+
+        threads = [
+            threading.Thread(target=update, args=(self.store, self.bar("510300"))),
+            threading.Thread(target=update, args=(second, self.bar("510500"))),
+        ]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(5)
+        self.assertEqual(failures, [])
+        self.assertEqual({item.symbol for item in self.store.load()}, {"510300", "510500"})
+
+        older = self.bar(observed_at="2026-08-28T15:11:00+08:00", source="OLDER")
+        newer = self.bar(observed_at="2026-08-28T15:12:00+08:00", source="NEWER")
+        barrier = threading.Barrier(3)
+        threads = [
+            threading.Thread(target=update, args=(self.store, older)),
+            threading.Thread(target=update, args=(second, newer)),
+        ]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(5)
+        self.assertEqual(failures, [])
+        self.assertEqual(self.store.query("510300")[0].source, "NEWER")
+
+    def test_separate_processes_do_not_lose_updates_or_newest_same_key(self) -> None:
+        child = """
+import sys
+import time
+from pathlib import Path
+from etf_rotation.etf_metadata import EtfMetadataStore
+from etf_rotation.swing_data import DailyBar, DailyHistoryStore
+from tests.swing_helpers import daily_bar_mapping
+
+history, metadata_path, gate, symbol, observed_at, source = sys.argv[1:]
+while not Path(gate).exists():
+    time.sleep(0.005)
+metadata = EtfMetadataStore(Path(metadata_path)).load()
+record = DailyBar.from_mapping(daily_bar_mapping(
+    symbol=symbol,
+    observed_at=observed_at,
+))
+record = DailyBar.from_mapping({**record.to_dict(), "source": source})
+DailyHistoryStore(Path(history), metadata, ()).upsert((record,))
+"""
+
+        def race(arguments: tuple[tuple[str, str, str], ...]) -> None:
+            gate = self.root / f"gate-{time.time_ns()}"
+            processes = [
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        child,
+                        str(self.path),
+                        str(self.metadata_path),
+                        str(gate),
+                        symbol,
+                        observed_at,
+                        source,
+                    ],
+                    cwd=Path(__file__).resolve().parents[1],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for symbol, observed_at, source in arguments
+            ]
+            gate.touch()
+            results = [process.communicate(timeout=10) for process in processes]
+            for process, (stdout, stderr) in zip(processes, results):
+                self.assertEqual(process.returncode, 0, stdout + stderr)
+
+        race((
+            ("510300", "2026-08-28T15:10:00+08:00", "FIRST"),
+            ("510500", "2026-08-28T15:10:00+08:00", "SECOND"),
+        ))
+        self.assertEqual({item.symbol for item in self.store.load()}, {"510300", "510500"})
+
+        race((
+            ("510300", "2026-08-28T15:11:00+08:00", "OLDER"),
+            ("510300", "2026-08-28T15:12:00+08:00", "NEWER"),
+        ))
+        self.assertEqual(self.store.query("510300")[0].source, "NEWER")
+
+    def test_reader_waits_for_writer_and_cannot_observe_partial_replacement(self) -> None:
+        self.store.upsert((self.bar(source="ORIGINAL"),))
+        replace_entered = threading.Event()
+        allow_replace = threading.Event()
+        reader_done = threading.Event()
+        observed: list[tuple[DailyBar, ...]] = []
+        real_replace = os.replace
+
+        def blocked_replace(source: object, destination: object) -> None:
+            replace_entered.set()
+            self.assertTrue(allow_replace.wait(5))
+            real_replace(source, destination)
+
+        def read() -> None:
+            observed.append(DailyHistoryStore(self.path, self.metadata, ()).load())
+            reader_done.set()
+
+        with patch("etf_rotation.swing_data.os.replace", side_effect=blocked_replace):
+            writer = threading.Thread(target=self.store.upsert, args=((self.bar(source="NEW"),),))
+            writer.start()
+            self.assertTrue(replace_entered.wait(5))
+            reader = threading.Thread(target=read)
+            reader.start()
+            time.sleep(0.05)
+            self.assertFalse(reader_done.is_set())
+            allow_replace.set()
+            writer.join(5)
+            reader.join(5)
+
+        self.assertTrue(reader_done.is_set())
+        self.assertEqual(observed[0][0].source, "NEW")
+
+    def test_lock_is_released_after_exception(self) -> None:
+        self.store.upsert((self.bar(source="ORIGINAL"),))
+        with patch("etf_rotation.swing_data.os.replace", side_effect=OSError("replace failed")):
+            with self.assertRaises(OSError):
+                self.store.upsert((self.bar(source="FAILED"),))
+
+        finished = threading.Event()
+        failure: list[BaseException] = []
+
+        def update() -> None:
+            try:
+                DailyHistoryStore(self.path, self.metadata, ()).upsert((self.bar(source="RECOVERED"),))
+            except BaseException as error:
+                failure.append(error)
+            finally:
+                finished.set()
+
+        thread = threading.Thread(target=update)
+        thread.start()
+        thread.join(5)
+        self.assertTrue(finished.is_set())
+        self.assertEqual(failure, [])
+        self.assertEqual(self.store.load()[0].source, "RECOVERED")
 
 
 if __name__ == "__main__":
