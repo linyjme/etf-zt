@@ -796,6 +796,80 @@ class RuntimeTests(unittest.TestCase):
                 )
                 self.assertEqual(clock.calls, 2)
 
+    def test_inactive_catch_up_failures_back_off_without_revision_churn(self) -> None:
+        cases = (
+            ("11:29", "2026-08-28T12:00:00+08:00", "LUNCH_BREAK"),
+            ("14:59", "2026-08-28T15:10:00+08:00", "CLOSED"),
+        )
+        for ending_at, current_time, expected_health in cases:
+            with self.subTest(current_time=current_time):
+                payload = quote_payload_ending_at("2026-08-28", ending_at)
+                self.paths.quotes.write_text(json.dumps(payload), encoding="utf-8")
+                app = self.make_runtime_fixture(FailingCollector("采集失败"))
+                clock = MutableClock(current_time)
+                app.clock = clock
+                app.refresh_interval = 60.0
+                waits = AdvancingWaitEvent(clock, stop_after=2)
+                app._stop_event = waits
+                app._generation = 1
+                app._refresh_thread = threading.current_thread()
+                event_count = len(app._revision_events)
+
+                app._refresh_loop(1)
+
+                self.assertEqual(waits.waits, [60.0, 120.0])
+                self.assertEqual(app._revision, 1)
+                self.assertEqual(len(app._revision_events), event_count + 1)
+                snapshot = app.snapshot()
+                self.assertEqual(snapshot["errors"], [])
+                self.assertIsNone(snapshot["refresh_error"])
+                self.assertEqual(
+                    snapshot["items"][0]["health_status"], expected_health,
+                )
+
+    def test_collection_due_accepts_one_authoritative_cycle_time(self) -> None:
+        payload = quote_payload_ending_at("2026-08-28", "15:00")
+        self.paths.quotes.write_text(json.dumps(payload), encoding="utf-8")
+        app = self.make_runtime_fixture(StaticCollector(payload))
+
+        def unexpected_clock() -> datetime:
+            raise AssertionError("collection_due must use the injected cycle time")
+
+        app.clock = unexpected_clock
+
+        self.assertFalse(app.collection_due(
+            datetime.fromisoformat("2026-08-28T15:10:00+08:00"),
+        ))
+
+    def test_cycle_does_not_cross_midnight_or_opening_boundary_mid_decision(self) -> None:
+        cases = (
+            (
+                "2026-08-28T23:59:59+08:00",
+                "2026-08-31T09:30:00+08:00",
+            ),
+            (
+                "2026-08-31T09:29:59+08:00",
+                "2026-08-31T09:30:00+08:00",
+            ),
+        )
+        for first, second in cases:
+            with self.subTest(first=first, second=second):
+                payload = quote_payload_ending_at(first[:10], "15:00")
+                self.paths.quotes.write_text(json.dumps(payload), encoding="utf-8")
+                collector = StaticCollector(payload)
+                app = self.make_runtime_fixture(collector)
+                clock = SequenceClock(first, second)
+                app.clock = clock
+                waits = RecordingWaitEvent(stop_after=1)
+                app._stop_event = waits
+                app._generation = 1
+                app._refresh_thread = threading.current_thread()
+
+                app._refresh_loop(1)
+
+                self.assertEqual(clock.calls, 1)
+                self.assertEqual(collector.calls, 0)
+
     def test_refresh_delay_is_bounded_and_success_resets_loop_backoff(self) -> None:
         app = self.make_runtime_fixture()
         app.refresh_interval = 60.0
@@ -809,7 +883,7 @@ class RuntimeTests(unittest.TestCase):
         app._stop_event = waits
         app._generation = 1
         app._refresh_thread = threading.current_thread()
-        app.collection_due = lambda: True
+        app.collection_due = lambda now=None: True
         app._refresh_once = lambda generation: next(outcomes)
 
         app._refresh_loop(1)
@@ -839,7 +913,7 @@ class RuntimeTests(unittest.TestCase):
         app._stop_event = waits
         app._generation = 1
         app._refresh_thread = threading.current_thread()
-        app.collection_due = lambda: True
+        app.collection_due = lambda now=None: True
 
         def collect(generation: int) -> bool:
             clock.current += timedelta(seconds=5)
@@ -1440,6 +1514,92 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(old["reset"])
         self.assertNotIn("points", old["items"][0])
 
+    def test_revision_wait_replaces_retained_previous_day_delta_with_reset(self) -> None:
+        clock = MutableClock("2026-08-28T10:02:00+08:00")
+        app = self.make_runtime_fixture()
+        app.clock = clock
+        self.assertTrue(app.refresh_once())
+        clock.current = datetime.fromisoformat("2026-08-31T09:00:00+08:00")
+
+        reset = app.wait_for_revision(0, timeout=0.01)
+
+        self.assertEqual(reset["event"], "reset")
+        self.assertTrue(reset["reset"])
+        self.assertEqual(reset["revision"], 2)
+        self.assertEqual(reset.get("upserts", {}), {})
+        self.assertEqual(reset["generated_at"], clock.current.isoformat())
+        self.assertEqual(reset["items"][0]["status"], "MISSING_QUOTE")
+        self.assertIsNone(reset["items"][0]["price"])
+        self.assertIsNone(reset["items"][0]["timestamp"])
+        self.assertIsNone(app.wait_for_revision(2, timeout=0.01))
+
+    def test_previous_day_wait_resets_ahead_evicted_and_collector_free_cursors(self) -> None:
+        cases = ("ahead", "evicted", "collector-free")
+        for case in cases:
+            with self.subTest(case=case):
+                payload = quote_payload_for_date("2026-08-28")
+                self.paths.quotes.write_text(json.dumps(payload), encoding="utf-8")
+                clock = MutableClock("2026-08-28T10:02:00+08:00")
+                if case == "collector-free":
+                    app = self.make_runtime_fixture(collector=None)
+                    cursor = app._revision
+                else:
+                    app = self.make_runtime_fixture(
+                        StaticCollector(payload), revision_event_limit=2,
+                    )
+                    app.clock = clock
+                    self.assertTrue(app.refresh_once())
+                    if case == "evicted":
+                        self.assertTrue(app.refresh_once())
+                        self.assertTrue(app.refresh_once())
+                        cursor = 0
+                    else:
+                        cursor = 999
+                app.clock = clock
+                clock.current = datetime.fromisoformat(
+                    "2026-08-31T09:00:00+08:00"
+                )
+
+                reset = app.wait_for_revision(cursor, timeout=0.01)
+
+                self.assertEqual(reset["event"], "reset")
+                self.assertEqual(reset["items"][0]["status"], "MISSING_QUOTE")
+                self.assertIsNone(reset["items"][0]["price"])
+                self.assertEqual(reset.get("upserts", {}), {})
+                self.assertIsNone(
+                    app.wait_for_revision(reset["revision"], timeout=0.01),
+                )
+
+    def test_valid_last_event_id_never_streams_a_previous_day_delta(self) -> None:
+        clock = MutableClock("2026-08-28T10:02:00+08:00")
+        app = self.make_runtime_fixture()
+        app.clock = clock
+        self.assertTrue(app.refresh_once())
+        clock.current = datetime.fromisoformat("2026-08-31T09:00:00+08:00")
+        original_wait = app.wait_for_revision
+
+        def one_wait(after_revision: int, timeout: float) -> dict[str, object] | None:
+            payload = original_wait(after_revision, timeout)
+            app._stop_event.set()
+            return payload
+
+        app.wait_for_revision = one_wait
+        handler = object.__new__(MonitorRequestHandler)
+        handler.server = SimpleNamespace(application=app)
+        handler.headers = {"Last-Event-ID": "0"}
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+
+        handler._events()
+
+        stream = handler.wfile.getvalue().decode("utf-8")
+        self.assertIn("event: reset\n", stream)
+        self.assertIn('"generated_at":"2026-08-31T09:00:00+08:00"', stream)
+        self.assertNotIn("2026-08-28T", stream)
+        self.assertNotIn('"trading_date":"2026-08-28"', stream)
+
     def test_sse_uses_revision_ids_cursor_and_heartbeat_without_sleeping(self) -> None:
         application = ScriptedEventApplication()
         handler = object.__new__(MonitorRequestHandler)
@@ -1601,6 +1761,16 @@ class RuntimeTests(unittest.TestCase):
         server = MonitorServer(("127.0.0.1", 0), application)
         server.timeout = 0.5
         entered = threading.Event()
+        finished = threading.Event()
+        process_request = server.process_request_thread
+
+        def completed_request(request: object, address: object) -> None:
+            try:
+                process_request(request, address)
+            finally:
+                finished.set()
+
+        server.process_request_thread = completed_request
 
         def aborting_setup(handler: MonitorRequestHandler) -> None:
             handler.connection = handler.request
@@ -1615,7 +1785,7 @@ class RuntimeTests(unittest.TestCase):
                 try:
                     server.handle_request()
                     self.assertTrue(entered.wait(1))
-                    threading.Event().wait(0.05)
+                    self.assertTrue(finished.wait(1))
                 finally:
                     client.close()
             parent_handle.assert_not_called()
@@ -1628,6 +1798,16 @@ class RuntimeTests(unittest.TestCase):
         server = MonitorServer(("127.0.0.1", 0), application)
         server.timeout = 0.5
         handled = threading.Event()
+        finished = threading.Event()
+        process_request = server.process_request_thread
+
+        def completed_request(request: object, address: object) -> None:
+            try:
+                process_request(request, address)
+            finally:
+                finished.set()
+
+        server.process_request_thread = completed_request
 
         def record_error(*args: object, **kwargs: object) -> None:
             handled.set()
@@ -1643,6 +1823,7 @@ class RuntimeTests(unittest.TestCase):
                     )
                     server.handle_request()
                     self.assertTrue(handled.wait(1))
+                    self.assertTrue(finished.wait(1))
                 finally:
                     client.close()
             parent_handle.assert_called_once()

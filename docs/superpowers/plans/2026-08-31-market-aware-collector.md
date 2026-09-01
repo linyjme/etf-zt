@@ -787,8 +787,11 @@ This section supersedes the earlier “do not modify/fallback” boundary; it is
 - Source fallback never bypasses the existing quote-age gate. Stale fallback data remains `DELAYED`/`OUTAGE`, candidates are revoked, and fallback is rejected for field, previous-close, minute-count, date, OHLC, limit, or volume/amount inconsistencies.
 - Volume/amount validation permits only `±1` source volume unit around the exact volume, with at least one share for non-zero trades; OHLC, price-limit, and zero-pair checks stay strict. Evidence: fallback record 510500 at `2026-09-01T10:49:00+08:00` had `low=7.878`, `high=7.881`, `volume=1253`, `amount=986874`, and `volume_unit_shares=100`. Its direct implied price was `7.8760893855`; the `volume-1` bound was `7.8823801917`, so one source-unit rounding explains the discrepancy.
 - Cross-date hardening is two-layered: each producer cycle publishes at most one empty current-date reset even when collection is not due, while snapshot/quote reads independently suppress stale-day values without changing revision.
+- SSE retained deltas and reset snapshots pass the same date guard. Previous-day, ahead, evicted, and producer-free cursors receive one stable current-day reset; reusing its cursor must wait/heartbeat instead of resending forever.
+- Lunch/close catch-up failures retain 60/120/240/300 backoff, but a same-date, same-session, error-free semantic snapshot does not create another revision. One authoritative cycle timestamp is injected into rollover and collection decisions so midnight/09:30 cannot split one decision across two sessions.
 - Successful batches schedule from completion to the next Shanghai minute boundary (`:05` waits 55 seconds; exact `:00` waits 60). Failure delays remain 60/120/240/300 seconds.
 - Request-line disconnects are quiet only at the read boundary. Application/handler `ConnectionAbortedError` must still reach the standard server `handle_error` path.
+- Rollback must cover the approved fallback/source and validator commits (or a controlled switch back to `push2his` only). Existing schema v3 history needs no migration and retains actual source provenance.
 
 ### Task 6: Full regression, clean-archive, and live-service verification
 

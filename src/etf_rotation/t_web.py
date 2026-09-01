@@ -228,12 +228,22 @@ class MonitorApplication:
     ) -> dict[str, Any] | None:
         deadline = time.monotonic() + max(0.0, timeout)
         selected: dict[str, Any] | None = None
+        reset_current: dict[str, Any] | None = None
+        reset_now: datetime | None = None
+        reset_revision: int | None = None
         with self._publish_condition:
-            while selected is None:
-                current = self._published
+            while selected is None and reset_current is None:
+                now = self.clock()
+                current = copy.deepcopy(self._published)
                 current_revision = int(current.get("revision", 0))
                 events = tuple(self._revision_events)
-                if after_revision > current_revision:
+                if not self._published_date_matches(current, now):
+                    virtual_revision = current_revision + 1
+                    if after_revision != virtual_revision:
+                        reset_current = current
+                        reset_now = now
+                        reset_revision = virtual_revision
+                elif after_revision > current_revision:
                     selected = self._reset_summary(current)
                 elif (
                     after_revision < current_revision
@@ -248,12 +258,29 @@ class MonitorApplication:
                     event for event in self._revision_events
                     if event["revision"] > after_revision
                     ), None)
-                if selected is not None or self._stop_event.is_set():
+                if (
+                    selected is not None
+                    and not self._revision_payload_matches_date(selected, now)
+                ):
+                    selected = None
+                    reset_current = current
+                    reset_now = now
+                    reset_revision = current_revision
+                if (
+                    selected is not None
+                    or reset_current is not None
+                    or self._stop_event.is_set()
+                ):
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 self._publish_condition.wait(remaining)
+        if reset_current is not None and reset_now is not None:
+            current_view, _ = self._current_date_view(reset_current, reset_now)
+            result = self._reset_summary(current_view)
+            result["revision"] = reset_revision
+            return result
         return copy.deepcopy(selected) if selected is not None else None
 
     def refresh_once(self) -> bool:
@@ -272,9 +299,12 @@ class MonitorApplication:
             second=0,
             microsecond=0,
         )
+        with self.refresh_lock:
+            published = copy.deepcopy(self._published)
+        published, _ = self._current_date_view(published, now)
         items = {
             str(item.get("symbol", "")): item
-            for item in self.snapshot().get("items", [])
+            for item in published.get("items", [])
         }
         for symbol in enabled:
             item = items.get(symbol)
@@ -291,8 +321,8 @@ class MonitorApplication:
                 return False
         return True
 
-    def collection_due(self) -> bool:
-        now = self.clock()
+    def collection_due(self, now: datetime | None = None) -> bool:
+        now = self.clock() if now is None else now
         enabled = tuple(
             item.symbol for item in load_watchlist(self.watchlist_path) if item.enabled
         )
@@ -411,8 +441,9 @@ class MonitorApplication:
                     if self._generation_cancelled(generation):
                         break
                 try:
-                    self._publish_cross_date_reset(self.clock(), generation)
-                    attempted = self.collection_due()
+                    cycle_now = self.clock()
+                    self._publish_cross_date_reset(cycle_now, generation)
+                    attempted = self.collection_due(cycle_now)
                 except Exception as error:
                     with self.lifecycle_gate:
                         if self._generation_cancelled(generation):
@@ -594,6 +625,45 @@ class MonitorApplication:
             return copy.deepcopy(dict(published)), False
         return self._empty_current_date_view(published, now), True
 
+    @staticmethod
+    def _revision_payload_matches_date(
+        payload: Mapping[str, Any], now: datetime,
+    ) -> bool:
+        try:
+            generated = datetime.fromisoformat(str(payload.get("generated_at", "")))
+        except ValueError:
+            return False
+        if generated.tzinfo is None or generated.utcoffset() is None:
+            return False
+        current_date = now.astimezone(SHANGHAI).date()
+        if generated.astimezone(SHANGHAI).date() != current_date:
+            return False
+        timestamps = [
+            item.get("timestamp") for item in payload.get("items", [])
+            if item.get("timestamp") is not None
+        ]
+        timestamps.extend(
+            point.get("timestamp")
+            for points in payload.get("upserts", {}).values()
+            for point in points
+        )
+        for value in timestamps:
+            try:
+                timestamp = datetime.fromisoformat(str(value))
+            except ValueError:
+                return False
+            if (
+                timestamp.tzinfo is None
+                or timestamp.utcoffset() is None
+                or timestamp.astimezone(SHANGHAI).date() != current_date
+            ):
+                return False
+        return all(
+            str(point.get("trading_date", "")) == current_date.isoformat()
+            for points in payload.get("upserts", {}).values()
+            for point in points
+        )
+
     def _publish_cross_date_reset(
         self, now: datetime, generation: int | None,
     ) -> bool:
@@ -621,6 +691,11 @@ class MonitorApplication:
         result = cls._summary_snapshot(published)
         result["event"] = "reset"
         result["reset"] = True
+        result["upserts"] = {}
+        result["resets"] = sorted(
+            str(item.get("symbol")) for item in result.get("items", [])
+            if item.get("symbol")
+        )
         return result
 
     @staticmethod
@@ -841,8 +916,32 @@ class MonitorApplication:
         )
         if session.active:
             self._publish_outage(message, now=now)
-        else:
-            self._bootstrap(increment_revision=True, now=now)
+            return
+        with self.refresh_lock:
+            previous = copy.deepcopy(self._published)
+        try:
+            previous_generated = datetime.fromisoformat(
+                str(previous.get("generated_at", "")),
+            )
+            previous_session = market_session_state(
+                previous_generated,
+                closed_dates=self.health_classifier.closed_dates,
+            )
+        except ValueError:
+            previous_session = None
+        if (
+            self._published_date_matches(previous, now)
+            and previous_session is not None
+            and previous_session.phase == session.phase
+            and not previous.get("errors")
+            and previous.get("refresh_error") is None
+            and all(
+                item.get("health_status") == session.health_status
+                for item in previous.get("items", [])
+            )
+        ):
+            return
+        self._bootstrap(increment_revision=True, now=now)
 
     def valuation(self, symbol: str) -> dict[str, Any]:
         metadata = EtfMetadataStore(self.metadata_path).get(symbol) if self.metadata_path else None
