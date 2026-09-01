@@ -149,6 +149,31 @@ class SwingPortfolioTests(unittest.TestCase):
         self.assertEqual(first.event_id, second.event_id)
         self.assertEqual(len(self.ledger.load_events()), 2)
 
+    def test_idempotency_key_reuse_requires_identical_operation_and_payload(self) -> None:
+        self.initialize()
+        original = TradeInput("510300", "BUY", 1000, 4.60, 5.0, self.tuesday)
+        bought = self.ledger.record_trade(original, "trade-key")
+        with self.assertRaisesRegex(PortfolioLedgerError, "different request"):
+            self.ledger.record_trade(
+                TradeInput("510300", "BUY", 1000, 4.61, 5.0, self.tuesday),
+                "trade-key",
+            )
+        with self.assertRaisesRegex(PortfolioLedgerError, "different request"):
+            self.ledger.record_trade(
+                TradeInput("510300", "BUY", 900, 4.60, 5.0, self.tuesday),
+                "trade-key",
+            )
+        with self.assertRaisesRegex(PortfolioLedgerError, "different request"):
+            self.ledger.record_trade(original, "init-1")
+        reversed_event = self.ledger.reverse(bought.event_id, "reverse-key")
+        other = self.ledger.record_trade(original, "other-trade")
+        with self.assertRaisesRegex(PortfolioLedgerError, "different request"):
+            self.ledger.reverse(other.event_id, "reverse-key")
+        self.assertEqual(
+            self.ledger.reverse(bought.event_id, "reverse-key").event_id,
+            reversed_event.event_id,
+        )
+
     def test_concurrent_duplicate_idempotency_is_atomic(self) -> None:
         self.initialize()
         trade = TradeInput("510300", "BUY", 1000, 4.60, 5.0, self.tuesday)
@@ -190,6 +215,13 @@ class SwingPortfolioTests(unittest.TestCase):
         self.assertEqual(str(parsed), event.event_id)
         self.assertNotEqual(event.event_id, event.idempotency_key)
 
+    def test_initialize_retry_is_exact_and_changed_payload_conflicts(self) -> None:
+        first = self.ledger.initialize("波段账户", 100_000.0, "init-exact")
+        second = self.ledger.initialize("波段账户", 100_000.0, "init-exact")
+        self.assertEqual(first.event_id, second.event_id)
+        with self.assertRaisesRegex(PortfolioLedgerError, "different request"):
+            self.ledger.initialize("波段账户", 99_999.0, "init-exact")
+
     def test_reversal_restores_projection_and_cannot_be_reversed_twice(self) -> None:
         self.initialize()
         bought = self.ledger.record_trade(
@@ -226,6 +258,42 @@ class SwingPortfolioTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(PortfolioLedgerError, "invalidates"):
             self.ledger.reverse(bought.event_id, "reverse-buy")
+
+    def test_each_sell_consumes_lots_sellable_on_its_own_execution_date(self) -> None:
+        self.initialize(cash=100_000.0)
+        tuesday_buy = self.ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.0, 0.0, self.tuesday), "tue-buy",
+        )
+        self.ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.1, 0.0, self.wednesday), "wed-buy",
+        )
+        self.ledger.record_trade(
+            TradeInput("510300", "SELL", 100, 4.2, 0.0, self.wednesday), "wed-sell",
+        )
+        thursday = self.wednesday + timedelta(days=1)
+        self.ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.3, 0.0, thursday), "thu-buy",
+        )
+        with self.assertRaisesRegex(PortfolioLedgerError, "invalidates"):
+            self.ledger.reverse(tuesday_buy.event_id, "reverse-tue-buy")
+        projected = self.ledger.project(thursday.date(), {"510300": 4.3})
+        self.assertEqual(projected.positions["510300"].shares, 200)
+
+    def test_reversed_trade_does_not_block_corrected_earlier_execution(self) -> None:
+        self.initialize()
+        late = self.ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.0, 0.0, self.wednesday), "late-buy",
+        )
+        self.ledger.reverse(late.event_id, "reverse-late")
+        corrected = self.ledger.record_trade(
+            TradeInput("510300", "BUY", 100, 4.0, 0.0, self.tuesday),
+            "corrected-buy",
+        )
+        self.assertEqual(corrected.event_type, PortfolioEventType.BUY_CONFIRMED)
+        self.assertEqual(
+            self.ledger.project(self.wednesday.date(), {}).positions["510300"].shares,
+            100,
+        )
 
     def test_missing_or_corrupt_projection_is_rebuilt_from_events(self) -> None:
         self.initialize()
@@ -323,6 +391,46 @@ class SwingPortfolioTests(unittest.TestCase):
         projected = self.ledger.project(self.tuesday.date(), {"510300": 4.60})
         self.assertIn("RISK_LIMIT_EXCEEDED", projected.warnings)
         self.assertAlmostEqual(projected.planned_risk, 3000.0)
+
+    def test_default_trade_risk_accumulates_into_portfolio_warning(self) -> None:
+        self.ledger.initialize(
+            "波段账户", 100_000.0, "init-risk", default_risk_per_trade=0.0075,
+        )
+        for index, symbol in enumerate(("510300", "510500", "563360")):
+            self.ledger.record_trade(
+                TradeInput(symbol, "BUY", 100, 4.0, 0.0, self.tuesday),
+                f"default-risk-{index}",
+            )
+        projected = self.ledger.project(self.tuesday.date(), {})
+        self.assertAlmostEqual(projected.planned_risk, 2250.0)
+        self.assertIn("RISK_LIMIT_EXCEEDED", projected.warnings)
+
+    def test_single_trade_risk_above_account_default_warns_below_portfolio_cap(
+        self,
+    ) -> None:
+        self.initialize()
+        self.ledger.record_trade(
+            TradeInput(
+                "510300", "BUY", 1000, 4.0, 0.0, self.tuesday,
+                planned_risk_per_share=1.0,
+            ),
+            "single-risk-over-default",
+        )
+        projected = self.ledger.project(self.tuesday.date(), {})
+        self.assertAlmostEqual(projected.planned_risk, 1000.0)
+        self.assertLess(projected.planned_risk, projected.equity * 0.02)
+        self.assertIn("RISK_LIMIT_EXCEEDED", projected.warnings)
+
+    def test_sell_fee_cannot_make_unleveraged_cash_negative(self) -> None:
+        self.ledger.initialize(
+            "零现金持仓", 0.0, "init-position",
+            initial_positions={"510300": {"shares": 100, "average_cost": 1.0}},
+        )
+        with self.assertRaisesRegex(PortfolioLedgerError, "negative cash"):
+            self.ledger.record_trade(
+                TradeInput("510300", "SELL", 100, 1.0, 101.0, self.tuesday),
+                "fee-over-proceeds",
+            )
 
 
 if __name__ == "__main__":

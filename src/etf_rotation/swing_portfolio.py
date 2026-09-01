@@ -234,6 +234,19 @@ class PortfolioLedger:
         )
         if risk_rate > Decimal("1"):
             raise PortfolioLedgerError("default_risk_per_trade must not exceed 1")
+        request_payload = {
+            "name": account_name,
+            "cash": float(initial_cash),
+            "initial_positions": {
+                symbol: {
+                    "shares": position.shares,
+                    "average_cost": position.average_cost,
+                    "planned_risk_per_share": position.planned_risk_per_share,
+                }
+                for symbol, position in sorted(positions.items())
+            },
+            "default_risk_per_trade": float(risk_rate),
+        }
 
         def build(events: tuple[PortfolioEvent, ...]) -> PortfolioEvent:
             if events:
@@ -241,22 +254,17 @@ class PortfolioLedger:
             return self._event(
                 PortfolioEventType.ACCOUNT_INITIALIZED,
                 key,
-                {
-                    "name": account_name,
-                    "cash": float(initial_cash),
-                    "initial_positions": {
-                        symbol: {
-                            "shares": position.shares,
-                            "average_cost": position.average_cost,
-                            "planned_risk_per_share": position.planned_risk_per_share,
-                        }
-                        for symbol, position in sorted(positions.items())
-                    },
-                    "default_risk_per_trade": float(risk_rate),
-                },
+                request_payload,
             )
 
-        return self._mutate_idempotent(key, build)
+        return self._mutate_idempotent(
+            key,
+            lambda event: (
+                event.event_type is PortfolioEventType.ACCOUNT_INITIALIZED
+                and dict(event.payload) == request_payload
+            ),
+            build,
+        )
 
     def record_trade(
         self,
@@ -265,29 +273,38 @@ class PortfolioLedger:
     ) -> PortfolioEvent:
         key = _validate_idempotency_key(idempotency_key)
         normalized = self._validate_trade_input(trade)
+        event_type = (
+            PortfolioEventType.BUY_CONFIRMED
+            if normalized.side == "BUY"
+            else PortfolioEventType.SELL_CONFIRMED
+        )
+        request_payload = self._trade_request_payload(normalized)
 
         def build(events: tuple[PortfolioEvent, ...]) -> PortfolioEvent:
-            latest = self._latest_trade_datetime(events)
-            if latest is not None and normalized.executed_at < latest:
-                raise PortfolioLedgerError("trade execution time is out of order")
-            current = self._replay(events, normalized.executed_at.date(), {})
-            self._validate_trade_against_projection(current, normalized)
-            event_type = (
-                PortfolioEventType.BUY_CONFIRMED
-                if normalized.side == "BUY"
-                else PortfolioEventType.SELL_CONFIRMED
-            )
-            return self._event(event_type, key, {
-                "symbol": normalized.symbol,
-                "side": normalized.side,
-                "shares": normalized.shares,
-                "price": normalized.price,
-                "fee": normalized.fee,
-                "executed_at": normalized.executed_at.isoformat(),
-                "planned_risk_per_share": normalized.planned_risk_per_share,
-            })
+            effective_risk = _decimal(normalized.planned_risk_per_share)
+            if normalized.side == "BUY" and effective_risk == 0:
+                before = self._replay(
+                    events, normalized.executed_at.date(), {},
+                )
+                effective_risk = (
+                    _decimal(before.equity)
+                    * _decimal(before.default_risk_per_trade)
+                    / normalized.shares
+                )
+            payload = dict(request_payload)
+            payload["effective_planned_risk_per_share"] = float(effective_risk)
+            candidate = self._event(event_type, key, payload)
+            self._replay(events + (candidate,), date.max, {})
+            return candidate
 
-        return self._mutate_idempotent(key, build)
+        return self._mutate_idempotent(
+            key,
+            lambda event: (
+                event.event_type is event_type
+                and self._trade_request_payload_from_event(event) == request_payload
+            ),
+            build,
+        )
 
     def reverse(self, event_id: str, idempotency_key: str) -> PortfolioEvent:
         target_id = _require_uuid4(event_id, "reversal target event_id")
@@ -312,16 +329,21 @@ class PortfolioLedger:
                 {"target_event_id": target_id},
             )
             try:
-                self._replay(
-                    events + (candidate,), self._latest_trading_date(events), {},
-                )
+                self._replay(events + (candidate,), date.max, {})
             except PortfolioLedgerError as error:
                 raise PortfolioLedgerError(
                     "reversal invalidates later portfolio events",
                 ) from error
             return candidate
 
-        return self._mutate_idempotent(key, build)
+        return self._mutate_idempotent(
+            key,
+            lambda event: (
+                event.event_type is PortfolioEventType.TRADE_REVERSED
+                and self._reversal_target(event) == target_id
+            ),
+            build,
+        )
 
     def load_events(self) -> tuple[PortfolioEvent, ...]:
         if not self.path.parent.exists():
@@ -355,6 +377,7 @@ class PortfolioLedger:
     def _mutate_idempotent(
         self,
         key: str,
+        request_matches: Callable[[PortfolioEvent], bool],
         build: Callable[[tuple[PortfolioEvent, ...]], PortfolioEvent],
     ) -> PortfolioEvent:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -364,6 +387,10 @@ class PortfolioLedger:
             if len(matches) > 1:
                 raise PortfolioLedgerError("event log has duplicate idempotency keys")
             if matches:
+                if not request_matches(matches[0]):
+                    raise PortfolioLedgerError(
+                        "idempotency_key was reused for a different request",
+                    )
                 return matches[0]
             event = build(events)
             if any(existing.event_id == event.event_id for existing in events):
@@ -520,13 +547,18 @@ class PortfolioLedger:
         }
         reversed_ids = _reversed_event_ids(events)
         last_event_id = events[-1].event_id
-        for event in events[1:]:
-            if event.event_type is PortfolioEventType.TRADE_REVERSED:
-                continue
-            if event.event_id in reversed_ids:
-                continue
-            trade = self._trade_from_event(event)
-            if trade.executed_at.date() > trading_date:
+        active_trades = [
+            self._trade_from_event(event)
+            for event in events[1:]
+            if (
+                event.event_type is not PortfolioEventType.TRADE_REVERSED
+                and event.event_id not in reversed_ids
+            )
+        ]
+        active_trades.sort(key=lambda trade: trade.executed_at)
+        for trade in active_trades:
+            execution_date = trade.executed_at.date()
+            if execution_date > trading_date:
                 continue
             metadata = self.metadata[trade.symbol]
             position = positions.get(trade.symbol)
@@ -548,19 +580,22 @@ class PortfolioLedger:
                 continue
 
             if position is None or position.shares < trade.shares:
-                raise PortfolioLedgerError("event log sell exceeds owned shares")
-            sellable = _sellable_shares(position, trading_date, metadata)
+                raise PortfolioLedgerError("event log sell exceeds sellable shares")
+            sellable = _sellable_shares(position, execution_date, metadata)
             if trade.shares > sellable:
                 raise PortfolioLedgerError("event log sell exceeds sellable shares")
             average_cost = position.cost_basis / position.shares
-            average_risk = position.planned_risk / position.shares
             proceeds = _decimal(trade.price) * trade.shares - _decimal(trade.fee)
+            if cash + proceeds < 0:
+                raise PortfolioLedgerError("event log sell would leave negative cash")
             realized += proceeds - average_cost * trade.shares
             cash += proceeds
             position.cost_basis -= average_cost * trade.shares
-            position.planned_risk -= average_risk * trade.shares
             position.shares -= trade.shares
-            _consume_sellable_lots(position, trade.shares, trading_date, metadata)
+            consumed_risk = _consume_sellable_lots(
+                position, trade.shares, execution_date, metadata,
+            )
+            position.planned_risk -= consumed_risk
             if position.shares == 0:
                 del positions[trade.symbol]
 
@@ -595,7 +630,17 @@ class PortfolioLedger:
             total_market_value += market_value
             total_risk += position.planned_risk
         equity = cash + total_market_value
-        if equity > 0 and total_risk > equity * self.max_portfolio_risk_rate:
+        single_trade_risk_exceeded = equity > 0 and any(
+            lot.planned_risk_per_share * lot.shares
+            > equity * default_risk_rate
+            for position in positions.values()
+            for lot in position.lots
+        )
+        portfolio_risk_exceeded = (
+            equity > 0
+            and total_risk > equity * self.max_portfolio_risk_rate
+        )
+        if single_trade_risk_exceeded or portfolio_risk_exceeded:
             warnings.append("RISK_LIMIT_EXCEEDED")
         return PortfolioProjection(
             schema_version=_SCHEMA_VERSION,
@@ -642,6 +687,28 @@ class PortfolioLedger:
             symbol, trade.side, trade.shares, float(price), float(fee), executed_at,
             float(risk),
         )
+
+    @staticmethod
+    def _trade_request_payload(trade: TradeInput) -> dict[str, object]:
+        return {
+            "symbol": trade.symbol,
+            "side": trade.side,
+            "shares": trade.shares,
+            "price": trade.price,
+            "fee": trade.fee,
+            "executed_at": trade.executed_at.isoformat(),
+            "planned_risk_per_share": trade.planned_risk_per_share,
+        }
+
+    def _trade_request_payload_from_event(
+        self, event: PortfolioEvent,
+    ) -> dict[str, object]:
+        trade = self._trade_from_event(event)
+        payload = self._trade_request_payload(trade)
+        payload["planned_risk_per_share"] = event.payload[
+            "planned_risk_per_share"
+        ]
+        return payload
 
     def _validate_initial_positions(
         self,
@@ -703,21 +770,6 @@ class PortfolioLedger:
             )
         return MappingProxyType(result)
 
-    @staticmethod
-    def _validate_trade_against_projection(
-        projection: PortfolioProjection,
-        trade: TradeInput,
-    ) -> None:
-        if trade.side == "BUY":
-            required = _decimal(trade.price) * trade.shares + _decimal(trade.fee)
-            if required > _decimal(projection.cash):
-                raise PortfolioLedgerError("buy exceeds available cash")
-            return
-        position = projection.positions.get(trade.symbol)
-        sellable = 0 if position is None else position.sellable_shares
-        if trade.shares > sellable:
-            raise PortfolioLedgerError("sell exceeds sellable shares")
-
     def _validate_marks(self, marks: Mapping[str, float]) -> Mapping[str, Decimal]:
         if not isinstance(marks, Mapping):
             raise PortfolioLedgerError("marks must be a mapping")
@@ -765,12 +817,17 @@ class PortfolioLedger:
         )
 
     def _trade_from_event(self, event: PortfolioEvent) -> TradeInput:
-        expected = {
+        legacy = {
             "symbol", "side", "shares", "price", "fee", "executed_at",
             "planned_risk_per_share",
         }
-        if set(event.payload) != expected:
+        current = legacy | {"effective_planned_risk_per_share"}
+        if set(event.payload) not in (legacy, current):
             raise PortfolioLedgerError("trade event payload is invalid")
+        effective_risk = event.payload.get(
+            "effective_planned_risk_per_share",
+            event.payload["planned_risk_per_share"],
+        )
         trade = TradeInput(
             symbol=event.payload["symbol"],
             side=event.payload["side"],
@@ -778,7 +835,7 @@ class PortfolioLedger:
             price=event.payload["price"],
             fee=event.payload["fee"],
             executed_at=_parse_datetime(event.payload["executed_at"], "executed_at"),
-            planned_risk_per_share=event.payload["planned_risk_per_share"],
+            planned_risk_per_share=effective_risk,
         )
         normalized = self._validate_trade_input(trade)
         expected_type = (
@@ -799,32 +856,6 @@ class PortfolioLedger:
         return _require_uuid4(
             event.payload["target_event_id"], "reversal target event_id",
         )
-
-    def _latest_trade_datetime(
-        self, events: tuple[PortfolioEvent, ...],
-    ) -> datetime | None:
-        values = [
-            self._trade_from_event(event).executed_at
-            for event in events
-            if event.event_type in {
-                PortfolioEventType.BUY_CONFIRMED,
-                PortfolioEventType.SELL_CONFIRMED,
-            }
-        ]
-        return max(values) if values else None
-
-    def _latest_trading_date(self, events: tuple[PortfolioEvent, ...]) -> date:
-        latest = self._latest_trade_datetime(events)
-        return latest.date() if latest is not None else self._now().date()
-
-    def _now(self) -> datetime:
-        try:
-            return _aware_datetime(self.clock(), "portfolio clock")
-        except PortfolioLedgerError:
-            raise
-        except Exception as error:
-            raise PortfolioLedgerError("portfolio clock failed") from error
-
 
 def _snapshot_metadata(
     metadata: Mapping[str, EtfMetadata],
@@ -956,19 +987,22 @@ def _consume_sellable_lots(
     shares: int,
     trading_date: date,
     metadata: EtfMetadata,
-) -> None:
+) -> Decimal:
     remaining = shares
+    consumed_risk = Decimal("0")
     retained: list[_Lot] = []
     for lot in position.lots:
         if remaining and _is_sellable(lot, trading_date, metadata):
             consumed = min(remaining, lot.shares)
             remaining -= consumed
             lot.shares -= consumed
+            consumed_risk += lot.planned_risk_per_share * consumed
         if lot.shares:
             retained.append(lot)
     if remaining:
         raise PortfolioLedgerError("sell exceeds sellable shares")
     position.lots = retained
+    return consumed_risk
 
 
 def _atomic_replace_json(path: Path, payload: Mapping[str, object]) -> None:
