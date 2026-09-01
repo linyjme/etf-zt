@@ -153,13 +153,16 @@ class MarketDataValidator:
             # The public feed reports volume in whole units while amount can
             # retain greater precision. Allow at most one source volume unit of
             # rounding in either direction and require the resulting possible
-            # price interval to intersect the tick-tolerant OHLC interval.
+            # price interval to intersect the tick-tolerant OHLC interval. An
+            # actual non-zero trade still contains at least one share.
             lowest_possible_price = amount / (
                 (volume + 1.0) * self.trading.volume_unit_shares
             )
             highest_possible_price = (
-                amount / ((volume - 1.0) * self.trading.volume_unit_shares)
-                if volume > 1.0 else float("inf")
+                amount / max(
+                    (volume - 1.0) * self.trading.volume_unit_shares,
+                    1.0,
+                )
             )
             if (
                 highest_possible_price < low - tick - epsilon

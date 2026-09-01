@@ -878,6 +878,58 @@ class MarketDataValidatorTests(unittest.TestCase):
                 7.90,
             )
 
+    def test_amount_check_rejects_impossible_low_amount_at_one_or_less_unit(self) -> None:
+        for volume in (0.5, 1.0):
+            with self.subTest(volume=volume), self.assertRaisesRegex(MarketDataError, "量价"):
+                self.validator.validate_point(
+                    point(
+                        "10:49",
+                        price=10.0,
+                        average_price=10.0,
+                        open_price=10.0,
+                        high=10.0,
+                        low=10.0,
+                        volume=volume,
+                        amount=9.998,
+                    ),
+                    10.0,
+                )
+
+    def test_amount_check_accepts_exact_one_unit_rounding_boundaries(self) -> None:
+        self.validator.validate_point(
+            point(
+                "10:49", price=10.0, average_price=10.0,
+                open_price=10.0, high=10.0, low=10.0, volume=100.0,
+                amount=(10.0 - 0.001) * 99.0 * 100.0,
+            ),
+            10.0,
+        )
+        self.validator.validate_point(
+            point(
+                "10:49", price=10.0, average_price=10.0,
+                open_price=10.0, high=10.0, low=10.0, volume=100.0,
+                amount=(10.0 + 0.001) * 101.0 * 100.0,
+            ),
+            10.0,
+        )
+
+    def test_amount_check_rejects_rounding_just_beyond_tick_and_epsilon(self) -> None:
+        beyond_epsilon = 1e-8
+        amounts = (
+            (10.0 - 0.001 - beyond_epsilon) * 99.0 * 100.0,
+            (10.0 + 0.001 + beyond_epsilon) * 101.0 * 100.0,
+        )
+        for amount in amounts:
+            with self.subTest(amount=amount), self.assertRaisesRegex(MarketDataError, "量价"):
+                self.validator.validate_point(
+                    point(
+                        "10:49", price=10.0, average_price=10.0,
+                        open_price=10.0, high=10.0, low=10.0,
+                        volume=100.0, amount=amount,
+                    ),
+                    10.0,
+                )
+
 
 class QuoteObservationTests(unittest.TestCase):
     def test_adapter_parses_observed_at_collected_at_and_source(self) -> None:
@@ -946,7 +998,9 @@ class QuoteObservationTests(unittest.TestCase):
             self.assertEqual(record["schema_version"], 2)
             self.assertEqual(record["observed_at"], payload["observed_at"])
             self.assertEqual(record["collected_at"], payload["observed_at"])
-            self.assertEqual(record["source"], SOURCE_NAME)
+            self.assertEqual(record["source"], payload["source"]["name"])
+            self.assertTrue(record["source"].startswith(SOURCE_NAME))
+            self.assertIn("push2his.eastmoney.com", record["source"])
 
     def test_collector_preserves_batch_start_boundary_across_minute_requests(self) -> None:
         clock = {"now": datetime.fromisoformat("2026-08-28T10:00:30+08:00")}

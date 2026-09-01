@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -33,6 +33,11 @@ class _RequestFailure(Exception):
         self.symbol = symbol
         self.endpoint = endpoint
         self.error = error
+
+
+def source_label(endpoint: str) -> str:
+    host = urlsplit(endpoint).netloc
+    return f"{SOURCE_NAME} ({host or endpoint})"
 
 
 def market_for_symbol(symbol: str) -> int:
@@ -174,7 +179,7 @@ class Trends2QuoteCollector:
         return {
             "schema_version": 2,
             "source": {
-                "name": SOURCE_NAME,
+                "name": source_label(endpoint),
                 "endpoint": endpoint,
                 "urls": urls,
             },
@@ -245,7 +250,7 @@ class Trends2QuoteCollector:
             "previous_close": previous_close,
             "timestamp": points[-1]["timestamp"],
             "points": points,
-            "source": SOURCE_NAME,
+            "source": source_label(endpoint),
             "schema_version": 2,
         }
         return record

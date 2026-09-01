@@ -155,7 +155,9 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
             now=lambda: datetime.fromisoformat(NOW),
         )
         payload = collector.collect(watchlist)
-        self.assertEqual(payload["source"]["name"], SOURCE_NAME)
+        self.assertEqual(payload["source"]["name"], payload["quotes"][0]["source"])
+        self.assertTrue(payload["source"]["name"].startswith(SOURCE_NAME))
+        self.assertIn("push2his.eastmoney.com", payload["source"]["name"])
         self.assertEqual([item["symbol"] for item in payload["quotes"]], ["510300", "159915"])
         self.assertEqual(payload["quotes"][0]["price"], 10.3)
         self.assertEqual(payload["quotes"][0]["average_price"], 10.2)
@@ -270,6 +272,36 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
         self.assertIn(TRENDS2_FALLBACK_ENDPOINT, message)
         self.assertIn("返回失败", message)
         self.assertEqual(len(requests), 2)
+
+    def test_persists_actual_primary_or_fallback_host_in_minute_history(self) -> None:
+        cases = (
+            (False, "push2his.eastmoney.com"),
+            (True, "push2delay.eastmoney.com"),
+        )
+        for fail_primary, expected_host in cases:
+            with self.subTest(expected_host=expected_host), tempfile.TemporaryDirectory() as temporary:
+                def transport(request: Request, timeout: float) -> bytes:
+                    if fail_primary and request.full_url.startswith(TRENDS2_ENDPOINT):
+                        raise OSError("primary unavailable")
+                    secid = parse_qs(urlsplit(request.full_url).query)["secid"][0]
+                    market, symbol = secid.split(".")
+                    return self.response(symbol, int(market))
+
+                payload = Trends2QuoteCollector(
+                    transport=transport,
+                    now=lambda: datetime.fromisoformat(NOW),
+                ).collect((WatchItem("510300", "沪深300ETF", 0.002),))
+                quotes = JsonQuoteAdapter().parse(payload)
+                history_path = Path(temporary) / "quotes.jsonl"
+                QuoteHistoryStore(history_path).append(quotes)
+                history_record = json.loads(
+                    history_path.read_text(encoding="utf-8").splitlines()[0]
+                )
+
+                self.assertIn(expected_host, payload["source"]["name"])
+                self.assertEqual(payload["source"]["name"], quotes["510300"].source)
+                self.assertEqual(history_record["source"], quotes["510300"].source)
+                self.assertIn(expected_host, history_record["source"])
 
     def test_collects_exactly_the_six_enabled_watchlist_etfs(self) -> None:
         watchlist_path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "watchlist.json"
