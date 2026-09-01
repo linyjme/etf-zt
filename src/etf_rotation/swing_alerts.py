@@ -185,6 +185,7 @@ class AlertEvent:
 class AlertProjection:
     alert_id: str
     scope: str
+    generation: int
     trading_date: date
     symbol: str
     state: str
@@ -202,6 +203,9 @@ class AlertProjection:
         _alert_id(self.alert_id)
         if self.scope not in {"FORMAL", "INTRADAY"}:
             raise AlertStoreError("projection scope is invalid")
+        generation = _generation(self.generation)
+        if self.scope == "FORMAL" and generation != 0:
+            raise AlertStoreError("formal projection generation must be zero")
         _strict_date(self.trading_date, "projection trading_date")
         _symbol(self.symbol)
         _ascii_token(self.state, "projection state")
@@ -240,7 +244,7 @@ class AlertProjection:
                 identity.strategy_version,
             )
             if self.scope == "FORMAL"
-            else overlay_alert_id(identity)
+            else overlay_alert_id(identity, generation)
         )
         if self.alert_id != expected_id:
             raise AlertStoreError("projection alert_id is inconsistent")
@@ -253,6 +257,7 @@ class AlertProjection:
         return {
             "alert_id": self.alert_id,
             "scope": self.scope,
+            "generation": self.generation,
             "trading_date": self.trading_date.isoformat(),
             "symbol": self.symbol,
             "state": self.state,
@@ -287,11 +292,12 @@ def formal_alert_id(
     return hashlib.sha256(identity.encode("ascii")).hexdigest()[:24]
 
 
-def overlay_alert_id(alert: AlertInput) -> str:
+def overlay_alert_id(alert: AlertInput, generation: int = 0) -> str:
     """Return a stable intraday identity in a namespace separate from formal IDs."""
+    normalized_generation = _generation(generation)
     identity = (
         f"INTRADAY|{alert.trading_date.isoformat()}|{alert.symbol}|"
-        f"{alert.state}|{alert.strategy_version}"
+        f"{alert.state}|{alert.strategy_version}|{normalized_generation}"
     )
     return hashlib.sha256(identity.encode("ascii")).hexdigest()[:24]
 
@@ -313,17 +319,11 @@ class SwingAlertStore:
 
     def publish_formal(self, alert: AlertInput) -> AlertProjection:
         normalized = _alert_input(alert)
-        alert_id = formal_alert_id(
-            normalized.trading_date,
-            normalized.symbol,
-            normalized.state,
-            normalized.strategy_version,
-        )
-        return self._publish(normalized, "FORMAL", alert_id)
+        return self._publish(normalized, "FORMAL")
 
     def publish_overlay(self, alert: AlertInput) -> AlertProjection:
         normalized = _alert_input(alert)
-        return self._publish(normalized, "INTRADAY", overlay_alert_id(normalized))
+        return self._publish(normalized, "INTRADAY")
 
     def acknowledge(self, alert_id: str, idempotency_key: str) -> AlertProjection:
         return self._transition(
@@ -386,24 +386,44 @@ class SwingAlertStore:
         self,
         alert: AlertInput,
         scope: str,
-        alert_id: str,
     ) -> AlertProjection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "alert_id": alert_id,
-            "scope": scope,
-            "alert": alert.to_dict(),
-        }
         with _SiblingFileLock(self.path, shared=False):
             events = self._load_events_unlocked()
             projected = self._project(events)
-            existing = projected.get(alert_id)
-            if existing is not None:
-                if _publication_payload(existing) != payload:
-                    raise AlertStoreError(
-                        "alert identity was reused for a different request",
-                    )
-                return existing
+            lifecycle = tuple(
+                item for item in projected.values()
+                if _same_lifecycle(item, alert, scope)
+            )
+            if scope == "FORMAL":
+                generation = 0
+                alert_id = formal_alert_id(
+                    alert.trading_date,
+                    alert.symbol,
+                    alert.state,
+                    alert.strategy_version,
+                )
+                existing = projected.get(alert_id)
+                if existing is not None:
+                    return existing
+            else:
+                active = tuple(item for item in lifecycle if not item.retracted)
+                if active:
+                    return active[0]
+                generation = (
+                    max(item.generation for item in lifecycle) + 1
+                    if lifecycle
+                    else 0
+                )
+                alert_id = overlay_alert_id(alert, generation)
+                if alert_id in projected:
+                    raise AlertStoreError("generated duplicate overlay alert_id")
+            payload = {
+                "alert_id": alert_id,
+                "scope": scope,
+                "generation": generation,
+                "alert": alert.to_dict(),
+            }
             event_type = (
                 AlertEventType.FORMAL_PUBLISHED
                 if scope == "FORMAL"
@@ -557,6 +577,7 @@ class SwingAlertStore:
                 payload = _published_payload(event.payload, expected_scope)
                 alert = AlertInput.from_mapping(payload["alert"])
                 alert_id = payload["alert_id"]
+                generation = payload["generation"]
                 expected_id = (
                     formal_alert_id(
                         alert.trading_date,
@@ -565,15 +586,34 @@ class SwingAlertStore:
                         alert.strategy_version,
                     )
                     if expected_scope == "FORMAL"
-                    else overlay_alert_id(alert)
+                    else overlay_alert_id(alert, generation)
                 )
                 if alert_id != expected_id:
                     raise AlertStoreError("published alert_id is inconsistent")
                 if alert_id in projections:
                     raise AlertStoreError("alert was published more than once")
+                lifecycle = tuple(
+                    item for item in projections.values()
+                    if _same_lifecycle(item, alert, expected_scope)
+                )
+                if expected_scope == "FORMAL":
+                    if generation != 0:
+                        raise AlertStoreError(
+                            "formal alert generation must be zero",
+                        )
+                else:
+                    if generation != len(lifecycle):
+                        raise AlertStoreError(
+                            "overlay generation sequence is invalid",
+                        )
+                    if any(not item.retracted for item in lifecycle):
+                        raise AlertStoreError(
+                            "previous overlay generation must be retracted",
+                        )
                 projections[alert_id] = AlertProjection(
                     alert_id=alert_id,
                     scope=expected_scope,
+                    generation=generation,
                     trading_date=alert.trading_date,
                     symbol=alert.symbol,
                     state=alert.state,
@@ -631,27 +671,23 @@ def _alert_input(value: object) -> AlertInput:
     return AlertInput.from_mapping(value.to_dict())
 
 
-def _publication_payload(item: AlertProjection) -> dict[str, object]:
-    alert = AlertInput(
-        trading_date=item.trading_date,
-        symbol=item.symbol,
-        state=item.state,
-        strategy_version=item.strategy_version,
-        level=item.level,
-        label=item.label,
-        evidence=item.evidence,
-    )
-    return {"alert_id": item.alert_id, "scope": item.scope, "alert": alert.to_dict()}
-
-
 def _published_payload(value: object, expected_scope: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping) or set(value) != {"alert_id", "scope", "alert"}:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"alert_id", "scope", "generation", "alert"}
+    ):
         raise AlertStoreError("published event payload fields are invalid")
     alert_id = _alert_id(value["alert_id"])
+    generation = _generation(value["generation"])
     if value["scope"] != expected_scope:
         raise AlertStoreError("published event scope is inconsistent")
     return MappingProxyType(
-        {"alert_id": alert_id, "scope": expected_scope, "alert": value["alert"]},
+        {
+            "alert_id": alert_id,
+            "scope": expected_scope,
+            "generation": generation,
+            "alert": value["alert"],
+        },
     )
 
 
@@ -681,6 +717,7 @@ def _replace_projection(
     values = {
         "alert_id": item.alert_id,
         "scope": item.scope,
+        "generation": item.generation,
         "trading_date": item.trading_date,
         "symbol": item.symbol,
         "state": item.state,
@@ -702,6 +739,26 @@ def _alert_id(value: object) -> str:
     if type(value) is not str or _ALERT_ID.fullmatch(value) is None:
         raise AlertStoreError("alert_id must be canonical lowercase 24 hex")
     return value
+
+
+def _generation(value: object) -> int:
+    if type(value) is not int or value < 0:
+        raise AlertStoreError("generation must be a nonnegative integer")
+    return value
+
+
+def _same_lifecycle(
+    item: AlertProjection,
+    alert: AlertInput,
+    scope: str,
+) -> bool:
+    return (
+        item.scope == scope
+        and item.trading_date == alert.trading_date
+        and item.symbol == alert.symbol
+        and item.state == alert.state
+        and item.strategy_version == alert.strategy_version
+    )
 
 
 def _symbol(value: object) -> str:

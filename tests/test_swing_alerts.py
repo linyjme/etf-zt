@@ -20,6 +20,7 @@ from etf_rotation.swing_alerts import (
     AlertStoreError,
     SwingAlertStore,
     formal_alert_id,
+    overlay_alert_id,
 )
 
 
@@ -92,10 +93,19 @@ class SwingAlertStoreTests(unittest.TestCase):
         self.assertTrue(rebuilt.acknowledged)
         self.assertEqual(rebuilt.evidence["reasons"], ("PULLBACK",))
 
-    def test_same_formal_identity_with_changed_payload_is_rejected(self) -> None:
-        self.store.publish_formal(formal_alert())
-        with self.assertRaisesRegex(AlertStoreError, "different request"):
-            self.store.publish_formal(formal_alert(label="被修改的标签"))
+    def test_same_formal_identity_with_changed_payload_retains_first_snapshot(self) -> None:
+        first = self.store.publish_formal(formal_alert())
+        repeated = self.store.publish_formal(
+            formal_alert(
+                level="GRAY",
+                label="被修改的标签",
+                evidence={"risk": 0.99},
+            ),
+        )
+        self.assertEqual(repeated, first)
+        self.assertEqual(repeated.label, "试仓候选")
+        self.assertEqual(len(self.store.load_events()), 1)
+        self.assertEqual(self.store.active_notifications(), (first,))
 
     def test_overlay_is_deduplicated_and_identity_does_not_collide_with_formal(self) -> None:
         shared = formal_alert(
@@ -110,6 +120,64 @@ class SwingAlertStoreTests(unittest.TestCase):
         self.assertNotEqual(formal.alert_id, first.alert_id)
         self.assertEqual(first.alert_id, second.alert_id)
         self.assertEqual(len(self.store.load_events()), 2)
+
+    def test_active_overlay_retains_first_snapshot_when_evidence_changes(self) -> None:
+        first = self.store.publish_overlay(overlay_alert())
+        repeated = self.store.publish_overlay(
+            overlay_alert(label="实时证据已更新", evidence={"price": 4.19}),
+        )
+        self.assertEqual(repeated, first)
+        self.assertEqual(repeated.label, "盘中触及预设止损")
+        self.assertEqual(len(self.store.load_events()), 1)
+
+    def test_retracted_overlay_can_reactivate_as_a_new_generation(self) -> None:
+        first = self.store.publish_overlay(overlay_alert())
+        self.assertEqual(first.generation, 0)
+        self.store.retract_overlays("PRICE_LEFT_ZONE")
+
+        second = self.store.publish_overlay(
+            overlay_alert(label="同日再次触及", evidence={"price": 4.18}),
+        )
+        repeated = self.store.publish_overlay(
+            overlay_alert(label="再次刷新", evidence={"price": 4.17}),
+        )
+
+        self.assertNotEqual(second.alert_id, first.alert_id)
+        self.assertEqual(second.generation, 1)
+        self.assertEqual(repeated, second)
+        self.assertEqual(len(self.store.load_events()), 3)
+        self.assertEqual(self.store.current(), (second,))
+        history = self.store.current(include_retracted=True)
+        self.assertEqual(tuple(item.generation for item in history), (0, 1))
+        self.assertTrue(history[0].retracted)
+        self.assertFalse(history[1].retracted)
+
+    def test_overlay_projection_rejects_skipped_or_overlapping_generations(self) -> None:
+        self.store.publish_overlay(overlay_alert())
+        self.store.retract_overlays("LEFT_ZONE")
+        self.store.publish_overlay(overlay_alert())
+        canonical = [event.to_dict() for event in self.store.load_events()]
+
+        skipped = json.loads(json.dumps(canonical))
+        skipped[2]["payload"]["generation"] = 2
+        skipped[2]["payload"]["alert_id"] = overlay_alert_id(overlay_alert(), 2)
+        overlapping = (canonical[0], canonical[2])
+        for expected, events in (
+            ("generation sequence", skipped),
+            ("must be retracted", overlapping),
+        ):
+            with self.subTest(expected=expected):
+                self.path.write_bytes(
+                    "".join(
+                        json.dumps(
+                            event, ensure_ascii=False, allow_nan=False,
+                            sort_keys=True, separators=(",", ":"),
+                        ) + "\n"
+                        for event in events
+                    ).encode("utf-8"),
+                )
+                with self.assertRaisesRegex(AlertStoreError, expected):
+                    self.store.current(include_retracted=True)
 
     def test_intraday_outage_retracts_only_intraday_overlay(self) -> None:
         formal = self.store.publish_formal(formal_alert())
@@ -328,6 +396,7 @@ SwingAlertStore(Path(path)).publish_formal(AlertInput(
             AlertProjection(
                 alert_id="a" * 24,
                 scope="FORMAL",
+                generation=0,
                 trading_date=alert.trading_date,
                 symbol=alert.symbol,
                 state=alert.state,
