@@ -682,6 +682,43 @@ class RuntimeTests(unittest.TestCase):
             app.stop_refresh()
             self.assertIsNone(waiting.result(timeout=0.5))
 
+    def test_cross_day_outage_clears_previous_day_live_view(self) -> None:
+        now = [datetime.fromisoformat("2026-08-28T10:02:00+08:00")]
+        app = MonitorApplication(
+            quotes_path=self.paths.quotes,
+            watchlist_path=self.paths.watchlist,
+            history_path=self.paths.history,
+            collector=StaticCollector(quote_payload_for_date("2026-08-28")),
+            alert_history_path=self.paths.alerts,
+            metadata_path=self.paths.metadata,
+            calendar_path=self.paths.calendar,
+            clock=lambda: now[0],
+        )
+        self.assertTrue(app.refresh_once())
+        self.assertIsNotNone(app.snapshot()["items"][0]["price"])
+        quotes_before = self.paths.quotes.read_bytes()
+        history_before = self.paths.history.read_bytes()
+
+        now[0] = datetime.fromisoformat("2026-08-31T10:02:00+08:00")
+        app.collector = FailingCollector("次日采集失败")
+        self.assertFalse(app.refresh_once())
+
+        item = app.snapshot()["items"][0]
+        self.assertEqual(item["status"], "MISSING_QUOTE")
+        self.assertIsNone(item["price"])
+        self.assertIsNone(item["timestamp"])
+        self.assertEqual(item["health_status"], "OUTAGE")
+        self.assertEqual(item["health_reason"], "次日采集失败")
+        self.assertNotIn(item["action"], {"BUY_CANDIDATE", "SELL_CANDIDATE"})
+        self.assertEqual(app.snapshot()["refresh_error"], "次日采集失败")
+        self.assertEqual(app.snapshot()["source"], {"name": "TEST"})
+        self.assertEqual(app._published["items"][0]["points"], [])
+        quotes = app.quotes("510300", since=0)
+        self.assertTrue(quotes["reset"])
+        self.assertEqual(quotes["upserts"], [])
+        self.assertEqual(self.paths.quotes.read_bytes(), quotes_before)
+        self.assertEqual(self.paths.history.read_bytes(), history_before)
+
     def test_snapshot_is_lightweight_and_quote_cursor_returns_revised_minutes(self) -> None:
         collector = StaticCollector(valid_completed_quote_payload())
         app = self.make_runtime_fixture(collector)

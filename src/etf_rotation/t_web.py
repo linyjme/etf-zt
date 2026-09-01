@@ -13,7 +13,7 @@ import re
 import tempfile
 import threading
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, urlsplit
 
 from . import constants
@@ -33,6 +33,7 @@ from .t_monitor import (
     Quote,
     QuoteHistoryStore,
     TMonitorEngine,
+    WatchItem,
     load_watchlist,
     snapshot_to_dict,
 )
@@ -252,6 +253,7 @@ class MonitorApplication:
             if self.collector is None:
                 return False
             staging: Path | None = None
+            watchlist: Sequence[WatchItem] | None = None
             try:
                 watchlist = load_watchlist(self.watchlist_path)
                 staging = self._staging_quotes_path()
@@ -271,7 +273,7 @@ class MonitorApplication:
                 with self.lifecycle_gate:
                     if self._generation_cancelled(generation):
                         return False
-                    self._publish_outage(str(error))
+                    self._publish_outage(str(error), watchlist)
                 return False
             try:
                 with self.lifecycle_gate:
@@ -285,13 +287,13 @@ class MonitorApplication:
                             watchlist, quotes, generated_at=now, health=health,
                         ))
                     except Exception as error:
-                        self._publish_outage(str(error))
+                        self._publish_outage(str(error), watchlist)
                         return False
                     try:
                         self._commit_staged_quotes(staging)
                         staging = None
                     except Exception as error:
-                        self._publish_outage(str(error))
+                        self._publish_outage(str(error), watchlist)
                         return False
 
                     persistence_errors: list[str] = []
@@ -614,13 +616,49 @@ class MonitorApplication:
             self._revision_events.append(self._revision_delta(previous, result))
             self._publish_condition.notify_all()
 
-    def _publish_outage(self, message: str) -> None:
+    def _publish_outage(
+        self, message: str, watchlist: Sequence[WatchItem] | None = None,
+    ) -> None:
+        now = self.clock()
         with self._publish_condition:
             self._revision += 1
             previous = self._published
-            result = copy.deepcopy(self._published)
+            try:
+                previous_generated = datetime.fromisoformat(
+                    str(previous.get("generated_at", "")),
+                )
+                same_day = (
+                    previous_generated.tzinfo is not None
+                    and previous_generated.utcoffset() is not None
+                    and previous_generated.astimezone(SHANGHAI).date()
+                    == now.astimezone(SHANGHAI).date()
+                )
+            except ValueError:
+                same_day = False
+            if same_day:
+                result = copy.deepcopy(previous)
+            else:
+                current_watchlist = watchlist
+                if current_watchlist is None:
+                    current_watchlist = tuple(
+                        WatchItem(
+                            str(item.get("symbol", "")),
+                            str(item.get("name", "")),
+                            float(
+                                item.get("grid_width_pct")
+                                or constants.DEFAULT_GRID_WIDTH_PCT
+                            ),
+                        )
+                        for item in previous.get("items", [])
+                        if item.get("symbol")
+                    )
+                result = snapshot_to_dict(self.engine.evaluate(
+                    current_watchlist, {}, generated_at=now,
+                ))
+                result["source"] = copy.deepcopy(previous.get("source"))
+                result["last_refresh_at"] = previous.get("last_refresh_at")
             result["revision"] = self._revision
-            result["generated_at"] = self.clock().isoformat()
+            result["generated_at"] = now.isoformat()
             result["errors"] = [message]
             result["refresh_error"] = message
             result["persistence_errors"] = []
