@@ -235,6 +235,13 @@ class SwingConfigurationTests(unittest.TestCase):
             with self.subTest(override=override):
                 self.assert_strategy_rejected({**SWING_V1_DEFAULTS, **override})
 
+    def test_strategy_rejects_trade_risk_above_portfolio_risk(self) -> None:
+        self.assert_strategy_rejected({
+            **SWING_V1_DEFAULTS,
+            "risk_per_trade": 0.03,
+            "max_portfolio_risk": 0.02,
+        })
+
     def test_daily_bar_fixture_is_deterministic_and_timezone_aware(self) -> None:
         first = completed_daily_bars(3)
         self.assertEqual(first, completed_daily_bars(3))

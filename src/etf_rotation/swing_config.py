@@ -197,6 +197,8 @@ def load_strategy(path: Path) -> SwingStrategyConfig:
         raise ValueError("walk_forward_test_days不能超过walk_forward_train_days")
     if values["walk_forward_step_days"] > values["walk_forward_test_days"]:
         raise ValueError("walk_forward_step_days不能超过walk_forward_test_days")
+    if values["risk_per_trade"] > values["max_portfolio_risk"]:
+        raise ValueError("risk_per_trade不能超过max_portfolio_risk")
     if values["max_portfolio_risk"] > values["max_equity_weight"]:
         raise ValueError("max_portfolio_risk不能超过max_equity_weight")
     if values["max_symbol_weight"] > values["max_equity_weight"]:
