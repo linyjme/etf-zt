@@ -251,6 +251,26 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
         ):
             collector.collect((WatchItem("510300", "沪深300ETF", 0.002),))
 
+    def test_preserves_primary_request_failure_when_fallback_has_business_error(self) -> None:
+        requests = []
+
+        def transport(request: Request, timeout: float) -> bytes:
+            requests.append(request.full_url)
+            if request.full_url.startswith(TRENDS2_ENDPOINT):
+                raise OSError("primary transport down")
+            return json.dumps({"rc": 1, "data": None}).encode("utf-8")
+
+        collector = Trends2QuoteCollector(transport=transport)
+        with self.assertRaises(MarketDataError) as caught:
+            collector.collect((WatchItem("510300", "沪深300ETF", 0.002),))
+
+        message = str(caught.exception)
+        self.assertIn(TRENDS2_ENDPOINT, message)
+        self.assertIn("primary transport down", message)
+        self.assertIn(TRENDS2_FALLBACK_ENDPOINT, message)
+        self.assertIn("返回失败", message)
+        self.assertEqual(len(requests), 2)
+
     def test_collects_exactly_the_six_enabled_watchlist_etfs(self) -> None:
         watchlist_path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "watchlist.json"
         watchlist = load_watchlist(watchlist_path)

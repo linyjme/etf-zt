@@ -147,7 +147,9 @@ class Trends2QuoteCollector:
                 ) from fallback_error
             except MarketDataError as fallback_error:
                 raise MarketDataError(
-                    f"trends2 备用端点失败 ({endpoint}): {fallback_error}"
+                    "trends2 主端点请求失败且备用端点业务校验失败: "
+                    f"主端点 {primary_error}; "
+                    f"备用端点 ({endpoint}): {fallback_error}"
                 ) from fallback_error
         for record in records:
             safe_points = [
