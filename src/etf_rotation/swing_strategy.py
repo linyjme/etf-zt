@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from enum import StrEnum
 import math
 from types import MappingProxyType
@@ -115,12 +115,14 @@ def _strict_date(value: object, field: str, *, optional: bool = False) -> date |
 
 @dataclass(frozen=True)
 class PositionContext:
+    """Position inputs with raw cost/risk/stop and an adjusted-close watermark."""
+
     shares: int
     sellable_shares: int
     average_cost: float
     initial_risk_per_share: float
     entry_trading_date: date
-    highest_completed_close: float
+    highest_completed_adjusted_close: float
     hard_stop: float
     first_reduction_completed: bool
 
@@ -141,9 +143,15 @@ class PositionContext:
             self.initial_risk_per_share, "initial_risk_per_share", positive=True,
         ))
         _strict_date(self.entry_trading_date, "entry_trading_date")
-        object.__setattr__(self, "highest_completed_close", _finite_number(
-            self.highest_completed_close, "highest_completed_close", positive=True,
-        ))
+        object.__setattr__(
+            self,
+            "highest_completed_adjusted_close",
+            _finite_number(
+                self.highest_completed_adjusted_close,
+                "highest_completed_adjusted_close",
+                positive=True,
+            ),
+        )
         object.__setattr__(
             self, "hard_stop",
             _finite_number(self.hard_stop, "hard_stop", positive=True),
@@ -283,6 +291,33 @@ class SwingDecision:
         planned_risk_rate = _finite_number(
             self.planned_risk_rate, "planned_risk_rate",
         )
+        if self.state is SwingState.TRIAL_ENTRY_CANDIDATE:
+            if self.planned_shares <= 0:
+                raise SwingStrategyError("trial candidate requires positive shares")
+            if entry_low is None or entry_high is None or planned_stop is None:
+                raise SwingStrategyError("trial candidate requires entry and stop")
+            if planned_stop >= entry_high or planned_risk_rate <= 0.0:
+                raise SwingStrategyError("trial candidate requires positive risk")
+            if (
+                self.as_of_trading_date is None
+                or self.valid_for_trading_date is None
+                or self.valid_for_trading_date <= self.as_of_trading_date
+            ):
+                raise SwingStrategyError("trial candidate requires a future valid date")
+        elif self.valid_for_trading_date is not None:
+            raise SwingStrategyError("valid_for_trading_date requires trial candidate")
+        if (
+            self.state in (SwingState.ADD_CANDIDATE, SwingState.REDUCE_CANDIDATE)
+            and self.planned_shares <= 0
+        ):
+            raise SwingStrategyError("add and reduce candidates require positive shares")
+        if self.state is SwingState.ADD_CANDIDATE and planned_stop is None:
+            raise SwingStrategyError("add candidate requires a protective stop")
+        if (
+            self.state is SwingState.REDUCE_CANDIDATE
+            and first_reduce_price is None
+        ):
+            raise SwingStrategyError("reduce candidate requires a reduction price")
         object.__setattr__(self, "planned_entry_low", entry_low)
         object.__setattr__(self, "planned_entry_high", entry_high)
         object.__setattr__(self, "planned_stop", planned_stop)
@@ -292,6 +327,30 @@ class SwingDecision:
         object.__setattr__(
             self, "blocked_reasons", _blocked_reason_tuple(self.blocked_reasons),
         )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a complete JSON-safe representation of this formal decision."""
+        return {
+            "symbol": self.symbol,
+            "strategy_version": self.strategy_version,
+            "as_of_trading_date": (
+                self.as_of_trading_date.isoformat()
+                if self.as_of_trading_date is not None else None
+            ),
+            "state": self.state.value,
+            "evidence": dict(self.evidence),
+            "blocked_reasons": list(self.blocked_reasons),
+            "planned_entry_low": self.planned_entry_low,
+            "planned_entry_high": self.planned_entry_high,
+            "planned_stop": self.planned_stop,
+            "planned_shares": self.planned_shares,
+            "planned_risk_rate": self.planned_risk_rate,
+            "first_reduce_price": self.first_reduce_price,
+            "valid_for_trading_date": (
+                self.valid_for_trading_date.isoformat()
+                if self.valid_for_trading_date is not None else None
+            ),
+        }
 
 
 @dataclass(frozen=True)
@@ -321,9 +380,46 @@ class IntradayDecision:
             raise SwingStrategyError("planned entry bounds must both be present")
         if low is not None and high is not None and low > high:
             raise SwingStrategyError("planned_entry_low must not exceed high")
+        immutable_evidence = _immutable_evidence(self.evidence)
+        if self.overlay is IntradayOverlay.PREDEFINED_STOP_TOUCHED and (
+            normalized["price"] is None or normalized["planned_stop"] is None
+        ):
+            raise SwingStrategyError("stop-touch overlay requires price and stop")
+        if (
+            self.overlay is IntradayOverlay.PREDEFINED_STOP_TOUCHED
+            and normalized["price"] > normalized["planned_stop"]
+        ):
+            raise SwingStrategyError("stop-touch price must be at or below stop")
+        if self.overlay is IntradayOverlay.APPROACHING_ENTRY_ZONE and (
+            normalized["price"] is None or low is None or high is None
+        ):
+            raise SwingStrategyError("entry-zone overlay requires price and bounds")
+        supplied_proximity = immutable_evidence.get("entry_proximity")
+        proximity = (
+            _finite_number(supplied_proximity, "entry_proximity")
+            if supplied_proximity is not None
+            else 0.0
+        )
+        if (
+            self.overlay is IntradayOverlay.APPROACHING_ENTRY_ZONE
+            and not low - proximity <= normalized["price"] <= high + proximity
+        ):
+            raise SwingStrategyError("entry-zone price must be near the bounds")
         for field, value in normalized.items():
             object.__setattr__(self, field, value)
-        object.__setattr__(self, "evidence", _immutable_evidence(self.evidence))
+        object.__setattr__(self, "evidence", immutable_evidence)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a complete JSON-safe representation of this intraday overlay."""
+        return {
+            "formal_state": self.formal_state.value,
+            "overlay": self.overlay.value,
+            "price": self.price,
+            "planned_entry_low": self.planned_entry_low,
+            "planned_entry_high": self.planned_entry_high,
+            "planned_stop": self.planned_stop,
+            "evidence": dict(self.evidence),
+        }
 
 
 @dataclass(frozen=True)
@@ -533,6 +629,19 @@ def _cap_allows_one_lot(shares: float, lot_size: int) -> bool:
     return _lot_floor(shares, lot_size) >= lot_size
 
 
+def _add_trade_risk_cap_shares(
+    remaining_trade_risk: float,
+    incremental_risk_per_share: float,
+    zero_incremental_fallback: float,
+) -> float:
+    """Cap an add even when its incremental stop risk rounds to zero."""
+    if remaining_trade_risk <= 0.0:
+        return 0.0
+    if incremental_risk_per_share > 0.0:
+        return remaining_trade_risk / incremental_risk_per_share
+    return zero_incremental_fallback
+
+
 def _entry_sizing(
     metrics: _Metrics,
     config: SwingStrategyConfig,
@@ -612,16 +721,10 @@ def _entry_sizing(
         ),
         "minimum_lot_ok": selected >= portfolio.lot_size,
         "health_gates_ok": not _health_reasons(portfolio),
-        "entry_hard_gates_ok": not reasons,
+        "entry_sizing_gates_ok": not reasons,
+        "entry_hard_gates_ok": False,
     }
     return selected, planned_risk_rate, evidence, tuple(dict.fromkeys(reasons))
-
-
-def _next_weekday(value: date) -> date:
-    candidate = value + timedelta(days=1)
-    while candidate.weekday() >= 5:
-        candidate += timedelta(days=1)
-    return candidate
 
 
 def _base_evidence(
@@ -674,10 +777,16 @@ def _base_evidence(
         "ledger_healthy": portfolio.ledger_healthy,
         "tradable": portfolio.tradable,
         "health_gates_ok": not _health_reasons(portfolio),
+        "entry_sizing_gates_ok": False,
         "entry_hard_gates_ok": False,
-        "calendar_fallback_used": False,
+        "calendar_unavailable": portfolio.next_trading_date is None,
+        "calendar_validity_ok": (
+            portfolio.next_trading_date is not None
+            and portfolio.next_trading_date > latest.trading_date
+        ),
         "invalid_next_trading_date": False,
         "cooldown_sessions_elapsed": 0,
+        "cooldown_ok": portfolio.last_stop_trading_date is None,
         "exit_two_closes_below_ma20": False,
         "exit_close_below_ma60": False,
         "exit_trailing_stop": False,
@@ -722,10 +831,18 @@ def _position_decision(
     latest = bars[-1]
     previous = bars[-2]
     available_since_entry = tuple(
-        bar.close for bar in bars if bar.trading_date >= position.entry_trading_date
+        bar.adjusted_close
+        for bar in bars
+        if bar.trading_date >= position.entry_trading_date
     )
-    highest = max((position.highest_completed_close, *available_since_entry))
-    trailing_stop = highest - _product(config.trailing_stop_atr, metrics.atr_raw)
+    highest_adjusted = max((
+        position.highest_completed_adjusted_close,
+        *available_since_entry,
+    ))
+    highest_raw_mapped = _product(highest_adjusted, metrics.raw_scale)
+    trailing_stop = (
+        highest_raw_mapped - _product(config.trailing_stop_atr, metrics.atr_raw)
+    )
     protective_stop = max(position.hard_stop, trailing_stop)
     position_risk_per_share = max(0.0, latest.close - protective_stop)
     position_risk_amount = _product(position.shares, position_risk_per_share)
@@ -738,7 +855,11 @@ def _position_decision(
     trailing_exit = latest.close <= trailing_stop
     hard_exit = latest.close <= position.hard_stop
     evidence.update({
-        "highest_completed_close_raw": highest,
+        "position_high_watermark_adjusted_close": (
+            position.highest_completed_adjusted_close
+        ),
+        "highest_completed_adjusted_close": highest_adjusted,
+        "highest_completed_raw_close_mapped": highest_raw_mapped,
         "trailing_stop_raw": trailing_stop,
         "hard_stop_raw": position.hard_stop,
         "protective_stop_raw": protective_stop,
@@ -814,11 +935,13 @@ def _position_decision(
         ),
         "prior_breakout_high_adjusted": prior_breakout_high,
     })
-    blocked: list[str] = list(health_reasons)
+    reduce_reasons: list[str] = []
     if reduce_profit_ok and not reduce_quantity_ok:
-        blocked.extend(("reduce_quantity_below_lot", "minimum_lot"))
+        reduce_reasons.extend(("reduce_quantity_below_lot", "minimum_lot"))
     if reduce_profit_ok and health_reasons:
-        blocked.append("reduce_health_gate")
+        reduce_reasons.extend((*health_reasons, "reduce_health_gate"))
+
+    add_reasons: list[str] = list(health_reasons)
 
     if add_profit_ok and add_breakout_ok and add_stop_ok:
         entry = latest.close
@@ -848,10 +971,10 @@ def _position_decision(
             if per_share_add_risk > 0.0
             else max(cash_cap, symbol_cap, total_cap)
         )
-        trade_risk_cap = (
-            trade_risk_room / per_share_add_risk
-            if per_share_add_risk > 0.0
-            else max(cash_cap, symbol_cap, total_cap)
+        trade_risk_cap = _add_trade_risk_cap_shares(
+            trade_risk_room,
+            per_share_add_risk,
+            max(cash_cap, symbol_cap, total_cap),
         )
         add_caps = {
             "cash_cap_shares": cash_cap,
@@ -879,7 +1002,7 @@ def _position_decision(
         }
         for key, value in add_caps.items():
             if not _cap_allows_one_lot(value, portfolio.lot_size):
-                blocked.append(reason_names[key])
+                add_reasons.append(reason_names[key])
         evidence["cash_cap_ok"] = _cap_allows_one_lot(
             cash_cap, portfolio.lot_size,
         )
@@ -896,8 +1019,8 @@ def _position_decision(
             risk_cap, portfolio.lot_size,
         )
         if add_shares < portfolio.lot_size:
-            blocked.append("minimum_lot")
-        if not blocked:
+            add_reasons.append("minimum_lot")
+        if not add_reasons:
             risk_rate = (
                 position_risk_amount + add_shares * per_share_add_risk
             ) / portfolio.equity
@@ -912,7 +1035,7 @@ def _position_decision(
     return SwingDecision(
         **common,
         state=SwingState.HOLDING,
-        blocked_reasons=tuple(dict.fromkeys(blocked)),
+        blocked_reasons=tuple(dict.fromkeys((*reduce_reasons, *add_reasons))),
         planned_shares=0,
     )
 
@@ -1001,6 +1124,20 @@ def evaluate_swing(
             count=len(normalized), as_of=as_of, detail=_safe_error_text(error),
         )
 
+    calendar_reason: str | None = None
+    if portfolio.next_trading_date is None:
+        calendar_reason = "calendar_unavailable"
+        evidence["calendar_unavailable"] = True
+        evidence["calendar_validity_ok"] = False
+    elif portfolio.next_trading_date <= latest.trading_date:
+        calendar_reason = "invalid_next_trading_date"
+        evidence["calendar_unavailable"] = False
+        evidence["invalid_next_trading_date"] = True
+        evidence["calendar_validity_ok"] = False
+    else:
+        evidence["calendar_unavailable"] = False
+        evidence["calendar_validity_ok"] = True
+
     if portfolio.last_stop_trading_date is not None:
         elapsed = sum(
             bar.trading_date > portfolio.last_stop_trading_date
@@ -1008,6 +1145,8 @@ def evaluate_swing(
         )
         evidence["cooldown_sessions_elapsed"] = elapsed
         if elapsed <= config.cooldown_days:
+            evidence["cooldown_ok"] = False
+            evidence["entry_hard_gates_ok"] = False
             return SwingDecision(
                 symbol=symbol,
                 strategy_version=config.strategy_version,
@@ -1023,6 +1162,12 @@ def evaluate_swing(
                 first_reduce_price=metrics.first_reduce_price,
                 valid_for_trading_date=None,
             )
+    evidence["cooldown_ok"] = True
+    evidence["entry_hard_gates_ok"] = bool(
+        evidence["entry_sizing_gates_ok"]
+        and evidence["cooldown_ok"]
+        and evidence["calendar_validity_ok"]
+    )
 
     trend = bool(
         evidence["trend_close_above_ma60"]
@@ -1058,33 +1203,24 @@ def evaluate_swing(
     pullback = bool(
         evidence["pullback_low_touched"] or evidence["pullback_distance_ok"]
     )
-    if technical_trial and not sizing_reasons and sizing_shares >= portfolio.lot_size:
-        valid_for = portfolio.next_trading_date
-        if valid_for is not None and valid_for <= latest.trading_date:
-            evidence["invalid_next_trading_date"] = True
-            return SwingDecision(
-                **common,
-                state=(
-                    SwingState.PULLBACK_WATCH
-                    if pullback else SwingState.UPTREND_WATCH
-                ),
-                blocked_reasons=("invalid_next_trading_date",),
-                planned_shares=0,
-                planned_risk_rate=0.0,
-                valid_for_trading_date=None,
-            )
-        if valid_for is None:
-            valid_for = _next_weekday(latest.trading_date)
-            evidence["calendar_fallback_used"] = True
+    candidate_reasons = tuple(dict.fromkeys((
+        *sizing_reasons,
+        *((calendar_reason,) if calendar_reason is not None else ()),
+    )))
+    if (
+        technical_trial
+        and not candidate_reasons
+        and sizing_shares >= portfolio.lot_size
+    ):
         return SwingDecision(
             **common,
             state=SwingState.TRIAL_ENTRY_CANDIDATE,
             blocked_reasons=(),
             planned_shares=sizing_shares,
             planned_risk_rate=risk_rate,
-            valid_for_trading_date=valid_for,
+            valid_for_trading_date=portfolio.next_trading_date,
         )
-    blocked_reasons = sizing_reasons if technical_trial else ()
+    blocked_reasons = candidate_reasons if technical_trial else ()
     return SwingDecision(
         **common,
         state=SwingState.PULLBACK_WATCH if pullback else SwingState.UPTREND_WATCH,

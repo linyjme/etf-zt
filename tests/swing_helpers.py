@@ -265,3 +265,36 @@ def replace_adjusted_bar(
         following_payload["previous_close"] = adjusted_close * scale
         updated[resolved_index + 1] = DailyBar.from_mapping(following_payload)
     return tuple(updated)
+
+
+def with_raw_scales(
+    bars: Sequence[DailyBar],
+    scales: Sequence[float],
+) -> tuple[DailyBar, ...]:
+    """Map adjusted OHLC to deterministic per-bar raw corporate-action scales."""
+    if len(bars) != len(scales):
+        raise ValueError("bars and scales must have equal lengths")
+    result: list[DailyBar] = []
+    previous_raw_close: float | None = None
+    for bar, scale in zip(bars, scales, strict=True):
+        if type(scale) not in (int, float) or not float(scale) > 0.0:
+            raise ValueError("raw scales must be positive numbers")
+        raw_scale = float(scale)
+        original_scale = bar.close / bar.adjusted_close
+        payload = bar.to_dict()
+        payload.update({
+            "open": bar.adjusted_open * raw_scale,
+            "high": bar.adjusted_high * raw_scale,
+            "low": bar.adjusted_low * raw_scale,
+            "close": bar.adjusted_close * raw_scale,
+            "previous_close": (
+                bar.previous_close / original_scale * raw_scale
+                if previous_raw_close is None
+                else previous_raw_close
+            ),
+            "amount": bar.adjusted_close * raw_scale * bar.volume,
+        })
+        normalized = DailyBar.from_mapping(payload)
+        result.append(normalized)
+        previous_raw_close = normalized.close
+    return tuple(result)
