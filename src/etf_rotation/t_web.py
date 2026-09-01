@@ -249,32 +249,53 @@ class MonitorApplication:
     def refresh_once(self) -> bool:
         return self._refresh_once(generation=None)
 
-    def _has_complete_current_day(self, now: datetime) -> bool:
-        trading_date = now.astimezone(SHANGHAI).date().isoformat()
+    def _has_complete_current_day(
+        self,
+        now: datetime,
+        enabled: Sequence[str],
+        session_phase: str,
+    ) -> bool:
+        local = now.astimezone(SHANGHAI)
+        endpoint = local.replace(
+            hour=11 if session_phase == "LUNCH_BREAK" else 15,
+            minute=30 if session_phase == "LUNCH_BREAK" else 0,
+            second=0,
+            microsecond=0,
+        )
+        items = {
+            str(item.get("symbol", "")): item
+            for item in self.snapshot().get("items", [])
+        }
+        for symbol in enabled:
+            item = items.get(symbol)
+            if item is None or item.get("status") != "OK":
+                return False
+            try:
+                timestamp = datetime.fromisoformat(str(item.get("timestamp", "")))
+            except ValueError:
+                return False
+            if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                return False
+            completed_at = timestamp.astimezone(SHANGHAI)
+            if completed_at.date() != local.date() or completed_at < endpoint:
+                return False
+        return True
+
+    def collection_due(self) -> bool:
+        now = self.clock()
         enabled = tuple(
             item.symbol for item in load_watchlist(self.watchlist_path) if item.enabled
         )
         if not enabled:
             return False
-        items = {
-            str(item.get("symbol", "")): item
-            for item in self.snapshot().get("items", [])
-        }
-        return all(
-            symbol in items
-            and items[symbol].get("status") == "OK"
-            and str(items[symbol].get("timestamp", "")).startswith(trading_date)
-            for symbol in enabled
-        )
-
-    def collection_due(self) -> bool:
-        now = self.clock()
         session = market_session_state(
             now, closed_dates=self.health_classifier.closed_dates,
         )
         if session.active:
             return True
-        return session.catch_up_allowed and not self._has_complete_current_day(now)
+        return session.catch_up_allowed and not self._has_complete_current_day(
+            now, enabled, session.phase,
+        )
 
     def refresh_delay(self, failure_count: int) -> float:
         exponent = max(0, int(failure_count) - 1)
@@ -396,7 +417,9 @@ class MonitorApplication:
                 if self._refresh_thread is thread:
                     self._refresh_thread = None
 
-    def _bootstrap(self, *, increment_revision: bool) -> None:
+    def _bootstrap(
+        self, *, increment_revision: bool, now: datetime | None = None,
+    ) -> None:
         watchlist = load_watchlist(self.watchlist_path)
         error: str | None = None
         try:
@@ -412,7 +435,7 @@ class MonitorApplication:
                 self._validate_quotes(all_quotes, self.metadata_store.load())
             except (ValueError, OSError) as failure:
                 error = str(failure)
-        now = self.clock()
+        now = self.clock() if now is None else now
         quotes = self._quotes_for_now(all_quotes, now)
         health = self._health_by_symbol(quotes, now, error)
         published = snapshot_to_dict(self.engine.evaluate(
@@ -674,9 +697,13 @@ class MonitorApplication:
             self._publish_condition.notify_all()
 
     def _publish_outage(
-        self, message: str, watchlist: Sequence[WatchItem] | None = None,
+        self,
+        message: str,
+        watchlist: Sequence[WatchItem] | None = None,
+        *,
+        now: datetime | None = None,
     ) -> None:
-        now = self.clock()
+        now = self.clock() if now is None else now
         with self._publish_condition:
             self._revision += 1
             previous = self._published
@@ -735,13 +762,14 @@ class MonitorApplication:
             self._publish_condition.notify_all()
 
     def _publish_collection_failure(self, message: str) -> None:
+        now = self.clock()
         session = market_session_state(
-            self.clock(), closed_dates=self.health_classifier.closed_dates,
+            now, closed_dates=self.health_classifier.closed_dates,
         )
         if session.active:
-            self._publish_outage(message)
+            self._publish_outage(message, now=now)
         else:
-            self._bootstrap(increment_revision=True)
+            self._bootstrap(increment_revision=True, now=now)
 
     def valuation(self, symbol: str) -> dict[str, Any]:
         metadata = EtfMetadataStore(self.metadata_path).get(symbol) if self.metadata_path else None

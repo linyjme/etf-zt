@@ -83,6 +83,25 @@ def quote_payload_for_date(value: date | str) -> dict[str, object]:
     return payload
 
 
+def quote_payload_ending_at(
+    value: date | str, ending_at: str,
+) -> dict[str, object]:
+    payload = quote_payload_for_date(value)
+    quote = payload["quotes"][0]
+    latest = datetime.fromisoformat(quote["timestamp"])
+    hour, minute = (int(part) for part in ending_at.split(":"))
+    target = latest.replace(hour=hour, minute=minute)
+    offset = target - latest
+    for field in ("timestamp", "observed_at"):
+        quote[field] = (datetime.fromisoformat(quote[field]) + offset).isoformat()
+    for point in quote["points"]:
+        point["timestamp"] = (
+            datetime.fromisoformat(point["timestamp"]) + offset
+        ).isoformat()
+    payload["collected_at"] = quote["observed_at"]
+    return payload
+
+
 def mixed_health_quote_payload() -> dict[str, object]:
     payload = valid_completed_quote_payload()
     stale = copy.deepcopy(payload["quotes"][0])
@@ -201,6 +220,17 @@ class ObservableWaitEvent:
         self.waits.append(timeout)
         self.wait_entered.set()
         return self._event.wait(timeout)
+
+
+class SequenceClock:
+    def __init__(self, *values: str):
+        self.values = [datetime.fromisoformat(value) for value in values]
+        self.calls = 0
+
+    def __call__(self) -> datetime:
+        index = min(self.calls, len(self.values) - 1)
+        self.calls += 1
+        return self.values[index]
 
 
 class FailingStore:
@@ -421,7 +451,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(collector.calls, 1)
 
     def test_closed_session_with_complete_current_day_never_collects(self) -> None:
-        payload = quote_payload_for_date("2026-08-28")
+        payload = quote_payload_ending_at("2026-08-28", "15:00")
         self.paths.quotes.write_text(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8",
         )
@@ -438,21 +468,92 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(collector.calls, 0)
 
     def test_closed_session_without_current_day_data_catches_up_once(self) -> None:
-        payload = quote_payload_for_date("2026-08-28")
+        payload = quote_payload_ending_at("2026-08-28", "15:00")
         collector = StaticCollector(payload)
         app = self.make_runtime_fixture(collector)
         app.clock = lambda: datetime.fromisoformat("2026-08-28T15:10:00+08:00")
 
         self.assertTrue(app.collection_due())
         app.start_refresh()
-        for _ in range(50):
-            if collector.calls == 1:
-                break
-            threading.Event().wait(0.01)
+        revision = app.wait_for_revision(0, timeout=1.0)
         app.stop_refresh()
 
+        self.assertIsNotNone(revision)
         self.assertEqual(collector.calls, 1)
         self.assertFalse(app.collection_due())
+
+    def test_lunch_catch_up_requires_the_morning_session_endpoint(self) -> None:
+        for ending_at, expected_due in (("11:29", True), ("11:30", False)):
+            with self.subTest(ending_at=ending_at):
+                payload = quote_payload_ending_at("2026-08-28", ending_at)
+                self.paths.quotes.write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+                )
+                app = self.make_runtime_fixture(StaticCollector(payload))
+                app.clock = lambda: datetime.fromisoformat(
+                    "2026-08-28T12:00:00+08:00"
+                )
+                app._bootstrap(increment_revision=True)
+
+                self.assertEqual(app.collection_due(), expected_due)
+
+    def test_close_catch_up_requires_the_afternoon_session_endpoint(self) -> None:
+        cases = (("11:30", True), ("14:59", True), ("15:00", False))
+        for ending_at, expected_due in cases:
+            with self.subTest(ending_at=ending_at):
+                payload = quote_payload_ending_at("2026-08-28", ending_at)
+                self.paths.quotes.write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+                )
+                app = self.make_runtime_fixture(StaticCollector(payload))
+                app.clock = lambda: datetime.fromisoformat(
+                    "2026-08-28T15:10:00+08:00"
+                )
+                app._bootstrap(increment_revision=True)
+
+                self.assertEqual(app.collection_due(), expected_due)
+
+    def test_invalid_or_naive_completion_timestamp_is_not_complete(self) -> None:
+        payload = quote_payload_ending_at("2026-08-28", "15:00")
+        self.paths.quotes.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+        )
+        app = self.make_runtime_fixture(StaticCollector(payload))
+        app.clock = lambda: datetime.fromisoformat("2026-08-28T15:10:00+08:00")
+        app._bootstrap(increment_revision=True)
+
+        for timestamp in ("not-a-time", "2026-08-28T15:00:00"):
+            with self.subTest(timestamp=timestamp):
+                with app._publish_condition:
+                    app._published["items"][0]["timestamp"] = timestamp
+                self.assertTrue(app.collection_due())
+
+    def test_empty_or_disabled_watchlist_never_collects(self) -> None:
+        cases = (
+            ("2026-08-28T10:02:00+08:00", {"watchlist": []}),
+            ("2026-08-28T15:10:00+08:00", {"watchlist": [{
+                "symbol": "510300", "name": "ETF", "grid_width_pct": 0.002,
+                "enabled": False,
+            }]}),
+        )
+        for current_time, watchlist in cases:
+            with self.subTest(current_time=current_time):
+                self.paths.watchlist.write_text(
+                    json.dumps(watchlist), encoding="utf-8",
+                )
+                collector = StaticCollector(valid_completed_quote_payload())
+                app = self.make_runtime_fixture(collector)
+                app.clock = lambda value=current_time: datetime.fromisoformat(value)
+                wait_event = ObservableWaitEvent()
+                app._stop_event = wait_event
+
+                self.assertFalse(app.collection_due())
+                app.start_refresh()
+                try:
+                    self.assertTrue(wait_event.wait_entered.wait(0.5))
+                finally:
+                    app.stop_refresh()
+                self.assertEqual(collector.calls, 0)
 
     def test_weekend_without_current_day_data_never_collects(self) -> None:
         collector = StaticCollector(quote_payload_for_date("2026-08-29"))
@@ -488,6 +589,37 @@ class RuntimeTests(unittest.TestCase):
                 snapshot = app.snapshot()
                 self.assertEqual(snapshot["items"][0]["health_status"], health_status)
                 self.assertEqual(snapshot["errors"], errors)
+
+    def test_collection_failure_uses_one_completion_time_across_boundaries(self) -> None:
+        cases = (
+            (
+                quote_payload_ending_at("2026-08-28", "11:30"),
+                ("2026-08-28T12:59:59+08:00", "2026-08-28T13:00:00+08:00"),
+                "LUNCH_BREAK",
+            ),
+            (
+                quote_payload_ending_at("2026-08-28", "15:00"),
+                ("2026-08-28T15:00:00+08:00", "2026-08-28T15:00:01+08:00"),
+                "OUTAGE",
+            ),
+        )
+        for payload, clock_values, expected_health in cases:
+            with self.subTest(clock_values=clock_values):
+                self.paths.quotes.write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+                )
+                app = self.make_runtime_fixture(FailingCollector("采集失败"))
+                clock = SequenceClock(*clock_values)
+                app.clock = clock
+
+                app._publish_collection_failure("采集失败")
+
+                snapshot = app.snapshot()
+                self.assertEqual(snapshot["generated_at"], clock_values[0])
+                self.assertEqual(
+                    snapshot["items"][0]["health_status"], expected_health,
+                )
+                self.assertEqual(clock.calls, 1)
 
     def test_refresh_delay_is_bounded_and_success_resets_loop_backoff(self) -> None:
         app = self.make_runtime_fixture()
