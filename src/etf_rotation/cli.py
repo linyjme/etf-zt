@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 from typing import Sequence
 
+from . import constants
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_ROOT = PROJECT_ROOT / "var" / "monitor"
@@ -23,7 +25,11 @@ def _parser() -> argparse.ArgumentParser:
     monitor.add_argument("--calendar", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "market_calendar.json")
     monitor.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "localhost"))
     monitor.add_argument("--port", type=int, default=8765)
-    monitor.add_argument("--refresh-interval", type=float, default=5.0)
+    monitor.add_argument(
+        "--refresh-interval",
+        type=float,
+        default=constants.DEFAULT_REFRESH_INTERVAL_SECONDS,
+    )
     monitor.add_argument("--no-collect", action="store_true")
     rebuild = commands.add_parser("rebuild-history")
     rebuild.add_argument("--input", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "quotes.json")

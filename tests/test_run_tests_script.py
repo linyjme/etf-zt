@@ -7,6 +7,13 @@ import unittest
 
 
 class RunTestsScriptTests(unittest.TestCase):
+    def test_start_monitor_uses_one_minute_refresh_interval(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1] / "scripts" / "start-monitor.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("'--refresh-interval', '60'", script)
+        self.assertNotIn("'--refresh-interval', '5'", script)
+
     def test_start_monitor_probes_compatible_runtime_before_writing_pid(self) -> None:
         script = (
             Path(__file__).resolve().parents[1] / "scripts" / "start-monitor.ps1"

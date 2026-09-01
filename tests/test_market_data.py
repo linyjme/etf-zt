@@ -51,6 +51,10 @@ TRADING = TradingMetadata("SSE", "DOMESTIC_EQUITY_ETF", False, 1, 100, 0.001, 0.
 
 
 class CliPathTests(unittest.TestCase):
+    def test_monitor_defaults_to_one_minute_refresh_interval(self) -> None:
+        arguments = _parser().parse_args(["monitor", "--no-collect"])
+        self.assertEqual(arguments.refresh_interval, 60.0)
+
     def test_runtime_defaults_are_outside_tracked_configuration(self) -> None:
         arguments = _parser().parse_args(["monitor", "--no-collect"])
         self.assertEqual(arguments.quotes, RUNTIME_ROOT / "quotes.json")

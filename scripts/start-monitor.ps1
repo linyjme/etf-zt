@@ -47,7 +47,7 @@ $arguments = @($pythonArguments) + @(
     '--metadata', (Join-Path $projectRoot 'data\monitor\etf_metadata.json'),
     '--valuation', (Join-Path $projectRoot 'data\monitor\valuation.json'),
     '--calendar', (Join-Path $projectRoot 'data\monitor\market_calendar.json'),
-    '--refresh-interval', '5',
+    '--refresh-interval', '60',
     '--host', '127.0.0.1',
     '--port', '8765'
 )
