@@ -701,7 +701,7 @@ class DailyHistoryStore:
                 raise SwingDataError(f"日线历史第{line_number}行为空")
             try:
                 value = json.loads(line)
-            except (json.JSONDecodeError, RecursionError) as error:
+            except (ValueError, RecursionError) as error:
                 raise SwingDataError(f"日线历史第{line_number}行JSON无效") from error
             if type(value) is not dict:
                 raise SwingDataError(f"日线历史第{line_number}行必须是对象")

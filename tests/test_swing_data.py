@@ -914,6 +914,17 @@ class DailyHistoryStoreTests(unittest.TestCase):
         nested = b'{"nested":' + (b"[" * 10_000) + b"0" + (b"]" * 10_000) + b"}\n"
         self.assert_history_rejected_without_rewrite(nested)
 
+    def test_json_integer_digit_limit_value_error_is_wrapped_without_rewriting(self) -> None:
+        oversized_integer = b'{"schema_version":' + (b"9" * 10_001) + b"}\n"
+        self.path.write_bytes(oversized_integer)
+
+        for operation in (self.store.load, lambda: self.store.upsert((self.bar(),))):
+            with self.assertRaises(SwingDataError) as raised:
+                operation()
+            self.assertIn("JSON", str(raised.exception))
+            self.assertIs(type(raised.exception.__cause__), ValueError)
+            self.assertEqual(self.path.read_bytes(), oversized_integer)
+
     def test_round_trip_load_validates_every_line(self) -> None:
         records = self.store.upsert((
             self.bar("510300", "2026-08-27", close=10.0),
