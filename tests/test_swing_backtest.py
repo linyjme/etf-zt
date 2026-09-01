@@ -13,9 +13,15 @@ from etf_rotation.swing_backtest import (
     BacktestAccount,
     SwingBacktestError,
     SwingBacktester,
+    strategy_lookback,
 )
 from etf_rotation.swing_config import load_strategy
-from etf_rotation.swing_strategy import SwingDecision, SwingState
+from etf_rotation.swing_strategy import (
+    PortfolioContext,
+    SwingDecision,
+    SwingState,
+    evaluate_swing,
+)
 from tests.swing_helpers import swing_strategy_bars, with_raw_scales
 
 
@@ -29,6 +35,8 @@ def _decision(
     *,
     shares: int = 1_000,
     stop: float | None = 90.0,
+    entry_low: float = 1.0,
+    entry_high: float = 1_000_000.0,
     evidence: dict[str, object] | None = None,
 ) -> SwingDecision:
     action_states = {
@@ -46,8 +54,12 @@ def _decision(
         state=state,
         evidence={} if evidence is None else evidence,
         blocked_reasons=(),
-        planned_entry_low=95.0 if state is SwingState.TRIAL_ENTRY_CANDIDATE else None,
-        planned_entry_high=105.0 if state is SwingState.TRIAL_ENTRY_CANDIDATE else None,
+        planned_entry_low=(
+            entry_low if state is SwingState.TRIAL_ENTRY_CANDIDATE else None
+        ),
+        planned_entry_high=(
+            entry_high if state is SwingState.TRIAL_ENTRY_CANDIDATE else None
+        ),
         planned_stop=stop,
         planned_shares=shares,
         planned_risk_rate=0.01,
@@ -77,15 +89,18 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         bars = swing_strategy_bars(72, pattern="pullback_reclaim", raw_scale=0.0472)
         first_execution = bars[self.config.minimum_daily_bars]
         seen_lengths: list[int] = []
+        calls = 0
 
         def evaluate(signal_bars, config, context):
+            nonlocal calls
+            calls += 1
             seen_lengths.append(len(signal_bars))
-            if len(signal_bars) == self.config.minimum_daily_bars:
+            if calls == 1:
                 return _decision(
                     SwingState.TRIAL_ENTRY_CANDIDATE,
                     signal_bars[-1].trading_date,
                     first_execution.trading_date,
-                    shares=100,
+                    shares=100, stop=4.0,
                 )
             return _decision(
                 SwingState.HOLDING,
@@ -102,7 +117,7 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         self.assertEqual(trade.execution_date, bars[70].trading_date)
         self.assertEqual(trade.raw_reference_price, bars[70].open)
         self.assertGreater(trade.fill_price, trade.raw_reference_price)
-        self.assertEqual(seen_lengths, [70, 71])
+        self.assertEqual(seen_lengths, [70, 70])
         self.assertEqual(len(bars), 72)
 
     def test_gap_below_stop_uses_executable_open_not_ideal_stop(self) -> None:
@@ -116,12 +131,15 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         )
         bars[72] = replace(bars[72], previous_close=100.0)
         states = [SwingState.TRIAL_ENTRY_CANDIDATE, SwingState.HOLDING]
+        calls = 0
 
         def evaluate(signal_bars, config, context):
+            nonlocal calls
+            calls += 1
             state = states.pop(0) if states else SwingState.TREND_BLOCKED
             return _decision(
                 state, signal_bars[-1].trading_date,
-                bars[len(signal_bars)].trading_date,
+                bars[69 + calls].trading_date,
                 shares=100, stop=99.0,
             )
 
@@ -157,6 +175,94 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         self.assertEqual(fill.reason, "STOP_EXIT")
         self.assertEqual(account.context().last_stop_trading_date,
                          bars[2].trading_date)
+
+    def test_intraday_stop_touch_executes_at_stop_not_better_open(self) -> None:
+        bars = swing_strategy_bars(3, pattern="rising")
+        account = BacktestAccount(100_000.0, self.trading, self.config)
+        account.execute(
+            _decision(SwingState.TRIAL_ENTRY_CANDIDATE,
+                      bars[0].trading_date, bars[1].trading_date,
+                      shares=100, stop=90.0),
+            bars[1], execution_index=1,
+        )
+        account.mark(bars[1], 1)
+        touched = replace(
+            bars[2], open=105.0, high=106.0, low=98.0, close=104.0,
+            adjusted_open=105.0, adjusted_high=106.0,
+            adjusted_low=98.0, adjusted_close=104.0,
+        )
+
+        self.assertTrue(account.execute_protective_stop(
+            _decision(SwingState.HOLDING, bars[1].trading_date,
+                      bars[2].trading_date, stop=99.0),
+            touched, execution_index=2,
+        ))
+
+        fill = account.trades[-1]
+        self.assertEqual(fill.raw_reference_price, 99.0)
+        self.assertLess(fill.fill_price, 99.0)
+        self.assertEqual(fill.reason, "STOP_EXIT")
+        self.assertGreater(fill.spread_cost, 0.0)
+        self.assertGreater(fill.slippage, 0.0)
+
+    def test_entry_gap_below_stop_and_above_zone_are_rejected(self) -> None:
+        bars = swing_strategy_bars(2, pattern="rising")
+        invalidated = replace(
+            bars[1], open=89.0, high=91.0, low=88.0, close=90.0,
+            adjusted_open=89.0, adjusted_high=91.0,
+            adjusted_low=88.0, adjusted_close=90.0,
+        )
+        account = BacktestAccount(100_000.0, self.trading, self.config)
+        self.assertIsNone(account.execute(
+            _decision(SwingState.TRIAL_ENTRY_CANDIDATE,
+                      bars[0].trading_date, bars[1].trading_date,
+                      shares=100, stop=90.0),
+            invalidated, execution_index=1,
+        ))
+        self.assertEqual(
+            account.rejections[-1].reason, "ENTRY_INVALIDATED_BY_GAP",
+        )
+        self.assertEqual(account.shares, 0)
+
+        chase = BacktestAccount(100_000.0, self.trading, self.config)
+        self.assertIsNone(chase.execute(
+            _decision(SwingState.TRIAL_ENTRY_CANDIDATE,
+                      bars[0].trading_date, bars[1].trading_date,
+                      shares=100, stop=90.0,
+                      entry_low=95.0, entry_high=99.0),
+            bars[1], execution_index=1,
+        ))
+        self.assertEqual(chase.rejections[-1].reason, "ENTRY_GAP_ABOVE_ZONE")
+        self.assertEqual(chase.shares, 0)
+
+    def test_sell_with_nonpositive_net_proceeds_is_rejected(self) -> None:
+        bars = swing_strategy_bars(3, pattern="rising")
+        account = BacktestAccount(
+            100_000.0, self.trading, self.config,
+            buy_fee_rate=0.0, sell_fee_rate=0.0, minimum_fee=0.0,
+        )
+        account.execute(
+            _decision(SwingState.TRIAL_ENTRY_CANDIDATE,
+                      bars[0].trading_date, bars[1].trading_date,
+                      shares=100),
+            bars[1], execution_index=1,
+        )
+        account.mark(bars[1], 1)
+        prior_cash = account.cash
+        account.minimum_fee = 1_000_000.0
+
+        self.assertIsNone(account.execute(
+            _decision(SwingState.EXIT_CANDIDATE,
+                      bars[1].trading_date, bars[2].trading_date,
+                      shares=100),
+            bars[2], execution_index=2,
+        ))
+        self.assertEqual(
+            account.rejections[-1].reason, "NET_PROCEEDS_NONPOSITIVE",
+        )
+        self.assertEqual(account.shares, 100)
+        self.assertEqual(account.cash, prior_cash)
+        self.assertGreaterEqual(account.cash, 0.0)
 
     def test_protective_gap_respects_t_plus_one_volume_and_limit_lock(self) -> None:
         bars = swing_strategy_bars(3, pattern="rising")
@@ -433,7 +539,7 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
                 return _decision(
                     SwingState.TRIAL_ENTRY_CANDIDATE,
                     signal_bars[-1].trading_date,
-                    bars[len(signal_bars)].trading_date,
+                    bars[69 + calls].trading_date,
                     shares=100,
                 )
             return SwingDecision(
@@ -459,9 +565,12 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
 
     def test_open_position_is_marked_without_fabricating_round_trip(self) -> None:
         bars = swing_strategy_bars(72, pattern="rising")
+        calls = 0
 
         def evaluate(signal_bars, config, context):
-            if len(signal_bars) == 70:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
                 return _decision(SwingState.TRIAL_ENTRY_CANDIDATE,
                                  signal_bars[-1].trading_date,
                                  bars[70].trading_date, shares=100)
@@ -490,7 +599,7 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
                     2: SwingState.EXIT_CANDIDATE,
                 }.get(calls, SwingState.TREND_BLOCKED)
                 return _decision(state, signal_bars[-1].trading_date,
-                                 bars[len(signal_bars)].trading_date,
+                                 bars[69 + calls].trading_date,
                                  shares=100, stop=90.0)
 
             with patch("etf_rotation.swing_backtest.evaluate_swing", side_effect=evaluate):
@@ -535,6 +644,103 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
             self.assertEqual(first.metrics.average_profit, pnl)
             self.assertIsNone(first.metrics.average_loss)
             self.assertEqual(first.metrics.longest_losing_streak, 0)
+
+    def test_strategy_evaluation_uses_bounded_equivalent_window(self) -> None:
+        bars = swing_strategy_bars(800, pattern="rising")
+        limit = strategy_lookback(self.config)
+        seen_lengths: list[int] = []
+
+        def capture(signal_bars, config, context):
+            seen_lengths.append(len(signal_bars))
+            return _decision(
+                SwingState.TREND_BLOCKED,
+                signal_bars[-1].trading_date,
+                signal_bars[-1].trading_date,
+                shares=0,
+            )
+
+        with patch("etf_rotation.swing_backtest.evaluate_swing", side_effect=capture):
+            self.backtester.run_symbol(bars, 100_000.0)
+
+        self.assertEqual(len(seen_lengths), 800 - self.config.minimum_daily_bars)
+        self.assertTrue(seen_lengths)
+        self.assertLessEqual(max(seen_lengths), limit)
+        self.assertEqual(seen_lengths[-1], limit)
+
+        signal_index = 240
+        context = PortfolioContext.empty(
+            100_000.0,
+            lot_size=self.trading.lot_size,
+            next_trading_date=bars[signal_index + 1].trading_date,
+        )
+        full = evaluate_swing(
+            bars[:signal_index + 1], self.config, context,
+        )
+        bounded = evaluate_swing(
+            bars[signal_index + 1 - limit:signal_index + 1],
+            self.config,
+            context,
+        )
+        full_dict = full.to_dict()
+        bounded_dict = bounded.to_dict()
+        full_dict["evidence"].pop("bar_count")
+        bounded_dict["evidence"].pop("bar_count")
+        self.assertEqual(full_dict, bounded_dict)
+
+    def test_spread_cost_is_separate_for_strategy_and_benchmark(self) -> None:
+        bars = swing_strategy_bars(73, pattern="rising")
+
+        def run(half_spread_ticks):
+            calls = 0
+
+            def evaluate(signal_bars, config, context):
+                nonlocal calls
+                calls += 1
+                state = {
+                    1: SwingState.TRIAL_ENTRY_CANDIDATE,
+                    2: SwingState.EXIT_CANDIDATE,
+                }.get(calls, SwingState.TREND_BLOCKED)
+                return _decision(
+                    state,
+                    signal_bars[-1].trading_date,
+                    bars[69 + calls].trading_date,
+                    shares=100,
+                )
+
+            backtester = SwingBacktester(
+                self.config,
+                self.trading,
+                buy_fee_rate=0.0,
+                sell_fee_rate=0.0,
+                minimum_fee=0.0,
+                slippage_rate=0.0,
+                half_spread_ticks=half_spread_ticks,
+            )
+            with patch(
+                "etf_rotation.swing_backtest.evaluate_swing",
+                side_effect=evaluate,
+            ):
+                return backtester.run_symbol(bars, 100_000.0)
+
+        without_spread = run(0.0)
+        with_half_tick_spread = run(0.5)
+        with_spread = run(1.0)
+
+        self.assertEqual(without_spread.metrics.spread_cost, 0.0)
+        self.assertEqual(without_spread.metrics.slippage, 0.0)
+        self.assertEqual(without_spread.benchmark.spread_cost, 0.0)
+        self.assertGreater(with_half_tick_spread.metrics.spread_cost, 0.0)
+        self.assertEqual(with_half_tick_spread.metrics.slippage, 0.0)
+        self.assertGreater(with_half_tick_spread.benchmark.spread_cost, 0.0)
+        self.assertEqual(with_half_tick_spread.benchmark.slippage, 0.0)
+        self.assertGreater(with_spread.metrics.spread_cost, 0.0)
+        self.assertEqual(with_spread.metrics.slippage, 0.0)
+        self.assertGreater(with_spread.benchmark.spread_cost, 0.0)
+        self.assertEqual(with_spread.benchmark.slippage, 0.0)
+        self.assertGreaterEqual(without_spread.benchmark.cash, 0.0)
+        self.assertGreaterEqual(with_spread.benchmark.cash, 0.0)
+        self.assertLess(with_spread.ending_equity, without_spread.ending_equity)
+        self.assertIn('"spread_cost":', with_spread.to_json())
 
     def test_invalid_inputs_are_rejected_without_mutating_sequence(self) -> None:
         bars = list(swing_strategy_bars(72, pattern="rising"))

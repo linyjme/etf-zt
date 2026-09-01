@@ -73,12 +73,76 @@ def _lot_floor(shares: int | float, lot_size: int) -> int:
 
 def _adverse_tick_price(reference: float, rate: float, tick: float, side: str) -> float:
     unrounded = reference * (1.0 + rate if side == "BUY" else 1.0 - rate)
-    ticks = (
-        math.ceil(unrounded / tick - 1e-12)
-        if side == "BUY"
-        else math.floor(unrounded / tick + 1e-12)
-    )
+    quotient = unrounded / tick
+    nearest = round(quotient)
+    if math.isclose(quotient, nearest, rel_tol=0.0, abs_tol=1e-9):
+        ticks = nearest
+    else:
+        ticks = math.ceil(quotient) if side == "BUY" else math.floor(quotient)
     return max(tick, ticks * tick)
+
+
+def _execution_price(
+    reference: float,
+    side: str,
+    *,
+    tick: float,
+    half_spread_ticks: float,
+    slippage_rate: float,
+) -> float:
+    spread_price = reference + (
+        half_spread_ticks * tick if side == "BUY"
+        else -half_spread_ticks * tick
+    )
+    return _adverse_tick_price(spread_price, slippage_rate, tick, side)
+
+
+def _execution_cost_parts(
+    reference: float,
+    fill_price: float,
+    shares: int,
+    side: str,
+    *,
+    tick: float,
+    half_spread_ticks: float,
+) -> tuple[float, float]:
+    adverse_per_share = max(
+        0.0,
+        fill_price - reference if side == "BUY" else reference - fill_price,
+    )
+    spread_per_share = 0.0
+    if half_spread_ticks > 0.0:
+        quoted_spread_price = reference + (
+            half_spread_ticks * tick if side == "BUY"
+            else -half_spread_ticks * tick
+        )
+        spread_fill = _adverse_tick_price(
+            quoted_spread_price, 0.0, tick, side,
+        )
+        effective_spread = max(
+            0.0,
+            spread_fill - reference
+            if side == "BUY" else reference - spread_fill,
+        )
+        spread_per_share = min(adverse_per_share, effective_spread)
+    return (
+        _clean(spread_per_share * shares),
+        _clean(max(0.0, adverse_per_share - spread_per_share) * shares),
+    )
+
+
+def strategy_lookback(config: SwingStrategyConfig) -> int:
+    """Return the bounded completed-bar window sufficient for SWING_V1."""
+    if type(config) is not SwingStrategyConfig:
+        raise SwingBacktestError("config must be SwingStrategyConfig")
+    return max(
+        config.minimum_daily_bars,
+        config.long_ma_days + config.long_ma_slope_lookback,
+        config.atr_days + 1,
+        config.breakout_days + 1,
+        config.cooldown_days + 1,
+        2,
+    )
 
 
 def _validate_trading(trading: TradingMetadata) -> None:
@@ -110,6 +174,7 @@ class SwingFill:
     raw_reference_price: float
     fill_price: float
     fee: float
+    spread_cost: float
     slippage: float
     planned_stop: float | None
     reason: str
@@ -125,6 +190,7 @@ class SwingFill:
             "raw_reference_price": _clean(self.raw_reference_price),
             "fill_price": _clean(self.fill_price),
             "fee": _clean(self.fee),
+            "spread_cost": _clean(self.spread_cost),
             "slippage": _clean(self.slippage),
             "planned_stop": (
                 None if self.planned_stop is None else _clean(self.planned_stop)
@@ -186,6 +252,7 @@ class SwingBacktestMetrics:
     utilization: float
     longest_losing_streak: int | None
     fees: float
+    spread_cost: float
     slippage: float
     rejection_counts: Mapping[str, int]
 
@@ -222,6 +289,7 @@ class SwingBacktestMetrics:
             "utilization": _clean(self.utilization),
             "longest_losing_streak": self.longest_losing_streak,
             "fees": _clean(self.fees),
+            "spread_cost": _clean(self.spread_cost),
             "slippage": _clean(self.slippage),
             "rejection_counts": dict(self.rejection_counts),
         }
@@ -235,6 +303,7 @@ class SwingBenchmarkResult:
     ending_equity: float
     cumulative_return: float
     fee: float
+    spread_cost: float
     slippage: float
 
     def to_dict(self) -> dict[str, object]:
@@ -245,6 +314,7 @@ class SwingBenchmarkResult:
             "ending_equity": _clean(self.ending_equity),
             "cumulative_return": _clean(self.cumulative_return),
             "fee": _clean(self.fee),
+            "spread_cost": _clean(self.spread_cost),
             "slippage": _clean(self.slippage),
         }
 
@@ -331,6 +401,7 @@ class BacktestAccount:
         sell_fee_rate: float = constants.SELL_COMMISSION_RATE,
         minimum_fee: float = constants.MINIMUM_COMMISSION_CNY,
         slippage_rate: float = constants.SLIPPAGE_RATE,
+        half_spread_ticks: float = constants.DEFAULT_HALF_SPREAD_TICKS,
     ) -> None:
         self.initial_cash = _finite(initial_cash, "initial_cash", positive=True)
         _validate_trading(trading)
@@ -342,6 +413,9 @@ class BacktestAccount:
         self.sell_fee_rate = _finite(sell_fee_rate, "sell_fee_rate")
         self.minimum_fee = _finite(minimum_fee, "minimum_fee")
         self.slippage_rate = _finite(slippage_rate, "slippage_rate")
+        self.half_spread_ticks = _finite(
+            half_spread_ticks, "half_spread_ticks",
+        )
         if self.buy_fee_rate > 1 or self.sell_fee_rate > 1 or self.slippage_rate > 1:
             raise SwingBacktestError("rates must not exceed 1")
         self.cash = self.initial_cash
@@ -436,12 +510,24 @@ class BacktestAccount:
         bar: DailyBar,
         *,
         execution_index: int,
+        raw_reference_price: float | None = None,
+        forced_reason: str | None = None,
     ) -> SwingFill | None:
         if type(decision) is not SwingDecision or type(bar) is not DailyBar:
             raise SwingBacktestError("execute requires SwingDecision and DailyBar")
+        if forced_reason is not None and forced_reason not in {
+            "GAP_THROUGH_STOP", "STOP_EXIT",
+        }:
+            raise SwingBacktestError("forced_reason is invalid")
         if decision.state not in _BUY_STATES | _SELL_STATES:
             return None
         side = "BUY" if decision.state in _BUY_STATES else "SELL"
+        reference_price = (
+            bar.open if raw_reference_price is None
+            else _finite(raw_reference_price, "raw_reference_price", positive=True)
+        )
+        if reference_price < bar.low or reference_price > bar.high:
+            raise SwingBacktestError("raw_reference_price must be inside bar range")
         if decision.symbol != bar.symbol:
             self._reject(decision, bar, side, max(decision.planned_shares, 0), "SYMBOL")
             return None
@@ -481,8 +567,12 @@ class BacktestAccount:
             return None
         executable = min(rounded, capacity)
         limit_reason = "VOLUME_PARTICIPATION" if executable < rounded else None
-        fill_price = _adverse_tick_price(
-            bar.open, self.slippage_rate, self.trading.price_tick, side,
+        fill_price = _execution_price(
+            reference_price,
+            side,
+            tick=self.trading.price_tick,
+            half_spread_ticks=self.half_spread_ticks,
+            slippage_rate=self.slippage_rate,
         )
         if not self._is_scale_transition(bar):
             lower_limit = bar.previous_close * (1.0 - self.trading.price_limit_pct)
@@ -495,6 +585,26 @@ class BacktestAccount:
             fill_price = min(fill_price, bar.high)
         else:
             fill_price = max(fill_price, bar.low)
+        execution_stop = self._execution_stop(decision, bar)
+        if side == "BUY":
+            if execution_stop is not None and (
+                reference_price <= execution_stop or fill_price <= execution_stop
+            ):
+                self._reject(
+                    decision, bar, side, requested,
+                    "ENTRY_INVALIDATED_BY_GAP",
+                )
+                return None
+            entry_high = self._execution_entry_high(decision, bar)
+            if (
+                entry_high is not None
+                and reference_price > entry_high + self.trading.price_tick
+            ):
+                self._reject(
+                    decision, bar, side, requested,
+                    "ENTRY_GAP_ABOVE_ZONE",
+                )
+                return None
         if side == "BUY":
             affordable = self._affordable(fill_price)
             if affordable <= 0:
@@ -523,9 +633,24 @@ class BacktestAccount:
         fee_rate = self.buy_fee_rate if side == "BUY" else self.sell_fee_rate
         notional = executable * fill_price
         fee = max(notional * fee_rate, self.minimum_fee)
-        slippage = abs(fill_price - bar.open) * executable
-        execution_stop = self._execution_stop(decision, bar)
-        reason = self._trade_reason(decision, bar, execution_stop)
+        if side == "SELL" and notional <= fee:
+            self._reject(
+                decision, bar, side, requested, "NET_PROCEEDS_NONPOSITIVE",
+            )
+            return None
+        spread_cost, slippage = _execution_cost_parts(
+            reference_price,
+            fill_price,
+            executable,
+            side,
+            tick=self.trading.price_tick,
+            half_spread_ticks=self.half_spread_ticks,
+        )
+        reason = (
+            forced_reason
+            if forced_reason is not None
+            else self._trade_reason(decision, bar, execution_stop)
+        )
         fill = SwingFill(
             symbol=bar.symbol,
             side=side,
@@ -533,9 +658,10 @@ class BacktestAccount:
             shares=executable,
             signal_date=decision.as_of_trading_date,
             execution_date=bar.trading_date,
-            raw_reference_price=bar.open,
+            raw_reference_price=reference_price,
             fill_price=fill_price,
             fee=fee,
+            spread_cost=spread_cost,
             slippage=slippage,
             planned_stop=execution_stop,
             reason=reason,
@@ -554,18 +680,18 @@ class BacktestAccount:
         self._last_index = max(self._last_index, execution_index)
         return fill
 
-    def execute_protective_gap(
+    def execute_protective_stop(
         self,
         decision: SwingDecision,
         bar: DailyBar,
         *,
         execution_index: int,
     ) -> bool:
-        """Exit before any lower-priority action when open gaps below prior stop."""
+        """Exit before lower-priority actions when the completed bar touches stop."""
         if self.shares <= 0 or decision.planned_stop is None:
             return False
         execution_stop = self._execution_stop(decision, bar)
-        if execution_stop is None or bar.open > execution_stop:
+        if execution_stop is None or bar.low > execution_stop:
             return False
         evidence = dict(decision.evidence)
         evidence.update({
@@ -588,8 +714,27 @@ class BacktestAccount:
             first_reduce_price=None,
             valid_for_trading_date=None,
         )
-        self.execute(protective, bar, execution_index=execution_index)
+        gap = bar.open < execution_stop
+        self.execute(
+            protective,
+            bar,
+            execution_index=execution_index,
+            raw_reference_price=bar.open if gap else execution_stop,
+            forced_reason="GAP_THROUGH_STOP" if gap else "STOP_EXIT",
+        )
         return True
+
+    def execute_protective_gap(
+        self,
+        decision: SwingDecision,
+        bar: DailyBar,
+        *,
+        execution_index: int,
+    ) -> bool:
+        """Backward-compatible name for protective open/intraday stop handling."""
+        return self.execute_protective_stop(
+            decision, bar, execution_index=execution_index,
+        )
 
     def record_blocked_decision(self, decision: SwingDecision) -> None:
         """Count a technically actionable signal blocked before order creation."""
@@ -685,12 +830,14 @@ class BacktestAccount:
             )
         self.shares += fill.shares
         self.cash += cash_delta
+        self._normalize_cash()
         self._cycle_cash_flow += cash_delta
         self._lots.append((index, fill.shares))
 
     def _book_sell(self, fill: SwingFill, bar: DailyBar, index: int) -> None:
         proceeds = fill.fill_price * fill.shares - fill.fee
         self.cash += proceeds
+        self._normalize_cash()
         self._cycle_cash_flow += proceeds
         self.shares -= fill.shares
         remaining = fill.shares
@@ -723,6 +870,13 @@ class BacktestAccount:
         elif fill.reason == "REDUCE":
             self._first_reduction_completed = True
 
+    def _normalize_cash(self) -> None:
+        tolerance = max(1e-9, math.ulp(max(1.0, abs(self.cash))) * 8)
+        if -tolerance <= self.cash < 0.0:
+            self.cash = 0.0
+        if self.cash < 0.0:
+            raise SwingBacktestError("cash became negative")
+
     @staticmethod
     def _execution_stop(decision: SwingDecision, bar: DailyBar) -> float | None:
         if decision.planned_stop is None:
@@ -739,6 +893,26 @@ class BacktestAccount:
         ):
             return decision.planned_stop / float(signal_scale) * current_raw_scale
         return decision.planned_stop
+
+    @staticmethod
+    def _execution_entry_high(
+        decision: SwingDecision,
+        bar: DailyBar,
+    ) -> float | None:
+        if decision.planned_entry_high is None:
+            return None
+        current_raw_scale = bar.open / bar.adjusted_open
+        signal_scale = decision.evidence.get("raw_scale")
+        if (
+            type(signal_scale) in (int, float)
+            and math.isfinite(float(signal_scale))
+            and float(signal_scale) > 0.0
+        ):
+            return (
+                decision.planned_entry_high / float(signal_scale)
+                * current_raw_scale
+            )
+        return decision.planned_entry_high
 
     @staticmethod
     def _trade_reason(
@@ -797,6 +971,7 @@ class SwingBacktester:
         sell_fee_rate: float = constants.SELL_COMMISSION_RATE,
         minimum_fee: float = constants.MINIMUM_COMMISSION_CNY,
         slippage_rate: float = constants.SLIPPAGE_RATE,
+        half_spread_ticks: float = constants.DEFAULT_HALF_SPREAD_TICKS,
     ) -> None:
         if type(config) is not SwingStrategyConfig:
             raise SwingBacktestError("config must be SwingStrategyConfig")
@@ -808,6 +983,9 @@ class SwingBacktester:
             "sell_fee_rate": _finite(sell_fee_rate, "sell_fee_rate"),
             "minimum_fee": _finite(minimum_fee, "minimum_fee"),
             "slippage_rate": _finite(slippage_rate, "slippage_rate"),
+            "half_spread_ticks": _finite(
+                half_spread_ticks, "half_spread_ticks",
+            ),
         }
         if any(self.costs[key] > 1.0 for key in (
             "buy_fee_rate", "sell_fee_rate", "slippage_rate",
@@ -832,6 +1010,7 @@ class SwingBacktester:
             first_execution_index - 1
         ].adjusted_close
         account._last_index = first_execution_index - 1
+        lookback = strategy_lookback(self.config)
         for index in range(self.config.minimum_daily_bars - 1, len(normalized) - 1):
             execution_index = index + 1
             execution_bar = normalized[execution_index]
@@ -839,8 +1018,11 @@ class SwingBacktester:
                 next_trading_date=execution_bar.trading_date,
                 execution_index=execution_index,
             )
-            decision = evaluate_swing(normalized[: index + 1], self.config, context)
-            protected = account.execute_protective_gap(
+            signal_start = max(0, index + 1 - lookback)
+            decision = evaluate_swing(
+                normalized[signal_start: index + 1], self.config, context,
+            )
+            protected = account.execute_protective_stop(
                 decision, execution_bar, execution_index=execution_index,
             )
             if not protected:
@@ -1067,11 +1249,12 @@ class SwingBacktester:
                 )
             if bar.volume <= 0.0 or limit_account._limit_locked(bar, "BUY"):
                 continue
-            price = _adverse_tick_price(
+            price = _execution_price(
                 bar.open,
-                self.costs["slippage_rate"],
-                self.trading.price_tick,
                 "BUY",
+                tick=self.trading.price_tick,
+                half_spread_ticks=self.costs["half_spread_ticks"],
+                slippage_rate=self.costs["slippage_rate"],
             )
             price = min(
                 price,
@@ -1100,7 +1283,18 @@ class SwingBacktester:
                 maximum * price * self.costs["buy_fee_rate"],
                 self.costs["minimum_fee"],
             )
+            spread_cost, slippage = _execution_cost_parts(
+                bar.open,
+                price,
+                maximum,
+                "BUY",
+                tick=self.trading.price_tick,
+                half_spread_ticks=self.costs["half_spread_ticks"],
+            )
             cash = initial_cash - maximum * price - fee
+            if cash < -1e-9:
+                continue
+            cash = max(0.0, cash)
             ending = cash + maximum * bars[-1].close
             return SwingBenchmarkResult(
                 start_date=bar.trading_date,
@@ -1109,7 +1303,8 @@ class SwingBacktester:
                 ending_equity=ending,
                 cumulative_return=ending / initial_cash - 1.0,
                 fee=fee,
-                slippage=abs(price - bar.open) * maximum,
+                spread_cost=spread_cost,
+                slippage=slippage,
             )
         return None
 
@@ -1193,6 +1388,7 @@ class SwingBacktester:
             ),
             longest_losing_streak=streak,
             fees=sum(item.fee for item in account.trades),
+            spread_cost=sum(item.spread_cost for item in account.trades),
             slippage=sum(item.slippage for item in account.trades),
             rejection_counts=counts,
         )
@@ -1208,4 +1404,5 @@ __all__ = [
     "SwingBenchmarkResult",
     "SwingFill",
     "SwingRejection",
+    "strategy_lookback",
 ]
