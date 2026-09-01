@@ -407,8 +407,17 @@ class SwingWebTests(unittest.TestCase):
     def test_alert_query_and_events_headers_are_strict(self) -> None:
         _, history, _ = self._get("/api/swing/alerts?include_retracted=true")
         self.assertIn("items", history)
+        _, limited, _ = self._get("/api/swing/alerts?limit=80")
+        self.assertIn("items", limited)
+        _, limited_history, _ = self._get(
+            "/api/swing/alerts?include_retracted=true&limit=80",
+        )
+        self.assertIn("items", limited_history)
         for path in (
             "/api/swing/alerts?include_retracted=1",
+            "/api/swing/alerts?limit=0",
+            "/api/swing/alerts?limit=501",
+            "/api/swing/alerts?limit=1&limit=2",
             "/api/swing/alerts?unknown=x",
             "/api/swing/events?since=0",
         ):

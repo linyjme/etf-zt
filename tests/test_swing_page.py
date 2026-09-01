@@ -291,7 +291,7 @@ pruneRememberedAlertIds(notified,active,128);
 console.log(JSON.stringify({visible:visible.length,keptActive:visible.some(item=>item.alert_id==='0'),remembered:notified.size,rememberedActive:notified.has('0')}));
 """,
         )
-        self.assertEqual(result, {"visible": 80, "keptActive": True, "remembered": 128, "rememberedActive": True})
+        self.assertEqual(result, {"visible": 81, "keptActive": True, "remembered": 128, "rememberedActive": True})
 
     def test_requests_tabs_and_watchlist_status_have_safety_contracts(self) -> None:
         for fragment in (
@@ -332,6 +332,27 @@ console.log(JSON.stringify({healthy,failed,failedNewBundle,recovered}));
         self.assertIn("data-alert-state", SWING_PAGE)
         self.assertIn("boundedAlerts(alertsForDisplay(source,state)", SWING_PAGE)
         self.assertIn("if(!canActOnAlert(state", SWING_PAGE)
+
+    def test_installed_alert_view_retains_all_active_and_only_recent_history(self) -> None:
+        result = run_swing_helpers(
+            """
+const state=createPageState(); state.selectedSymbol='510300';
+const items=Array.from({length:10000},(_,index)=>({alert_id:String(index),currently_active:[2,5000,9999].includes(index),published_at:`2026-09-01T${String(index%24).padStart(2,'0')}:00:00+08:00`}));
+items.push({...items[9999],currently_active:false});
+const payload={revision:1,items:[{symbol:'510300',execution_status:'OBSERVE_ONLY'}],health:{service:'OK',configuration:'OK',daily:'OK',strategy:'OK',portfolio:'OK',alerts:'OK',intraday:'REALTIME'},errors:{}};
+const bundle={watch:{revision:1,items:[]},portfolio:{revision:1,projection:null},alerts:{revision:1,items}};
+applyReadModelBundle(state,payload,bundle,true);
+const retained=state.auxiliary.alerts.items,active=retained.filter(alert=>alert.currently_active).map(alert=>alert.alert_id).sort();
+console.log(JSON.stringify({retained:retained.length,active,unique:new Set(retained.map(alert=>alert.alert_id)).size,requestedBound:80}));
+""",
+        )
+        self.assertEqual(result, {
+            "retained": 83,
+            "active": ["2", "5000", "9999"],
+            "unique": 83,
+            "requestedBound": 80,
+        })
+        self.assertIn("/api/swing/alerts?limit=80", SWING_PAGE)
 
 
 if __name__ == "__main__":

@@ -63,6 +63,7 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FINAL_DAILY_TIME = time(15, 10)
 _DEFAULT_HISTORY_COUNT = 260
 _MAX_DAILY_QUOTE_LIMIT = 10_000
+_MAX_ALERT_HISTORY_LIMIT = 500
 _REALTIME_FUTURE_SKEW_SECONDS = 5.0
 _TRADE_FUTURE_SKEW_SECONDS = 5.0
 _READ_MODEL_KEY = "_published_read_model"
@@ -368,15 +369,49 @@ class SwingService:
         with self.publish_condition:
             return copy.deepcopy(self._published_portfolio_view)
 
-    def alerts(self, *, include_retracted: bool = False) -> dict[str, object]:
+    def alerts(
+        self,
+        *,
+        include_retracted: bool = False,
+        limit: int | None = None,
+    ) -> dict[str, object]:
         if type(include_retracted) is not bool:
             raise SwingServiceError("include_retracted must be boolean")
+        if limit is not None and (
+            type(limit) is not int or not 1 <= limit <= _MAX_ALERT_HISTORY_LIMIT
+        ):
+            raise SwingServiceError(
+                f"limit must be an integer from 1 to {_MAX_ALERT_HISTORY_LIMIT}",
+            )
         with self.publish_condition:
             source = (
                 self._published_alerts_history
                 if include_retracted else self._published_alerts_current
             )
-            return copy.deepcopy(source)
+            if limit is None:
+                return copy.deepcopy(source)
+            raw_items = source.get("items", [])
+            items = raw_items if isinstance(raw_items, list) else []
+            active = [
+                item for item in items
+                if isinstance(item, Mapping)
+                and item.get("currently_active") is True
+            ]
+            history = [
+                item for item in items
+                if not (
+                    isinstance(item, Mapping)
+                    and item.get("currently_active") is True
+                )
+            ]
+            selected = active + history[-limit:]
+            result = {
+                key: copy.deepcopy(value)
+                for key, value in source.items()
+                if key != "items"
+            }
+            result["items"] = copy.deepcopy(selected)
+            return result
 
     def daily_quotes(
         self,

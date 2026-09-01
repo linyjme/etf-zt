@@ -1690,18 +1690,26 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
 
     def _swing_alerts(self, query_string: str) -> None:
         try:
-            if not query_string:
-                include_retracted = False
-            else:
-                query = self._strict_query(query_string)
-                if set(query) != {"include_retracted"} or len(query["include_retracted"]) != 1:
-                    raise ValueError("only include_retracted is supported")
+            query = self._strict_query(query_string) if query_string else {}
+            if not set(query) <= {"include_retracted", "limit"}:
+                raise ValueError("only include_retracted and limit are supported")
+            if any(len(values) != 1 for values in query.values()):
+                raise ValueError("query parameters must not be repeated")
+            include_retracted = False
+            if "include_retracted" in query:
                 raw = query["include_retracted"][0]
                 if raw not in {"true", "false"}:
                     raise ValueError("include_retracted must be true or false")
                 include_retracted = raw == "true"
+            limit = None
+            if "limit" in query:
+                raw_limit = query["limit"][0]
+                if re.fullmatch(r"[1-9][0-9]*", raw_limit) is None:
+                    raise ValueError("limit must be a positive integer")
+                limit = int(raw_limit)
             payload = self._swing_application().alerts(
                 include_retracted=include_retracted,
+                limit=limit,
             )
         except (ValueError, SwingServiceError) as error:
             self._json(HTTPStatus.BAD_REQUEST, {

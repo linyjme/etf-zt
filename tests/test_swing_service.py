@@ -148,6 +148,39 @@ class SwingServiceTests(unittest.TestCase):
             event_limit=event_limit,
         )
 
+    def test_alert_limit_keeps_all_active_and_recent_history(self) -> None:
+        service = self.make_service()
+        items = [
+            {
+                "alert_id": str(index),
+                "currently_active": index in {2, 500, 999},
+                "active_notification": index in {2, 500, 999},
+            }
+            for index in range(1000)
+        ]
+        with service.publish_condition:
+            service._published_alerts_current = {
+                "revision": 7, "status": "OK", "items": items,
+            }
+        limited = service.alerts(limit=80)
+        self.assertEqual(limited["revision"], 7)
+        self.assertEqual(len(limited["items"]), 83)
+        self.assertEqual(
+            {item["alert_id"] for item in limited["items"] if item["currently_active"]},
+            {"2", "500", "999"},
+        )
+        self.assertEqual(
+            [item["alert_id"] for item in limited["items"] if not item["currently_active"]],
+            [
+                str(index) for index in range(1000)
+                if index not in {2, 500, 999}
+            ][-80:],
+        )
+        self.assertEqual(len(service.alerts()["items"]), 1000)
+        for invalid in (0, 501, True, 1.5):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                service.alerts(limit=invalid)
+
     @staticmethod
     def full_day_points(
         bar: DailyBar,
