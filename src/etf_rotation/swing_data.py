@@ -78,7 +78,7 @@ class DailyBar:
         try:
             payload = dict(value)
         except Exception as error:
-            raise SwingDataError(f"日线记录映射读取失败: {error}") from error
+            raise SwingDataError("日线记录映射读取失败") from error
 
         if any(type(key) is not str for key in payload):
             raise SwingDataError("日线记录字段名必须是字符串")
@@ -94,7 +94,7 @@ class DailyBar:
 
         symbol = payload["symbol"]
         if (
-            not isinstance(symbol, str)
+            type(symbol) is not str
             or len(symbol) != 6
             or not symbol.isascii()
             or not symbol.isdigit()
@@ -103,7 +103,7 @@ class DailyBar:
         trading_date = _iso_date(payload["trading_date"])
         observed_at = _iso_datetime(payload["observed_at"])
         source = payload["source"]
-        if not isinstance(source, str) or not source.strip():
+        if type(source) is not str or not source.strip():
             raise SwingDataError("日线source不能为空")
 
         numbers = {
@@ -154,14 +154,24 @@ class DailyBar:
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-safe primitives using ISO date/time strings."""
-        observed_at = self.observed_at
-        if observed_at.tzinfo is not None and observed_at.utcoffset() is not None:
-            observed_at = observed_at.astimezone(SHANGHAI)
+        _validate_direct_json_scalar_types(self)
+        try:
+            trading_date = self.trading_date.isoformat()
+            observed_at = self.observed_at
+            if observed_at.tzinfo is not None and observed_at.utcoffset() is not None:
+                observed_at = observed_at.astimezone(SHANGHAI)
+            observed_at_text = observed_at.isoformat()
+        except Exception as error:
+            raise SwingDataError("日线记录序列化失败") from error
+        if type(trading_date) is not str:
+            raise SwingDataError("日线trading_date序列化结果必须是字符串")
+        if type(observed_at_text) is not str:
+            raise SwingDataError("日线observed_at序列化结果必须是字符串")
         return {
             "schema_version": self.schema_version,
             "symbol": self.symbol,
-            "trading_date": self.trading_date.isoformat(),
-            "observed_at": observed_at.isoformat(),
+            "trading_date": trading_date,
+            "observed_at": observed_at_text,
             "source": self.source,
             "open": self.open,
             "high": self.high,
@@ -185,7 +195,7 @@ class DailyBarValidator:
         try:
             closures = frozenset(closed_dates)
         except Exception as error:
-            raise SwingDataError(f"休市日期集合无效: {error}") from error
+            raise SwingDataError("休市日期集合无效") from error
         if any(type(item) is not date for item in closures):
             raise SwingDataError("休市日期必须是date")
         self.closed_dates = closures
@@ -295,7 +305,7 @@ class DailyBarValidator:
             try:
                 metadata = metadata_by_symbol.get(normalized.symbol)
             except Exception as error:
-                raise SwingDataError(f"ETF元数据映射读取失败: {error}") from error
+                raise SwingDataError("ETF元数据映射读取失败") from error
             if metadata is None:
                 raise SwingDataError(f"缺少ETF元数据: {normalized.symbol}")
             self.validate(normalized, metadata)
@@ -307,12 +317,15 @@ class DailyBarValidator:
 
     @staticmethod
     def _normalize_record(record: DailyBar) -> DailyBar:
-        if not isinstance(record, DailyBar):
+        if type(record) is not DailyBar:
             raise SwingDataError("日线record必须是DailyBar")
+        _validate_direct_record_types(record)
         try:
             payload = record.to_dict()
-        except (AttributeError, TypeError, ValueError, OverflowError) as error:
-            raise SwingDataError(f"日线record字段类型无效: {error}") from error
+        except SwingDataError:
+            raise
+        except Exception as error:
+            raise SwingDataError("日线record序列化失败") from error
         return DailyBar.from_mapping(payload)
 
     def _validate_adjacent(
@@ -357,7 +370,7 @@ class DailyBarValidator:
 
 
 def _iso_date(value: object) -> date:
-    if not isinstance(value, str):
+    if type(value) is not str:
         raise SwingDataError("日线trading_date必须是ISO日期")
     try:
         parsed = date.fromisoformat(value)
@@ -369,7 +382,7 @@ def _iso_date(value: object) -> date:
 
 
 def _iso_datetime(value: object) -> datetime:
-    if not isinstance(value, str):
+    if type(value) is not str:
         raise SwingDataError("日线observed_at必须是ISO时间")
     try:
         parsed = datetime.fromisoformat(value)
@@ -402,7 +415,7 @@ def _nonnegative_number(value: object, field: str) -> float:
 
 
 def _finite_number(value: object, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         raise SwingDataError(f"日线{field}必须是有限数字")
     try:
         number = float(value)
@@ -475,7 +488,7 @@ def _safe_arithmetic(operation: Callable[[], object], label: str) -> float:
             raise TypeError("结果不是数字")
         number = float(result)
     except Exception as error:
-        raise SwingDataError(f"{label}数值运算失败: {error}") from error
+        raise SwingDataError(f"{label}数值运算失败") from error
     if not math.isfinite(number):
         raise SwingDataError(f"{label}数值运算结果必须有限")
     return number
@@ -487,8 +500,33 @@ def _one_tick_tolerance(tick: object, *operands: object) -> float:
     try:
         max_ulp = max(math.ulp(value) for value in values)
     except Exception as error:
-        raise SwingDataError(f"价格边界精度计算失败: {error}") from error
+        raise SwingDataError("价格边界精度计算失败") from error
     resolution = _safe_product(max_ulp, _ULP_MULTIPLIER, "价格边界ULP容差")
     if tick_value < resolution:
         raise SwingDataError("最小价位低于当前价格数量级的可表示精度")
     return _safe_add(tick_value, resolution, "一个最小价位容差")
+
+
+def _validate_direct_record_types(record: DailyBar) -> None:
+    _validate_direct_json_scalar_types(record)
+    if type(record.trading_date) is not date:
+        raise SwingDataError("日线record.trading_date类型无效")
+    if type(record.observed_at) is not datetime:
+        raise SwingDataError("日线record.observed_at类型无效")
+
+
+def _validate_direct_json_scalar_types(record: DailyBar) -> None:
+    if type(record.schema_version) is not int:
+        raise SwingDataError("日线record.schema_version类型无效")
+    if type(record.symbol) is not str:
+        raise SwingDataError("日线record.symbol类型无效")
+    if type(record.source) is not str:
+        raise SwingDataError("日线record.source类型无效")
+    for field in (*_PRICE_FIELDS, "volume", "amount"):
+        value = getattr(record, field)
+        if type(value) not in (int, float):
+            raise SwingDataError(f"日线record.{field}类型无效")
+        if type(value) is float and not math.isfinite(value):
+            raise SwingDataError(f"日线record.{field}必须是有限数字")
+    if type(record.is_final) is not bool:
+        raise SwingDataError("日线record.is_final类型无效")

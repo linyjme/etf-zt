@@ -9,7 +9,12 @@ import tempfile
 import unittest
 
 from etf_rotation.etf_metadata import EtfMetadata, EtfMetadataStore
-from etf_rotation.swing_data import DailyBar, DailyBarValidator, SwingDataError
+from etf_rotation.swing_data import (
+    DailyBar,
+    DailyBarValidator,
+    SwingDataError,
+    _safe_product,
+)
 from tests.swing_helpers import daily_bar_mapping, metadata_fixture
 
 
@@ -27,9 +32,14 @@ class BrokenMapping(Mapping[str, object]):
         return 1
 
 
+class HostileMessageError(OSError):
+    def __str__(self) -> str:
+        raise RuntimeError("exception stringification must not run")
+
+
 class OSErrorMapping(Mapping[str, object]):
     def __getitem__(self, key: str) -> object:
-        raise OSError("mapping unavailable")
+        raise HostileMessageError()
 
     def __iter__(self) -> Iterator[str]:
         yield "schema_version"
@@ -49,12 +59,74 @@ class OSErrorMetadataMapping(Mapping[str, EtfMetadata]):
         return 0
 
     def get(self, key: str, default: object = None) -> EtfMetadata | None:
-        raise OSError("metadata unavailable")
+        raise HostileMessageError()
 
 
 class HostileKey:
     def __repr__(self) -> str:
         raise OSError("repr unavailable")
+
+
+class HostileStr(str):
+    def __len__(self) -> int:
+        raise HostileMessageError()
+
+    def strip(self, chars: str | None = None) -> str:
+        raise HostileMessageError()
+
+    def isascii(self) -> bool:
+        raise HostileMessageError()
+
+    def isdigit(self) -> bool:
+        raise HostileMessageError()
+
+
+class HostileFloat(float):
+    def __float__(self) -> float:
+        raise HostileMessageError()
+
+
+class HostileInt(int):
+    def __float__(self) -> float:
+        raise HostileMessageError()
+
+
+class HostileDate(date):
+    def isoformat(self) -> str:
+        raise HostileMessageError()
+
+
+class HostileSwingDataDate(date):
+    def isoformat(self) -> str:
+        raise SwingDataError("UNTRUSTED_TEMPORAL_MESSAGE")
+
+
+class FatalDate(date):
+    def isoformat(self) -> str:
+        raise KeyboardInterrupt()
+
+
+class HostileDateTime(datetime):
+    def utcoffset(self) -> timedelta | None:
+        raise HostileMessageError()
+
+    def isoformat(self, sep: str = "T", timespec: str = "auto") -> str:
+        raise HostileMessageError()
+
+
+class NonStringDate(date):
+    def isoformat(self) -> object:
+        return object()
+
+
+class NonStringDateTime(datetime):
+    def isoformat(self, sep: str = "T", timespec: str = "auto") -> object:
+        return {"not": "an ISO string"}
+
+
+class HostileMultiplier:
+    def __mul__(self, other: object) -> object:
+        raise HostileMessageError()
 
 
 class DailyBarTests(unittest.TestCase):
@@ -178,6 +250,28 @@ class DailyBarTests(unittest.TestCase):
             with self.subTest(field=field, value=value), self.assertRaises(SwingDataError):
                 DailyBar.from_mapping(payload)
 
+    def test_rejects_string_subclasses_without_invoking_their_methods(self) -> None:
+        for field, value in (
+            ("symbol", HostileStr("510300")),
+            ("trading_date", HostileStr("2026-08-28")),
+            ("observed_at", HostileStr("2026-08-28T15:10:00+08:00")),
+            ("source", HostileStr("TEST_DAILY")),
+        ):
+            payload = daily_bar_mapping()
+            payload[field] = value
+            with self.subTest(field=field), self.assertRaises(SwingDataError):
+                DailyBar.from_mapping(payload)
+
+    def test_rejects_numeric_subclasses_without_invoking_their_methods(self) -> None:
+        for field, value in (
+            ("open", HostileFloat(10.0)),
+            ("volume", HostileInt(1_000)),
+        ):
+            payload = daily_bar_mapping()
+            payload[field] = value
+            with self.subTest(field=field), self.assertRaises(SwingDataError):
+                DailyBar.from_mapping(payload)
+
     def test_rejects_inconsistent_adjustment_scale(self) -> None:
         payload = daily_bar_mapping(adjustment_scale=1.2345)
         payload["adjusted_close"] = float(payload["adjusted_close"]) + 0.01
@@ -224,6 +318,74 @@ class DailyBarTests(unittest.TestCase):
             direct_utc.to_dict()["observed_at"],
             "2026-08-28T15:10:00+08:00",
         )
+
+    def test_to_dict_wraps_serialization_errors_but_not_base_exceptions(self) -> None:
+        valid = DailyBar.from_mapping(daily_bar_mapping())
+        for malformed_scalar in (
+            replace(valid, symbol=HostileStr("510300")),
+            replace(valid, open=HostileFloat(10.0)),
+        ):
+            with self.assertRaises(SwingDataError):
+                malformed_scalar.to_dict()
+
+        malformed = (
+            replace(valid, trading_date=object()),  # type: ignore[arg-type]
+            replace(valid, observed_at=object()),  # type: ignore[arg-type]
+            replace(valid, trading_date=HostileDate(2026, 8, 28)),
+            replace(
+                valid,
+                observed_at=HostileDateTime(
+                    2026, 8, 28, 15, 10, tzinfo=timezone.utc,
+                ),
+            ),
+        )
+        for item in malformed:
+            with self.assertRaises(SwingDataError) as raised:
+                item.to_dict()
+            self.assertIsInstance(raised.exception.__cause__, Exception)
+
+        with self.assertRaises(KeyboardInterrupt):
+            replace(valid, trading_date=FatalDate(2026, 8, 28)).to_dict()
+
+    def test_to_dict_wraps_untrusted_swing_data_error_from_temporal_method(self) -> None:
+        valid = DailyBar.from_mapping(daily_bar_mapping())
+        malformed = replace(
+            valid,
+            trading_date=HostileSwingDataDate(2026, 8, 28),
+        )
+
+        with self.assertRaises(SwingDataError) as raised:
+            malformed.to_dict()
+
+        self.assertEqual(str(raised.exception), "日线记录序列化失败")
+        self.assertIsInstance(raised.exception.__cause__, SwingDataError)
+        self.assertEqual(str(raised.exception.__cause__), "UNTRUSTED_TEMPORAL_MESSAGE")
+
+    def test_to_dict_rejects_non_string_temporal_serialization_results(self) -> None:
+        valid = DailyBar.from_mapping(daily_bar_mapping())
+        malformed = (
+            replace(valid, trading_date=NonStringDate(2026, 8, 28)),
+            replace(
+                valid,
+                observed_at=NonStringDateTime(
+                    2026, 8, 28, 15, 10, tzinfo=timezone.utc,
+                ),
+            ),
+        )
+        for item in malformed:
+            with self.assertRaises(SwingDataError):
+                item.to_dict()
+
+    def test_to_dict_rejects_nonfinite_direct_numeric_fields(self) -> None:
+        valid = DailyBar.from_mapping(daily_bar_mapping())
+        for value in (math.nan, math.inf, -math.inf):
+            with self.subTest(value=value), self.assertRaises(SwingDataError):
+                replace(valid, amount=value).to_dict()
+
+    def test_arithmetic_wrapper_does_not_stringify_hostile_exception(self) -> None:
+        with self.assertRaises(SwingDataError) as raised:
+            _safe_product(HostileMultiplier(), 1.0, "测试运算")
+        self.assertIsInstance(raised.exception.__cause__, HostileMessageError)
 
 
 class DailyBarValidatorTests(unittest.TestCase):
@@ -435,6 +597,26 @@ class DailyBarValidatorTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(SwingDataError):
                 self.validator.validate(invalid, self.metadata_for())
 
+    def test_validate_rejects_direct_scalar_subclasses_before_methods_run(self) -> None:
+        valid = self.bar()
+        malformed = (
+            ("schema", replace(valid, schema_version=HostileInt(1))),
+            ("symbol", replace(valid, symbol=HostileStr("510300"))),
+            ("source", replace(valid, source=HostileStr("TEST_DAILY"))),
+            ("date", replace(valid, trading_date=HostileDate(2026, 8, 28))),
+            ("datetime", replace(
+                valid,
+                observed_at=HostileDateTime(
+                    2026, 8, 28, 15, 10, tzinfo=timezone.utc,
+                ),
+            )),
+            ("number", replace(valid, open=HostileFloat(10.0))),
+        )
+        for label, item in malformed:
+            with self.subTest(label=label), self.assertRaises(SwingDataError) as raised:
+                self.validator.validate(item, self.metadata_for())
+            self.assertIsNone(raised.exception.__cause__)
+
     def test_rejects_unsorted_duplicate_and_missing_expected_weekday(self) -> None:
         monday = self.bar(
             trading_date="2026-08-24",
@@ -546,7 +728,7 @@ class DailyBarValidatorTests(unittest.TestCase):
 
     def test_wraps_oserror_from_closed_dates_iterable(self) -> None:
         def broken_dates() -> Iterator[date]:
-            raise OSError("calendar unavailable")
+            raise HostileMessageError()
             yield date(2026, 8, 28)
 
         with self.assertRaises(SwingDataError) as raised:
