@@ -16,7 +16,7 @@ from urllib.request import Request, urlopen
 from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
 from etf_rotation.quote_collector import (
     SOURCE_NAME, TRENDS2_ENDPOINT, TRENDS2_FALLBACK_ENDPOINT,
-    Trends2QuoteCollector, market_for_symbol,
+    Trends2QuoteCollector, market_for_symbol, source_label,
 )
 from etf_rotation.t_monitor import (
     AlertHistoryStore, JsonQuoteAdapter, MarketDataError, QuoteHistoryStore,
@@ -27,6 +27,17 @@ from tests.regime_fixtures import confirmed_range_quote
 
 
 NOW = "2026-08-28T10:00:00+08:00"
+
+
+class HostileSymbol(str):
+    def __str__(self) -> str:
+        raise AssertionError("hostile __str__ called")
+
+    def __repr__(self) -> str:
+        raise AssertionError("hostile __repr__ called")
+
+    def __format__(self, format_spec: str) -> str:
+        raise AssertionError("hostile __format__ called")
 
 
 def run_page_helpers(body: str) -> object:
@@ -136,6 +147,22 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
         self.assertEqual(market_for_symbol("510300"), 1)
         with self.assertRaisesRegex(MarketDataError, "无法映射"):
             market_for_symbol("400001")
+
+    def test_market_mapping_requires_exact_ascii_six_digit_string(self) -> None:
+        for symbol in ("51030", "5103000", "５１０３００", 510300, True):
+            with self.subTest(symbol=symbol):
+                with self.assertRaisesRegex(MarketDataError, "6位数字"):
+                    market_for_symbol(symbol)
+
+    def test_market_mapping_never_formats_hostile_string_subclass(self) -> None:
+        with self.assertRaisesRegex(MarketDataError, "6位数字"):
+            market_for_symbol(HostileSymbol("510300"))
+
+    def test_primary_source_label_remains_public_and_exact(self) -> None:
+        self.assertEqual(
+            source_label(TRENDS2_ENDPOINT),
+            "东方财富 trends2 (push2his.eastmoney.com)",
+        )
 
     def test_collects_all_enabled_quotes_and_parses_trends2_fields(self) -> None:
         requests = []
@@ -922,6 +949,11 @@ class EtfMetadataTests(unittest.TestCase):
 
 
 class MonitorWebTests(unittest.TestCase):
+    def test_t_page_links_to_standalone_swing_monitor_without_changing_mode(self) -> None:
+        self.assertIn('href="/swing"', PAGE)
+        self.assertIn("本地做T监控", PAGE)
+        self.assertIn("候选观察 · 增量行情 · 只读交易", PAGE)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)

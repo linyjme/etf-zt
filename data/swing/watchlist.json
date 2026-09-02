@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "items": [
+    {"symbol": "510300", "enabled": true},
+    {"symbol": "510500", "enabled": true},
+    {"symbol": "563360", "enabled": true},
+    {"symbol": "512100", "enabled": true},
+    {"symbol": "159915", "enabled": true},
+    {"symbol": "588000", "enabled": true}
+  ]
+}

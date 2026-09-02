@@ -1,6 +1,6 @@
 # 本地 ETF 做 T 监控
 
-这是一个只读、本地运行的 ETF 分钟行情监控器。它采集公开行情，校验并保存已完成分钟，识别市场状态，输出中性的做 T 候选，并提供库存约束下的做 T 回测。系统不连接券商、不保存账号，也不会提交交易委托。
+这是一个本地运行的 ETF 监控器：根页面 `/` 用于分钟级做 T 观察，独立页面 `/swing` 用于日线波段计划、提醒、本地手工持仓账本和回测。两者共用一个服务进程，但数据、状态和 revision 相互隔离。系统不连接券商，不读取券商账号，也不会提交交易委托。
 
 ## 安全边界
 
@@ -9,6 +9,7 @@
 - 行情延迟、断流、午休、收盘、状态未确认或分钟未完成时不会展示候选。
 - 估值数据只提供中长期背景，不参与分钟候选门控。
 - 回测结果用于核对信号和记账逻辑，不构成收益承诺。
+- `/swing` 的建仓、加仓、减仓和退出均为规则候选；用户只能记录自己已经在外部完成的成交，任何页面操作都不会自动下单。
 
 ## 目录与数据边界
 
@@ -34,6 +35,31 @@
 - `monitor.pid`、`monitor.out.log`、`monitor.err.log`：进程与日志。
 
 Python 字节码、日志、PID、临时文件和整个 `var/` 均由 `.gitignore` 排除。
+
+波段运行数据独立放在同样被忽略的 `var/swing/`：完成日线为 `daily_quotes.jsonl`，账户投影为 `portfolio.json`，手工成交为追加式 `trades.jsonl`，提醒为 `alerts.jsonl`，回测缓存和本机签名材料位于 `backtests` 相关运行路径。这里可能包含真实资金、持仓和交易记录，不应提交、公开或通过日志分享；升级、迁移和清理前应先备份整个 `var/swing/`。静态观察列表与策略参数仍位于 `data/swing/`。
+
+## 独立波段监控
+
+波段正式状态只使用通过校验的已完成日线。交易日下午 15:10（上海时区）之后，系统才把当日视为可完成日线并更新正式状态；采集失败、数据不完整、公司行动无法可靠识别或历史审计失败时保持 fail-closed，不生成新的正式候选。当前盘中行情只可形成“接近计划区间”或“触及预设止损”等临时 overlay，不能改变正式日线结论；行情延迟、过期或断流时，临时 overlay 会立即撤销，正式计划标记为暂停执行。
+
+首次使用应在页面初始化本地账户，填写现金和已有持仓；之后只记录用户已经成交的 BUY、SELL 或止损退出。`portfolio.json` 是可重建投影，`trades.jsonl` 是本地追加账本；损坏的投影可从有效账本重建，账本损坏时依赖持仓的候选会被阻断。初始化和成交接口要求明确确认与幂等键，仍然只写本机文件，不存在券商或自动交易端点。
+
+波段回测提供两种只读口径：单标的回测使用调整后日线产生信号、下一交易日原始开盘价成交，并与“相同初始现金在首个实际可成交开盘买入后持有”的基准比较；组合回测让已启用标的共享现金，并与“在共同有效区间等权买入后持有、共享同一现金池”的基准比较，同时使用 81 组参数进行 walk-forward 样本外检验。策略与基准都执行相同的手续费、最低佣金、买卖价差、滑点、整手和成交量参与率约束。公司行动证据不足时回测不可用，不会猜测复权换算。首次完整计算可能约需 35 秒；相同版本、输入数据和假设会读取本地校验缓存。
+
+Wind 数据指南仅供开发人员在需要人工取数或核验时参考；当前运行服务不依赖 Wind，不会读取或保存 Wind API Key。生产行情仍由代码中配置的采集器提供，任何金融事实应以实际数据源返回为准。
+
+波段 API（全部同源、本机 HTTP）包括：
+
+- `GET /api/swing/snapshot`、`GET /api/swing/watchlist`：权威摘要和独立观察列表；
+- `GET /api/swing/daily-quotes?symbol=...&since=...&limit=...`：已完成日线；
+- `GET /api/swing/events`：独立 revision 的 SSE 更新；
+- `GET /api/swing/portfolio`、`GET /api/swing/alerts`：本地账户投影与提醒历史；
+- `GET /api/swing/backtest?scope=symbol&symbol=...` 或 `scope=portfolio`：单标的或共享现金组合回测；
+- `POST /api/swing/watchlist`：启用或停用已验证标的；
+- `POST /api/swing/portfolio/initialize`、`POST /api/swing/trades`、`POST /api/swing/trades/{event_id}/reverse`：本地账本写入与冲正；
+- `POST /api/swing/alerts/{alert_id}/acknowledge`、`POST /api/swing/alerts/{alert_id}/ignore`：本地提醒处置。
+
+除观察列表外的写入接口要求 `Idempotency-Key`；所有请求均为本地记账或提醒状态变更，没有下单接口。
 
 ## 分钟行情和历史校验
 
@@ -177,7 +203,18 @@ python -m etf_rotation.cli rebuild-history `
 .\scripts\restart-monitor.ps1
 ```
 
-脚本从自身位置推导项目根目录，静态配置读取 `data/monitor`，运行文件写入 `var/monitor`。
+脚本从自身位置推导项目根目录，在同一个隐藏 Python 进程中同时提供 `/` 和 `/swing`，并只写一个 PID。静态配置读取 `data/monitor` 与 `data/swing`，运行文件分别写入 `var/monitor` 与 `var/swing`，所有路径均以项目根目录为基准显式传入。
+
+需要在无网络环境检查已有本地数据和两个页面时，可直接运行：
+
+```powershell
+$env:PYTHONPATH = Join-Path (Get-Location) 'src'
+python -m etf_rotation.cli monitor --no-collect
+```
+
+`--no-collect` 同时禁用分钟行情与波段日线网络采集器；服务仍可只读加载本地数据、打开两个页面以及使用本地账本，但不会尝试访问行情网络。
+
+旧的分钟历史或波段日线一旦确认受污染，不要继续用于提醒或评估策略。先停止服务并备份 `var/`，再用可信源重建对应历史；不要把删除当前文件误当成 Git 历史清理，也不要在未授权和未备份时重写仓库历史。
 
 运行测试：
 

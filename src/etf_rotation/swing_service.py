@@ -1,0 +1,4118 @@
+"""Isolated single-producer orchestration for the swing monitor.
+
+HTTP consumers only read deep-copied published state.  Completed daily bars,
+portfolio projections, formal decisions, and alert transitions are composed here
+from their focused modules; none of their business rules are reimplemented.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from collections.abc import Callable, Mapping, Sequence
+import copy
+from dataclasses import dataclass, replace
+from datetime import date, datetime, time, timedelta
+import json
+import hashlib
+import hmac
+import math
+import os
+from pathlib import Path
+import tempfile
+import threading
+import time as monotonic_time
+from typing import Any, Protocol
+from zoneinfo import ZoneInfo
+
+from .constants import DEFAULT_SWING_HISTORY_COUNT, REALTIME_MAX_AGE_SECONDS
+from .etf_metadata import EtfMetadata, EtfMetadataStore
+from .market_data import load_closed_dates
+from .swing_alerts import AlertInput, SwingAlertStore
+from .swing_backtest import (
+    SwingBacktestError,
+    SwingBacktester,
+    _curve_metric_values,
+)
+from .swing_config import (
+    SwingStrategyConfig,
+    SwingWatchItem,
+    load_strategy,
+    load_watchlist,
+)
+from .swing_data import (
+    DailyBar,
+    DailyHistoryStore,
+    _SiblingFileLock,
+)
+from .swing_portfolio import (
+    InitialPositionInput,
+    PortfolioLedger,
+    PortfolioLedgerError,
+    PortfolioEvent,
+    PortfolioEventType,
+    PortfolioPosition,
+    PortfolioProjection,
+    TradeInput,
+    load_projection,
+)
+from .swing_strategy import (
+    IntradayOverlay,
+    PortfolioContext,
+    PositionContext,
+    SwingDecision,
+    SwingState,
+    evaluate_intraday_overlay,
+    evaluate_swing,
+)
+
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+_FINAL_DAILY_TIME = time(15, 10)
+_BACKTEST_CACHE_SCHEMA_VERSION = 4
+_BACKTEST_ENGINE_VERSION = "SWING_BACKTEST_ENGINE_V5"
+_DEFAULT_HISTORY_COUNT = DEFAULT_SWING_HISTORY_COUNT
+_MAX_DAILY_QUOTE_LIMIT = 10_000
+_MAX_ALERT_HISTORY_LIMIT = 500
+_REALTIME_FUTURE_SKEW_SECONDS = 5.0
+_TRADE_FUTURE_SKEW_SECONDS = 5.0
+_READ_MODEL_KEY = "_published_read_model"
+_ACTION_STATES = frozenset({
+    SwingState.TRIAL_ENTRY_CANDIDATE,
+    SwingState.ADD_CANDIDATE,
+    SwingState.REDUCE_CANDIDATE,
+    SwingState.EXIT_CANDIDATE,
+})
+_PORTFOLIO_DEPENDENT_STATES = frozenset({
+    SwingState.TRIAL_ENTRY_CANDIDATE,
+    SwingState.ADD_CANDIDATE,
+    SwingState.REDUCE_CANDIDATE,
+})
+_FORMAL_ALERT_STYLE: Mapping[SwingState, tuple[str, str]] = {
+    SwingState.TRIAL_ENTRY_CANDIDATE: ("YELLOW", "试仓候选"),
+    SwingState.ADD_CANDIDATE: ("YELLOW", "加仓候选"),
+    SwingState.REDUCE_CANDIDATE: ("YELLOW", "减仓候选"),
+    SwingState.EXIT_CANDIDATE: ("RED", "退出候选"),
+}
+_OVERLAY_ALERT_STYLE: Mapping[IntradayOverlay, tuple[str, str]] = {
+    IntradayOverlay.APPROACHING_ENTRY_ZONE: ("BLUE", "接近计划买入区"),
+    IntradayOverlay.PREDEFINED_STOP_TOUCHED: ("RED", "盘中触及预设止损"),
+}
+_OVERLAY_ALERT_STATES = frozenset(
+    overlay.value for overlay in _OVERLAY_ALERT_STYLE
+)
+
+
+class SwingServiceError(ValueError):
+    """Raised for invalid public service input."""
+
+
+class DailyCollector(Protocol):
+    def collect(
+        self,
+        watchlist: Sequence[SwingWatchItem],
+        last_completed_date: date,
+        count: int = _DEFAULT_HISTORY_COUNT,
+    ) -> Sequence[DailyBar]: ...
+
+
+@dataclass(frozen=True)
+class SwingPaths:
+    watchlist: Path
+    strategy: Path
+    daily_history: Path
+    portfolio_snapshot: Path
+    trades: Path
+    alerts: Path
+    metadata: Path
+    calendar: Path
+    backtests: Path
+
+    def __post_init__(self) -> None:
+        for field in self.__dataclass_fields__:
+            value = getattr(self, field)
+            try:
+                normalized = Path(value)
+            except (TypeError, ValueError) as error:
+                raise SwingServiceError(f"{field} must be a path") from error
+            object.__setattr__(self, field, normalized)
+
+
+class SwingService:
+    """Publish authoritative swing state from one serialized producer."""
+
+    def __init__(
+        self,
+        paths: SwingPaths,
+        collector: DailyCollector | None,
+        intraday_provider: Callable[[], Mapping[str, object]],
+        intraday_points_provider: Callable[[str], Mapping[str, object]],
+        clock: Callable[[], datetime],
+        refresh_interval: float = 60.0,
+        event_limit: int = 128,
+    ) -> None:
+        if type(paths) is not SwingPaths:
+            raise SwingServiceError("paths must be SwingPaths")
+        if collector is not None and not callable(getattr(collector, "collect", None)):
+            raise SwingServiceError("collector must provide collect")
+        for value, label in (
+            (intraday_provider, "intraday_provider"),
+            (intraday_points_provider, "intraday_points_provider"),
+            (clock, "clock"),
+        ):
+            if not callable(value):
+                raise SwingServiceError(f"{label} must be callable")
+        if (
+            type(refresh_interval) not in (int, float)
+            or not math.isfinite(float(refresh_interval))
+            or float(refresh_interval) <= 0.0
+        ):
+            raise SwingServiceError("refresh_interval must be a finite positive number")
+        if type(event_limit) is not int or event_limit <= 0:
+            raise SwingServiceError("event_limit must be a positive integer")
+
+        self.paths = paths
+        self.collector = collector
+        self.intraday_provider = intraday_provider
+        self.intraday_points_provider = intraday_points_provider
+        self.clock = clock
+        self.refresh_interval = float(refresh_interval)
+        self.producer_lock = threading.Lock()
+        self.publish_condition = threading.Condition(threading.Lock())
+        self.events: deque[dict[str, object]] = deque(maxlen=event_limit)
+        self._stop_event = threading.Event()
+        self._refresh_thread: threading.Thread | None = None
+        self.revision = 0
+        self._watchlist: tuple[SwingWatchItem, ...] = ()
+        self._strategy: SwingStrategyConfig | None = None
+        self._metadata: Mapping[str, EtfMetadata] = {}
+        self._closed_dates: frozenset[date] | None = None
+        self._history_store: DailyHistoryStore | None = None
+        self._ledger: PortfolioLedger | None = None
+        self._alert_store: SwingAlertStore | None = None
+        self._portfolio_projection: PortfolioProjection | None = None
+        self._history: tuple[DailyBar, ...] = ()
+        self._formal: dict[str, SwingDecision] = {}
+        self._health: dict[str, str] = {
+            "service": "STARTING",
+            "configuration": "UNKNOWN",
+            "calendar": "UNKNOWN",
+            "daily": "UNKNOWN",
+            "minute_crosscheck": "NOT_RUN",
+            "portfolio": "UNKNOWN",
+            "alerts": "UNKNOWN",
+            "intraday": "UNAVAILABLE",
+        }
+        self._errors: dict[str, str] = {}
+        self.published: dict[str, object] = {}
+        self._published_watchlist_view: dict[str, object] = {}
+        self._published_portfolio_view: dict[str, object] = {}
+        self._published_alerts_current: dict[str, object] = {}
+        self._published_alerts_history: dict[str, object] = {}
+        self._backtest_registry_lock = threading.Lock()
+        self._backtest_key_locks: dict[str, threading.Lock] = {}
+        self._install_published(self._bootstrap(), revision=0)
+
+    # ---- Public read and lifecycle API ---------------------------------
+
+    def snapshot(self) -> dict[str, object]:
+        with self.publish_condition:
+            return copy.deepcopy(self.published)
+
+    def health(self) -> dict[str, object]:
+        snapshot = self.snapshot()
+        health = dict(snapshot.get("health", {}))
+        ok = all(value in {"OK", "REALTIME", "NOT_RUN"} for value in health.values())
+        return {
+            "status": "ok" if ok else "degraded",
+            "ok": ok,
+            "mode": "MONITOR_ONLY",
+            "revision": snapshot["revision"],
+            "components": health,
+            "errors": copy.deepcopy(snapshot.get("errors", {})),
+        }
+
+    def watchlist(self) -> dict[str, object]:
+        with self.publish_condition:
+            return copy.deepcopy(self._published_watchlist_view)
+
+    def update_watchlist(self, symbol: str, enabled: bool) -> dict[str, object]:
+        """Atomically persist and publish one validated watchlist toggle."""
+        if (
+            not isinstance(symbol, str)
+            or len(symbol) != 6
+            or not symbol.isascii()
+            or not symbol.isdigit()
+            or symbol not in self._metadata
+        ):
+            raise SwingServiceError("symbol must identify a metadata-verified ETF")
+        if type(enabled) is not bool:
+            raise SwingServiceError("enabled must be boolean")
+        with self.producer_lock:
+            candidate = list(self._watchlist)
+            index = next(
+                (position for position, item in enumerate(candidate)
+                 if item.symbol == symbol),
+                None,
+            )
+            if index is not None and candidate[index].enabled is enabled:
+                if enabled:
+                    self._ensure_current_formal_alerts(self._safe_now())
+                return self.watchlist()
+            if index is None:
+                candidate.append(SwingWatchItem(symbol, enabled))
+            else:
+                candidate[index] = SwingWatchItem(symbol, enabled)
+            next_watchlist = tuple(candidate)
+            now = self._safe_now()
+            try:
+                self._retract_symbol_overlays(
+                    symbol, "WATCHLIST_MEMBERSHIP_CHANGED",
+                )
+                next_health = dict(self._health)
+                next_errors = dict(self._errors)
+                next_health["alerts"] = "OK"
+                next_errors.pop("alerts", None)
+                next_formal = self._calculate_formal(
+                    self._history,
+                    self._portfolio_projection,
+                    self._health["portfolio"],
+                    self._health["daily"],
+                    now,
+                    watchlist=next_watchlist,
+                )
+                next_by_symbol = {
+                    formal_symbol: (
+                        self._next_trading_date(decision.as_of_trading_date)
+                        if decision.as_of_trading_date is not None else None
+                    )
+                    for formal_symbol, decision in next_formal.items()
+                }
+                alert_error = self._persist_formal_alerts(
+                    next_formal,
+                    next_by_symbol,
+                    self._health["portfolio"],
+                )
+                if alert_error is None:
+                    next_health["alerts"] = "OK"
+                    next_errors.pop("alerts", None)
+                else:
+                    next_health["alerts"] = "BLOCKED"
+                    next_errors["alerts"] = alert_error
+                snapshot = self._candidate_snapshot(
+                    now,
+                    watchlist=next_watchlist,
+                    formal=next_formal,
+                    health=next_health,
+                    errors=next_errors,
+                )
+                self._write_watchlist(next_watchlist)
+            except Exception as error:
+                self._health["alerts"] = "BLOCKED"
+                self._errors["alerts"] = self._safe_error(error)
+                failed_snapshot = self._build_snapshot(now)
+                for item in failed_snapshot["items"]:  # type: ignore[index]
+                    if item.get("symbol") == symbol:
+                        item["intraday_overlay"] = None
+                self._publish(failed_snapshot)
+                raise SwingServiceError("watchlist update failed") from error
+            with self.publish_condition:
+                self._watchlist = next_watchlist
+                self._formal = next_formal
+                self._health = next_health
+                self._errors = next_errors
+                self._publish_locked(snapshot)
+            return self.watchlist()
+
+    def _ensure_current_formal_alerts(self, now: datetime) -> None:
+        store = self._alert_store
+        try:
+            before_events = store.load_events() if store is not None else ()
+        except Exception:
+            before_events = ()
+        next_by_symbol = {
+            symbol: (
+                self._next_trading_date(decision.as_of_trading_date)
+                if decision.as_of_trading_date is not None else None
+            )
+            for symbol, decision in self._formal.items()
+        }
+        alert_error = self._persist_formal_alerts(
+            self._formal, next_by_symbol, self._health["portfolio"],
+        )
+        next_health = dict(self._health)
+        next_errors = dict(self._errors)
+        if alert_error is None:
+            next_health["alerts"] = "OK"
+            next_errors.pop("alerts", None)
+        else:
+            next_health["alerts"] = "BLOCKED"
+            next_errors["alerts"] = alert_error
+        try:
+            after_events = store.load_events() if store is not None else ()
+        except Exception:
+            after_events = ()
+        if (
+            before_events == after_events
+            and next_health == self._health
+            and next_errors == self._errors
+        ):
+            return
+        snapshot = self._candidate_snapshot(
+            now, health=next_health, errors=next_errors,
+        )
+        with self.publish_condition:
+            self._health = next_health
+            self._errors = next_errors
+            self._publish_locked(snapshot)
+
+    def _retract_symbol_overlays(self, symbol: str, reason: str) -> None:
+        store = self._require_alert_store()
+        active = tuple(
+            item for item in store.current()
+            if item.scope == "INTRADAY"
+            and item.symbol == symbol
+            and not item.retracted
+        )
+        for item in active:
+            store.retract_overlay(item.alert_id, reason)
+
+    def portfolio(self) -> dict[str, object]:
+        with self.publish_condition:
+            return copy.deepcopy(self._published_portfolio_view)
+
+    def backtest(
+        self, symbol: str | None, scope: str,
+    ) -> dict[str, object]:
+        """Return one content-addressed real backtest without publishing state."""
+        if scope not in {"symbol", "portfolio"}:
+            raise SwingServiceError("scope must be symbol or portfolio")
+        if scope == "symbol":
+            if symbol is None:
+                raise SwingServiceError("symbol is required for symbol scope")
+            normalized_symbol = self._validated_enabled_symbol(symbol)
+            selected_symbols = (normalized_symbol,)
+        else:
+            if symbol is not None:
+                raise SwingServiceError("portfolio scope does not accept symbol")
+            selected_symbols = tuple(sorted(
+                item.symbol for item in self._watchlist if item.enabled
+            ))
+            if not selected_symbols:
+                raise SwingServiceError("portfolio scope requires enabled symbols")
+            normalized_symbol = None
+
+        with self.publish_condition:
+            strategy = self._strategy
+            history = tuple(
+                bar for bar in self._history if bar.symbol in selected_symbols
+            )
+            metadata = {
+                item: self._metadata[item]
+                for item in selected_symbols if item in self._metadata
+            }
+        if strategy is None or len(metadata) != len(selected_symbols):
+            return self._backtest_unavailable(
+                scope, normalized_symbol, "DATA_UNAVAILABLE",
+                "CONFIGURATION_OR_METADATA_UNAVAILABLE",
+            )
+        histories = {
+            item: tuple(bar for bar in history if bar.symbol == item)
+            for item in selected_symbols
+        }
+        canonical_history = [
+            bar.to_dict()
+            for item in selected_symbols for bar in histories[item]
+        ]
+        history_digest = self._canonical_digest(canonical_history)
+        latest = max(
+            (bar.trading_date for bar in history), default=None,
+        )
+        execution_contract = {
+            "strategy": {
+                field: getattr(strategy, field)
+                for field in sorted(strategy.__dataclass_fields__)
+            },
+            "trading": {
+                item: metadata[item].trading.to_dict()
+                for item in selected_symbols
+            },
+            "engine_version": _BACKTEST_ENGINE_VERSION,
+            "cache_schema_version": _BACKTEST_CACHE_SCHEMA_VERSION,
+            "execution_assumptions": {
+                item: SwingBacktester(
+                    strategy, metadata[item].trading,
+                )._execution_assumptions()
+                for item in selected_symbols
+            },
+            "portfolio_policies": {
+                "cash": "ONE_SHARED_CASH_BALANCE",
+                "priority": "EXIT,REDUCE,ADD,TRIAL_ENTRY",
+                "common_range": "INTERSECTION_AFTER_WARMUP",
+                "walk_forward_variants": 81,
+                "walk_forward_selection": None,
+            },
+            "initial_cash": 100_000.0,
+        }
+        assumptions_digest = self._canonical_digest(execution_contract)
+        strategy_parameters = {
+            field: getattr(strategy, field)
+            for field in sorted(strategy.__dataclass_fields__)
+        }
+        first_symbol = selected_symbols[0]
+        result_assumptions = dict(SwingBacktester(
+            strategy, metadata[first_symbol].trading,
+        )._execution_assumptions())
+        unavailable_result_assumptions = dict(result_assumptions)
+        if scope == "portfolio":
+            unavailable_result_assumptions["portfolio_cash_model"] = (
+                "ONE_SHARED_CASH_BALANCE"
+            )
+            result_assumptions.update({
+                "portfolio_cash_model": "ONE_SHARED_CASH_BALANCE",
+                "action_priority": "EXIT,REDUCE,ADD,TRIAL_ENTRY",
+                "common_range_policy": "INTERSECTION_AFTER_WARMUP",
+                "trading_metadata_by_symbol": {
+                    item: metadata[item].trading.to_dict()
+                    for item in selected_symbols
+                },
+            })
+        cache_key = {
+            "cache_schema_version": _BACKTEST_CACHE_SCHEMA_VERSION,
+            "engine_version": _BACKTEST_ENGINE_VERSION,
+            "scope": scope,
+            "symbol": normalized_symbol,
+            "selected_symbols": list(selected_symbols),
+            "strategy_version": strategy.strategy_version,
+            "latest_trading_date": (
+                None if latest is None else latest.isoformat()
+            ),
+            "history_digest": history_digest,
+            "execution_assumptions_digest": assumptions_digest,
+            "strategy_parameters_digest": self._canonical_digest(
+                strategy_parameters,
+            ),
+            "result_assumptions_digest": self._canonical_digest(
+                result_assumptions,
+            ),
+            "unavailable_result_assumptions_digest": self._canonical_digest(
+                unavailable_result_assumptions,
+            ),
+        }
+        cache_name = self._canonical_digest(cache_key) + ".json"
+        cache_path = self.paths.backtests / cache_name
+        self.paths.backtests.mkdir(parents=True, exist_ok=True)
+        signing_key = self._backtest_signing_key()
+        with self._backtest_registry_lock:
+            key_lock = self._backtest_key_locks.setdefault(
+                cache_name, threading.Lock(),
+            )
+        with key_lock:
+            with _SiblingFileLock(cache_path, shared=False):
+                cached = self._read_backtest_cache(
+                    cache_path, cache_key, signing_key,
+                )
+                if cached is not None:
+                    return cached
+                result, metric_evidence = self._run_backtest(
+                    scope,
+                    normalized_symbol,
+                    selected_symbols,
+                    histories,
+                    metadata,
+                    strategy,
+                )
+                self._write_backtest_cache(
+                    cache_path, cache_key, result, metric_evidence, signing_key,
+                )
+                return copy.deepcopy(result)
+
+    @staticmethod
+    def _canonical_digest(value: object) -> str:
+        return hashlib.sha256(SwingService._canonical_bytes(value)).hexdigest()
+
+    @staticmethod
+    def _canonical_bytes(value: object) -> bytes:
+        return json.dumps(
+            value, ensure_ascii=True, allow_nan=False,
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+
+    @classmethod
+    def _cache_hmac(
+        cls, signing_key: bytes, envelope: Mapping[str, object],
+    ) -> str:
+        # The persisted key is the authenticity boundary: compromise of both it
+        # and metric evidence permits cache forgery, as in the standard HMAC
+        # threat model. Ordinary cache-file edits cannot produce a valid tag.
+        return hmac.new(
+            signing_key, cls._canonical_bytes(envelope), hashlib.sha256,
+        ).hexdigest()
+
+    def _backtest_signing_key(self) -> bytes:
+        path = self.paths.backtests.with_name(
+            f".{self.paths.backtests.name}.signing-key",
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _SiblingFileLock(path, shared=False):
+            try:
+                key = path.read_bytes()
+            except OSError:
+                key = b""
+            if len(key) == 32:
+                return key
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    "wb", dir=path.parent, prefix=f".{path.name}.",
+                    suffix=".tmp", delete=False,
+                ) as handle:
+                    temporary = Path(handle.name)
+                    key = os.urandom(32)
+                    handle.write(key)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                try:
+                    os.chmod(temporary, 0o600)
+                except OSError:
+                    pass
+                os.replace(temporary, path)
+                temporary = None
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+                return key
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    @classmethod
+    def _read_backtest_cache(
+        cls,
+        path: Path,
+        cache_key: Mapping[str, object],
+        signing_key: bytes,
+    ) -> dict[str, object] | None:
+        try:
+            payload = json.loads(
+                path.read_text(encoding="utf-8"),
+                object_pairs_hook=cls._strict_json_object,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"nonfinite JSON value: {value}")
+                ),
+            )
+            if (
+                type(payload) is not dict
+                or set(payload) != {
+                    "schema_version", "cache_key", "payload_sha256", "result",
+                    "metric_evidence", "hmac_sha256",
+                }
+                or type(payload.get("schema_version")) is not int
+                or payload.get("schema_version") != _BACKTEST_CACHE_SCHEMA_VERSION
+                or type(payload.get("cache_key")) is not dict
+                or payload.get("cache_key") != dict(cache_key)
+                or type(payload.get("payload_sha256")) is not str
+                or len(payload["payload_sha256"]) != 64
+                or any(character not in "0123456789abcdef"
+                       for character in payload["payload_sha256"])
+                or type(payload.get("result")) is not dict
+                or type(payload.get("metric_evidence")) not in (
+                    dict, type(None),
+                )
+                or type(payload.get("hmac_sha256")) is not str
+                or len(payload["hmac_sha256"]) != 64
+                or any(character not in "0123456789abcdef"
+                       for character in payload["hmac_sha256"])
+            ):
+                return None
+            result = payload["result"]
+            signed = {
+                key: payload[key]
+                for key in (
+                    "schema_version", "cache_key", "payload_sha256", "result",
+                    "metric_evidence",
+                )
+            }
+            if (
+                payload["payload_sha256"] != cls._canonical_digest(result)
+                or not hmac.compare_digest(
+                    payload["hmac_sha256"], cls._cache_hmac(signing_key, signed),
+                )
+                or not cls._valid_backtest_result(result, cache_key)
+                or not cls._valid_metric_evidence(
+                    result, payload["metric_evidence"], cache_key,
+                )
+            ):
+                return None
+            return copy.deepcopy(result)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            return None
+
+    @classmethod
+    def _write_backtest_cache(
+        cls,
+        path: Path,
+        cache_key: Mapping[str, object],
+        result: Mapping[str, object],
+        metric_evidence: Mapping[str, object] | None,
+        signing_key: bytes,
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", newline="\n", dir=path.parent,
+                prefix=f".{path.name}.", suffix=".tmp", delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                canonical_result = dict(result)
+                signed = {
+                    "schema_version": _BACKTEST_CACHE_SCHEMA_VERSION,
+                    "cache_key": dict(cache_key),
+                    "payload_sha256": cls._canonical_digest(canonical_result),
+                    "result": canonical_result,
+                    "metric_evidence": (
+                        None if metric_evidence is None
+                        else copy.deepcopy(dict(metric_evidence))
+                    ),
+                }
+                envelope = {
+                    **signed,
+                    "hmac_sha256": cls._cache_hmac(signing_key, signed),
+                }
+                json.dump(envelope, handle, ensure_ascii=True, allow_nan=False,
+                    sort_keys=True, separators=(",", ":"))
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    @classmethod
+    def _valid_backtest_result(
+        cls,
+        result: Mapping[str, object],
+        cache_key: Mapping[str, object],
+    ) -> bool:
+        unavailable_keys = {
+            "schema_version", "scope", "symbol", "status", "reason",
+            "outperformance", "read_only",
+        }
+        symbol_keys = {
+            "schema_version", "strategy_version", "strategy_parameters",
+            "execution_assumptions", "symbol", "status", "reason",
+            "initial_cash", "cash", "ending_equity", "start_date", "end_date",
+            "trades", "rejections", "completed_round_trips", "round_trips",
+            "open_position_shares", "uncompleted_leg_count", "benchmark",
+            "outperformance", "metrics", "metric_conventions", "scope",
+            "read_only",
+        }
+        portfolio_keys = {
+            "schema_version", "scope", "strategy_version", "status", "reason",
+            "symbols", "initial_cash", "cash", "ending_equity",
+            "common_start_date", "common_end_date", "event_dates", "trades",
+            "rejections", "rejection_counts", "completed_round_trips",
+            "round_trips", "open_position_shares", "uncompleted_leg_count",
+            "max_equity_weight", "max_planned_risk", "metrics", "baseline",
+            "baseline_weights", "outperformance", "strategy_parameters",
+            "execution_assumptions", "walk_forward", "symbol", "read_only",
+        }
+        keys = set(result)
+        if keys == unavailable_keys:
+            expected_keys = unavailable_keys
+        elif cache_key.get("scope") == "symbol":
+            expected_keys = symbol_keys
+        else:
+            expected_keys = portfolio_keys
+        if keys != expected_keys:
+            return False
+        if (
+            type(result.get("schema_version")) is not int
+            or result.get("schema_version") != 1
+            or result.get("scope") != cache_key.get("scope")
+            or result.get("symbol") != cache_key.get("symbol")
+            or type(result.get("status")) is not str
+            or result.get("status") not in {
+                "OK", "INSUFFICIENT_SAMPLE", "DATA_UNAVAILABLE",
+            }
+            or result.get("read_only") is not True
+            or type(result.get("reason")) not in (str, type(None))
+            or type(result.get("outperformance")) not in (int, float, type(None))
+            or (
+                result.get("status") != "OK"
+                and result.get("outperformance") is not None
+            )
+            or not cls._strict_json_tree(result)
+        ):
+            return False
+        if expected_keys != unavailable_keys:
+            required_mappings = (
+                "strategy_parameters", "execution_assumptions",
+            )
+            required_lists = ("trades", "rejections", "round_trips")
+            if any(type(result.get(key)) is not dict for key in required_mappings):
+                return False
+            if any(type(result.get(key)) is not list for key in required_lists):
+                return False
+            if not cls._valid_backtest_result_components(result, cache_key):
+                return False
+        return True
+
+    @classmethod
+    def _valid_backtest_result_components(
+        cls,
+        result: Mapping[str, object],
+        cache_key: Mapping[str, object],
+    ) -> bool:
+        strategy_keys = set(SwingStrategyConfig.__dataclass_fields__)
+        assumption_keys = {
+            "actual_buy_sizing_policy", "asset_type",
+            "benchmark_liquidated_at_end", "benchmark_policy", "buy_fee_rate",
+            "buy_fill_price_formula", "corporate_action_policy",
+            "default_half_spread_ticks", "default_half_spread_ticks_rationale",
+            "entry_execution_policy", "exchange", "execution_cost_order",
+            "execution_day_phases", "execution_timing", "execution_volume_gate",
+            "fee_formula", "fill_cap_policy", "financing_policy",
+            "half_spread_ticks", "intraday_turnaround", "liquidity_budget_policy",
+            "lot_size", "mark_to_market_policy", "max_volume_participation",
+            "minimum_fee", "price_limit_pct", "price_limit_policy", "price_tick",
+            "raw_adjusted_policy", "sell_fee_cash_policy", "sell_fee_rate",
+            "sell_fill_price_formula", "sellability_policy", "sellable_delay_days",
+            "signal_bar_policy", "slippage_rate", "spread_slippage_attribution",
+            "stop_execution_policy", "volume_policy", "volume_unit_shares",
+        }
+        if set(result["strategy_parameters"]) != strategy_keys:
+            return False
+        try:
+            parsed_strategy = SwingStrategyConfig(
+                **dict(result["strategy_parameters"]),
+            )
+        except (TypeError, ValueError):
+            return False
+        canonical_strategy = {
+            field: getattr(parsed_strategy, field) for field in strategy_keys
+        }
+        if any(
+            type(result["strategy_parameters"][field])
+            is not type(canonical_strategy[field])
+            or result["strategy_parameters"][field] != canonical_strategy[field]
+            for field in strategy_keys
+        ):
+            return False
+        if (
+            cls._canonical_digest(result["strategy_parameters"])
+            != cache_key.get("strategy_parameters_digest")
+            or result.get("strategy_version") != cache_key.get("strategy_version")
+            or type(result.get("strategy_version")) is not str
+        ):
+            return False
+        expected_assumptions = set(assumption_keys)
+        unavailable_shape = result.get("metrics") is None
+        if cache_key.get("scope") == "portfolio":
+            full_portfolio_assumptions = expected_assumptions | {
+                "portfolio_cash_model", "action_priority", "common_range_policy",
+                "trading_metadata_by_symbol",
+            }
+            unavailable_portfolio_assumptions = expected_assumptions | {
+                "portfolio_cash_model",
+            }
+            required_assumption_keys = (
+                unavailable_portfolio_assumptions
+                if unavailable_shape else full_portfolio_assumptions
+            )
+            if set(result["execution_assumptions"]) != required_assumption_keys:
+                return False
+        elif set(result["execution_assumptions"]) != expected_assumptions:
+            return False
+        expected_assumptions_digest = cache_key.get(
+            "unavailable_result_assumptions_digest"
+            if unavailable_shape else "result_assumptions_digest",
+        )
+        if (
+            cls._canonical_digest(result["execution_assumptions"])
+            != expected_assumptions_digest
+        ):
+            return False
+        for key in ("initial_cash", "cash"):
+            if not cls._strict_number(result.get(key), nonnegative=True):
+                return False
+        if result.get("initial_cash") != 100_000.0:
+            return False
+        if not cls._strict_optional_number(
+            result.get("ending_equity"), nonnegative=True,
+        ) or not cls._strict_optional_number(result.get("outperformance")):
+            return False
+        if any(
+            type(result.get(key)) is not int
+            for key in ("completed_round_trips", "uncompleted_leg_count")
+        ):
+            return False
+        fill_keys = {
+            "symbol", "side", "requested_shares", "shares", "signal_date",
+            "execution_date", "raw_reference_price", "fill_price", "fee",
+            "spread_cost", "slippage", "planned_stop", "reason",
+        }
+        rejection_keys = {
+            "symbol", "side", "signal_date", "execution_date",
+            "requested_shares", "rejected_shares", "reason",
+        }
+        round_trip_keys = {
+            "entry_date", "exit_date", "net_pnl", "holding_days",
+        }
+        if cache_key.get("scope") == "portfolio":
+            round_trip_keys.add("symbol")
+        if not cls._valid_record_list(result["trades"], fill_keys):
+            return False
+        if not cls._valid_record_list(result["rejections"], rejection_keys):
+            return False
+        if not cls._valid_record_list(result["round_trips"], round_trip_keys):
+            return False
+        if not cls._valid_trade_records(result["trades"]):
+            return False
+        if not cls._valid_rejection_records(result["rejections"]):
+            return False
+        if not cls._valid_round_trip_records(result["round_trips"]):
+            return False
+        if result["completed_round_trips"] != len(result["round_trips"]):
+            return False
+        selected_symbols = cache_key.get("selected_symbols")
+        if (
+            type(selected_symbols) is not list
+            or not selected_symbols
+            or any(type(symbol) is not str for symbol in selected_symbols)
+        ):
+            return False
+        allowed_symbols = set(selected_symbols)
+        if cache_key.get("scope") == "symbol" and selected_symbols != [
+            result.get("symbol"),
+        ]:
+            return False
+        if any(
+            item["symbol"] not in allowed_symbols
+            for key in ("trades", "rejections") for item in result[key]
+        ):
+            return False
+        if cache_key.get("scope") == "portfolio" and any(
+            item["symbol"] not in allowed_symbols for item in result["round_trips"]
+        ):
+            return False
+        expected_cash = cls._cash_after_fills(
+            result["initial_cash"], result["trades"],
+        )
+        if expected_cash is None or result["cash"] != expected_cash:
+            return False
+        metrics = result.get("metrics")
+        if metrics is not None and (
+            type(metrics) is not dict
+            or set(metrics) != {
+                "cumulative_return", "annualized_return", "maximum_drawdown",
+                "calmar", "sharpe", "win_rate", "average_profit",
+                "average_loss", "payoff_ratio", "average_holding_days",
+                "utilization", "longest_losing_streak", "fees", "spread_cost",
+                "slippage", "rejection_counts",
+            }
+            or type(metrics.get("rejection_counts")) is not dict
+        ):
+            return False
+        if metrics is not None and not cls._valid_metrics(metrics):
+            return False
+        if metrics is not None and (
+            not cls._same_cache_number(metrics["fees"], sum(
+                item["fee"] for item in result["trades"]
+            ))
+            or not cls._same_cache_number(metrics["spread_cost"], sum(
+                item["spread_cost"] for item in result["trades"]
+            ))
+            or not cls._same_cache_number(metrics["slippage"], sum(
+                item["slippage"] for item in result["trades"]
+            ))
+            or any(
+                metrics["rejection_counts"].get(reason, 0) < count
+                for reason, count in cls._reason_counts(
+                    result["rejections"],
+                ).items()
+            )
+        ):
+            return False
+        if metrics is not None and not cls._valid_metric_aggregates(
+            metrics, result["round_trips"],
+        ):
+            return False
+        status = result["status"]
+        if (status == "OK") != (result.get("reason") is None):
+            return False
+        if status == "OK" and (
+            metrics is None
+            or result.get("ending_equity") is None
+            or result.get("outperformance") is None
+            or result["completed_round_trips"] <= 0
+        ):
+            return False
+        if status == "DATA_UNAVAILABLE" and (
+            metrics is not None
+            or result.get("ending_equity") is not None
+            or result.get("outperformance") is not None
+        ):
+            return False
+        if unavailable_shape and not cls._valid_unavailable_result_state(result):
+            return False
+        if metrics is not None and metrics["cumulative_return"] != (
+            cls._clean_cache_number(
+                result["ending_equity"] / result["initial_cash"] - 1.0,
+            )
+        ):
+            return False
+        if metrics is not None and (
+            (result["ending_equity"] > 0.0)
+            != (metrics["annualized_return"] is not None)
+        ):
+            return False
+        if cache_key.get("scope") == "symbol":
+            benchmark = result.get("benchmark")
+            if benchmark is not None and (
+                type(benchmark) is not dict
+                or set(benchmark) != {
+                    "start_date", "shares", "cash", "ending_equity",
+                    "cumulative_return", "fee", "spread_cost", "slippage",
+                }
+            ):
+                return False
+            conventions = result.get("metric_conventions")
+            if not (
+                cls._strict_date_text(result.get("start_date"))
+                and cls._strict_date_text(result.get("end_date"))
+                and result["start_date"] <= result["end_date"]
+                and type(conventions) is dict and set(conventions) == {
+                "annualization_sessions", "sharpe_frequency",
+                "sharpe_risk_free_rate", "sharpe_zero_variance",
+                "drawdown_sign", "holding_days",
+                }
+                and type(result.get("open_position_shares")) is int
+                and result["open_position_shares"] >= 0
+            ):
+                return False
+            position_shares = cls._shares_after_fills(
+                result["trades"], [result["symbol"]],
+            )
+            if position_shares != {result["symbol"]: result["open_position_shares"]}:
+                return False
+            if benchmark is not None and not cls._valid_symbol_benchmark(benchmark):
+                return False
+            if benchmark is not None and benchmark["cumulative_return"] != (
+                cls._clean_cache_number(
+                    benchmark["ending_equity"] / result["initial_cash"] - 1.0,
+                )
+            ):
+                return False
+            if status == "OK" and (
+                benchmark is None
+                or result["outperformance"] != cls._clean_cache_number(
+                    metrics["cumulative_return"]
+                    - benchmark["cumulative_return"],
+                )
+            ):
+                return False
+            return True
+        baseline = result.get("baseline")
+        if baseline is not None and (
+            type(baseline) is not dict
+            or set(baseline) != {
+                "status", "reason", "initial_cash", "cash", "ending_equity",
+                "trades", "fees", "spread_cost", "slippage",
+                "shares_by_symbol", "cumulative_return",
+            }
+            or not cls._valid_record_list(baseline.get("trades"), fill_keys)
+            or type(baseline.get("shares_by_symbol")) is not dict
+        ):
+            return False
+        if baseline is not None and baseline["ending_equity"] is not None and (
+            baseline["cumulative_return"] != cls._clean_cache_number(
+                baseline["ending_equity"] / baseline["initial_cash"] - 1.0,
+            )
+        ):
+            return False
+        if status == "OK" and result["outperformance"] != (
+            cls._clean_cache_number(
+                metrics["cumulative_return"] - baseline["cumulative_return"],
+            )
+        ):
+            return False
+        if baseline is not None and not cls._valid_portfolio_benchmark(baseline):
+            return False
+        for key in (
+            "rejection_counts", "open_position_shares", "baseline_weights",
+        ):
+            if type(result.get(key)) is not dict:
+                return False
+        symbols = result.get("symbols")
+        if (
+            type(symbols) is not list or not symbols
+            or symbols != selected_symbols
+            or symbols != sorted(symbols) or len(set(symbols)) != len(symbols)
+            or any(type(item) is not str or len(item) != 6 or not item.isascii()
+                   or not item.isdigit() for item in symbols)
+            or set(result["open_position_shares"]) != set(symbols)
+            or any(type(value) is not int or value < 0
+                   for value in result["open_position_shares"].values())
+            or any(not cls._strict_number(value, nonnegative=True)
+                   for value in result["baseline_weights"].values())
+            or any(type(value) is not int or value < 0
+                   for value in result["rejection_counts"].values())
+            or result["rejection_counts"] != cls._reason_counts(
+                result["rejections"],
+            )
+            or not cls._strict_optional_number(
+                result.get("max_equity_weight"), nonnegative=True,
+            )
+            or not cls._strict_optional_number(
+                result.get("max_planned_risk"), nonnegative=True,
+            )
+        ):
+            return False
+        if cls._shares_after_fills(result["trades"], symbols) != result[
+            "open_position_shares"
+        ]:
+            return False
+        if baseline is not None and (
+            set(baseline["shares_by_symbol"]) != set(symbols)
+            or set(result["baseline_weights"]) != set(symbols)
+            or cls._cash_after_fills(
+                baseline["initial_cash"], baseline["trades"],
+            ) != baseline["cash"]
+            or cls._shares_after_fills(
+                baseline["trades"], symbols,
+            ) != baseline["shares_by_symbol"]
+        ):
+            return False
+        if not unavailable_shape and set(
+            result["execution_assumptions"]["trading_metadata_by_symbol"],
+        ) != set(symbols):
+            return False
+        for key in ("common_start_date", "common_end_date"):
+            if not cls._strict_date_text(result.get(key), optional=True):
+                return False
+        if (
+            (result["common_start_date"] is None)
+            != (result["common_end_date"] is None)
+            or (
+                result["common_start_date"] is not None
+                and result["common_start_date"] > result["common_end_date"]
+            )
+            or type(result.get("event_dates")) is not list
+            or any(not cls._strict_date_text(item) for item in result["event_dates"])
+            or result["event_dates"] != sorted(set(result["event_dates"]))
+            or (status == "OK" and baseline is None)
+        ):
+            return False
+        if metrics is not None and result["event_dates"]:
+            expected_annualized = (
+                (result["ending_equity"] / result["initial_cash"])
+                ** (252.0 / len(result["event_dates"])) - 1.0
+            )
+            if not cls._same_cache_number(
+                metrics["annualized_return"], expected_annualized,
+            ):
+                return False
+        return cls._valid_walk_forward(result.get("walk_forward"), metrics_keys={
+            "cumulative_return", "annualized_return", "maximum_drawdown",
+            "calmar", "sharpe", "win_rate", "average_profit", "average_loss",
+            "payoff_ratio", "average_holding_days", "utilization",
+            "longest_losing_streak", "fees", "spread_cost", "slippage",
+            "rejection_counts",
+        }, strategy=parsed_strategy)
+
+    @staticmethod
+    def _strict_number(value: object, *, nonnegative: bool = False) -> bool:
+        return (
+            type(value) in (int, float)
+            and math.isfinite(float(value))
+            and (not nonnegative or float(value) >= 0.0)
+        )
+
+    @staticmethod
+    def _clean_cache_number(value: float) -> float:
+        rounded = round(float(value), 12)
+        return 0.0 if rounded == 0.0 else rounded
+
+    @staticmethod
+    def _same_cache_number(actual: object, expected: float) -> bool:
+        return (
+            type(actual) in (int, float)
+            and math.isfinite(float(actual))
+            and math.isclose(
+                float(actual), float(expected), rel_tol=1e-9, abs_tol=1e-9,
+            )
+        )
+
+    @classmethod
+    def _cash_after_fills(
+        cls, initial_cash: object, fills: object,
+    ) -> float | None:
+        if (
+            not cls._strict_number(initial_cash, nonnegative=True)
+            or type(fills) is not list
+        ):
+            return None
+        cash = float(initial_cash)
+        for fill in fills:
+            if type(fill) is not dict:
+                return None
+            notional = float(fill["fill_price"]) * fill["shares"]
+            if fill["side"] == "BUY":
+                cash -= notional + float(fill["fee"])
+            else:
+                cash += notional - float(fill["fee"])
+        return cls._clean_cache_number(cash)
+
+    @staticmethod
+    def _shares_after_fills(
+        fills: list[Mapping[str, object]],
+        symbols: Sequence[str],
+    ) -> dict[str, int] | None:
+        shares = {symbol: 0 for symbol in symbols}
+        for fill in fills:
+            symbol = fill["symbol"]
+            if symbol not in shares:
+                return None
+            quantity = fill["shares"]
+            assert type(quantity) is int
+            shares[symbol] += quantity if fill["side"] == "BUY" else -quantity
+            if shares[symbol] < 0:
+                return None
+        return dict(sorted(shares.items()))
+
+    @staticmethod
+    def _valid_unavailable_result_state(result: Mapping[str, object]) -> bool:
+        common = (
+            (
+                result.get("status") == "DATA_UNAVAILABLE"
+                or (
+                    result.get("scope") == "portfolio"
+                    and result.get("status") == "INSUFFICIENT_SAMPLE"
+                )
+            )
+            and result.get("cash") == result.get("initial_cash")
+            and result.get("ending_equity") is None
+            and result.get("outperformance") is None
+            and result.get("trades") == []
+            and result.get("rejections") == []
+            and result.get("round_trips") == []
+            and result.get("completed_round_trips") == 0
+            and result.get("uncompleted_leg_count") == 0
+        )
+        if not common:
+            return False
+        if result.get("scope") == "symbol":
+            return (
+                result.get("benchmark") is None
+                and result.get("open_position_shares") == 0
+            )
+        return (
+            result.get("event_dates") == []
+            and result.get("rejection_counts") == {}
+            and result.get("baseline") is None
+            and result.get("baseline_weights") == {}
+            and result.get("max_equity_weight") == 0.0
+            and result.get("max_planned_risk") == 0.0
+            and all(
+                shares == 0
+                for shares in result.get("open_position_shares", {}).values()
+            )
+        )
+
+    @classmethod
+    def _strict_optional_number(
+        cls, value: object, *, nonnegative: bool = False,
+    ) -> bool:
+        return value is None or cls._strict_number(
+            value, nonnegative=nonnegative,
+        )
+
+    @staticmethod
+    def _strict_date_text(value: object, *, optional: bool = False) -> bool:
+        if value is None:
+            return optional
+        if type(value) is not str:
+            return False
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError:
+            return False
+        return parsed.isoformat() == value
+
+    @classmethod
+    def _valid_trade_records(cls, records: object) -> bool:
+        if type(records) is not list:
+            return False
+        for item in records:
+            if (
+                type(item.get("symbol")) is not str
+                or len(item["symbol"]) != 6 or not item["symbol"].isascii()
+                or not item["symbol"].isdigit()
+                or item.get("side") not in {"BUY", "SELL"}
+                or type(item.get("requested_shares")) is not int
+                or type(item.get("shares")) is not int
+                or item["requested_shares"] <= 0
+                or item["shares"] <= 0
+                or item["shares"] > item["requested_shares"]
+                or not cls._strict_date_text(item.get("signal_date"))
+                or not cls._strict_date_text(item.get("execution_date"))
+                or item["signal_date"] >= item["execution_date"]
+                or any(not cls._strict_number(item.get(key), nonnegative=True)
+                       for key in ("fee", "spread_cost", "slippage"))
+                or any(not cls._strict_number(item.get(key))
+                       or float(item[key]) <= 0.0
+                       for key in ("raw_reference_price", "fill_price"))
+                or not cls._strict_optional_number(
+                    item.get("planned_stop"), nonnegative=True,
+                )
+                or type(item.get("reason")) is not str or not item["reason"]
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _valid_rejection_records(cls, records: object) -> bool:
+        if type(records) is not list:
+            return False
+        for item in records:
+            if (
+                type(item.get("symbol")) is not str
+                or item.get("side") not in {"BUY", "SELL"}
+                or type(item.get("requested_shares")) is not int
+                or type(item.get("rejected_shares")) is not int
+                or item["requested_shares"] <= 0 or item["rejected_shares"] < 0
+                or not cls._strict_date_text(item.get("signal_date"))
+                or not cls._strict_date_text(item.get("execution_date"))
+                or item["signal_date"] >= item["execution_date"]
+                or type(item.get("reason")) is not str or not item["reason"]
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _valid_round_trip_records(cls, records: object) -> bool:
+        if type(records) is not list:
+            return False
+        for item in records:
+            if (
+                not cls._strict_date_text(item.get("entry_date"))
+                or not cls._strict_date_text(item.get("exit_date"))
+                or item["entry_date"] > item["exit_date"]
+                or not cls._strict_number(item.get("net_pnl"))
+                or type(item.get("holding_days")) is not int
+                or item["holding_days"] < 0
+            ):
+                return False
+            if "symbol" in item and (
+                type(item["symbol"]) is not str or len(item["symbol"]) != 6
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _valid_metrics(cls, metrics: Mapping[str, object]) -> bool:
+        optional = {
+            "annualized_return", "calmar", "sharpe", "win_rate",
+            "average_profit", "average_loss", "payoff_ratio",
+            "average_holding_days", "longest_losing_streak",
+        }
+        numeric = set(metrics) - {"rejection_counts"}
+        for key in numeric:
+            value = metrics[key]
+            if key == "longest_losing_streak":
+                if value is not None and (type(value) is not int or value < 0):
+                    return False
+            elif key in optional:
+                if not cls._strict_optional_number(value):
+                    return False
+            elif not cls._strict_number(value):
+                return False
+        if not all(
+            type(key) is str and type(value) is int and value >= 0
+            for key, value in metrics["rejection_counts"].items()
+        ):
+            return False
+        if not -1.0 <= metrics["cumulative_return"]:
+            return False
+        if not 0.0 <= metrics["maximum_drawdown"] <= 1.0:
+            return False
+        if not 0.0 <= metrics["utilization"] <= 1.0:
+            return False
+        if metrics["annualized_return"] is not None and metrics[
+            "annualized_return"
+        ] < -1.0:
+            return False
+        if metrics["win_rate"] is not None and not 0.0 <= metrics[
+            "win_rate"
+        ] <= 1.0:
+            return False
+        if metrics["average_profit"] is not None and metrics[
+            "average_profit"
+        ] <= 0.0:
+            return False
+        if metrics["average_loss"] is not None and metrics["average_loss"] >= 0.0:
+            return False
+        if metrics["average_holding_days"] is not None and metrics[
+            "average_holding_days"
+        ] < 0.0:
+            return False
+        if any(metrics[key] < 0.0 for key in (
+            "fees", "spread_cost", "slippage",
+        )):
+            return False
+        expected_calmar = (
+            None
+            if metrics["annualized_return"] is None
+            or metrics["maximum_drawdown"] <= 0.0
+            else cls._clean_cache_number(
+                metrics["annualized_return"] / metrics["maximum_drawdown"],
+            )
+        )
+        if (
+            (metrics["calmar"] is None) != (expected_calmar is None)
+            or expected_calmar is not None
+            and not cls._same_cache_number(metrics["calmar"], expected_calmar)
+        ):
+            return False
+        expected_payoff = (
+            None
+            if metrics["average_profit"] is None
+            or metrics["average_loss"] is None
+            else cls._clean_cache_number(
+                metrics["average_profit"] / abs(metrics["average_loss"]),
+            )
+        )
+        return not (
+            (metrics["payoff_ratio"] is None) != (expected_payoff is None)
+            or expected_payoff is not None
+            and not cls._same_cache_number(
+                metrics["payoff_ratio"], expected_payoff,
+            )
+        )
+
+    @classmethod
+    def _valid_metric_aggregates(
+        cls,
+        metrics: Mapping[str, object],
+        round_trips: list[Mapping[str, object]],
+    ) -> bool:
+        pnls = [float(item["net_pnl"]) for item in round_trips]
+        profits = [value for value in pnls if value > 0.0]
+        losses = [value for value in pnls if value < 0.0]
+        expected_win_rate = (
+            None if not pnls
+            else cls._clean_cache_number(len(profits) / len(pnls))
+        )
+        expected_profit = (
+            None if not profits
+            else cls._clean_cache_number(sum(profits) / len(profits))
+        )
+        expected_loss = (
+            None if not losses
+            else cls._clean_cache_number(sum(losses) / len(losses))
+        )
+        expected_holding = (
+            None if not round_trips
+            else cls._clean_cache_number(
+                sum(item["holding_days"] for item in round_trips)
+                / len(round_trips),
+            )
+        )
+        expected_streak: int | None = None
+        if pnls:
+            current = longest = 0
+            for pnl in pnls:
+                current = current + 1 if pnl < 0.0 else 0
+                longest = max(longest, current)
+            expected_streak = longest
+        for key, expected in (
+            ("win_rate", expected_win_rate),
+            ("average_profit", expected_profit),
+            ("average_loss", expected_loss),
+            ("average_holding_days", expected_holding),
+        ):
+            if (metrics[key] is None) != (expected is None):
+                return False
+            if expected is not None and not cls._same_cache_number(
+                metrics[key], expected,
+            ):
+                return False
+        return metrics["longest_losing_streak"] == expected_streak
+
+    @classmethod
+    def _valid_metric_evidence_node(
+        cls,
+        metrics: object,
+        evidence: object,
+        *,
+        initial_cash: float,
+        ending_equity: object = None,
+    ) -> bool:
+        if metrics is None:
+            return evidence is None
+        if (
+            type(metrics) is not dict
+            or type(evidence) is not dict
+            or set(evidence) != {
+                "session_count", "equity_curve", "utilization",
+                "blocked_counts", "order_rejection_counts",
+            }
+            or type(evidence.get("session_count")) is not int
+            or evidence["session_count"] < 0
+            or type(evidence.get("equity_curve")) is not list
+            or type(evidence.get("utilization")) is not list
+            or type(evidence.get("blocked_counts")) is not dict
+            or type(evidence.get("order_rejection_counts")) is not dict
+            or evidence["session_count"] != len(evidence["equity_curve"])
+            or evidence["session_count"] != len(evidence["utilization"])
+            or any(
+                not cls._strict_number(value, nonnegative=True)
+                for value in evidence["equity_curve"]
+            )
+            or any(
+                not cls._strict_number(value, nonnegative=True)
+                or value > 1.0
+                for value in evidence["utilization"]
+            )
+            or any(
+                type(reason) is not str or not reason
+                or type(count) is not int or count <= 0
+                for counts in (
+                    evidence["blocked_counts"],
+                    evidence["order_rejection_counts"],
+                )
+                for reason, count in counts.items()
+            )
+        ):
+            return False
+        try:
+            derived = _curve_metric_values(
+                initial_cash,
+                evidence["equity_curve"],
+                evidence["utilization"],
+            )
+        except (ArithmeticError, OverflowError, ValueError, ZeroDivisionError):
+            return False
+        for key, expected in derived.items():
+            actual = metrics.get(key)
+            if (actual is None) != (expected is None):
+                return False
+            if expected is not None and not cls._same_cache_number(
+                actual, expected,
+            ):
+                return False
+        combined_counts = dict(evidence["order_rejection_counts"])
+        for reason, count in evidence["blocked_counts"].items():
+            combined_counts[reason] = combined_counts.get(reason, 0) + count
+        if metrics.get("rejection_counts") != dict(
+            sorted(combined_counts.items())
+        ):
+            return False
+        if ending_equity is not None:
+            if not evidence["equity_curve"]:
+                return False
+            if not cls._same_cache_number(
+                evidence["equity_curve"][-1], float(ending_equity),
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _valid_metric_evidence(
+        cls,
+        result: Mapping[str, object],
+        evidence: object,
+        cache_key: Mapping[str, object],
+    ) -> bool:
+        if set(result) == {
+            "schema_version", "scope", "symbol", "status", "reason",
+            "outperformance", "read_only",
+        }:
+            return evidence is None
+        scope = cache_key.get("scope")
+        expected_keys = {"root"} if scope == "symbol" else {
+            "root", "walk_forward",
+        }
+        if type(evidence) is not dict or set(evidence) != expected_keys:
+            return False
+        if not cls._valid_metric_evidence_node(
+            result.get("metrics"),
+            evidence["root"],
+            initial_cash=float(result["initial_cash"]),
+            ending_equity=result.get("ending_equity"),
+        ):
+            return False
+        root_evidence = evidence["root"]
+        if root_evidence is not None and root_evidence[
+            "order_rejection_counts"
+        ] != cls._reason_counts(result["rejections"]):
+            return False
+        if scope == "symbol":
+            return True
+        if root_evidence is not None and (
+            root_evidence["session_count"] != len(result["event_dates"])
+            or not cls._same_cache_number(
+                result["max_equity_weight"],
+                max(root_evidence["utilization"], default=0.0),
+            )
+        ):
+            return False
+        report = result.get("walk_forward")
+        report_evidence = evidence.get("walk_forward")
+        if (
+            type(report) is not dict
+            or type(report_evidence) is not dict
+            or set(report_evidence) != {"variants"}
+            or type(report_evidence.get("variants")) is not list
+            or len(report_evidence["variants"]) != len(report["variants"])
+        ):
+            return False
+        for variant, variant_evidence in zip(
+            report["variants"], report_evidence["variants"], strict=True,
+        ):
+            if (
+                type(variant_evidence) is not dict
+                or set(variant_evidence) != {"folds"}
+                or type(variant_evidence.get("folds")) is not list
+                or len(variant_evidence["folds"]) != len(variant["folds"])
+            ):
+                return False
+            for fold, fold_evidence in zip(
+                variant["folds"], variant_evidence["folds"], strict=True,
+            ):
+                if (
+                    type(fold_evidence) is not dict
+                    or set(fold_evidence) != {"train", "test"}
+                ):
+                    return False
+                for phase_name in ("train", "test"):
+                    if not cls._valid_metric_evidence_node(
+                        fold[phase_name].get("metrics"),
+                        fold_evidence[phase_name],
+                        initial_cash=float(result["initial_cash"]),
+                    ):
+                        return False
+                    phase_evidence = fold_evidence[phase_name]
+                    if phase_evidence is not None:
+                        expected_sessions = (
+                            fold["train_bar_count"]
+                            - max(
+                                result["strategy_parameters"][
+                                    "minimum_daily_bars"
+                                ],
+                                variant["parameters"]["long_ma_days"]
+                                + result["strategy_parameters"][
+                                    "long_ma_slope_lookback"
+                                ],
+                            )
+                            if phase_name == "train"
+                            else fold["test_bar_count"]
+                        )
+                        if (
+                            phase_evidence["session_count"]
+                            != expected_sessions
+                        ):
+                            return False
+        return True
+
+    @classmethod
+    def _valid_symbol_benchmark(cls, value: Mapping[str, object]) -> bool:
+        return (
+            cls._strict_date_text(value.get("start_date"))
+            and type(value.get("shares")) is int and value["shares"] > 0
+            and all(cls._strict_number(value.get(key)) for key in (
+                "cash", "ending_equity", "cumulative_return", "fee",
+                "spread_cost", "slippage",
+            ))
+            and value["cash"] >= 0 and value["ending_equity"] >= 0
+            and value["fee"] >= 0 and value["spread_cost"] >= 0
+            and value["slippage"] >= 0
+        )
+
+    @classmethod
+    def _valid_portfolio_benchmark(cls, value: Mapping[str, object]) -> bool:
+        return (
+            value.get("status") in {"OK", "INSUFFICIENT_SAMPLE"}
+            and type(value.get("reason")) in (str, type(None))
+            and cls._strict_number(value.get("initial_cash"), nonnegative=True)
+            and cls._strict_number(value.get("cash"), nonnegative=True)
+            and cls._strict_optional_number(
+                value.get("ending_equity"), nonnegative=True,
+            )
+            and cls._strict_optional_number(value.get("cumulative_return"))
+            and all(cls._strict_number(value.get(key), nonnegative=True) for key in (
+                "fees", "spread_cost", "slippage",
+            ))
+            and cls._valid_trade_records(value.get("trades"))
+            and type(value.get("shares_by_symbol")) is dict
+            and all(type(shares) is int and shares >= 0
+                    for shares in value["shares_by_symbol"].values())
+        )
+
+    @staticmethod
+    def _reason_counts(records: list[Mapping[str, object]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for item in records:
+            reason = item["reason"]
+            assert type(reason) is str
+            counts[reason] = counts.get(reason, 0) + 1
+        return dict(sorted(counts.items()))
+
+    @classmethod
+    def _valid_record_list(cls, value: object, keys: set[str]) -> bool:
+        return type(value) is list and all(
+            type(item) is dict and set(item) == keys
+            for item in value
+        )
+
+    @classmethod
+    def _valid_walk_forward(
+        cls,
+        value: object,
+        *,
+        metrics_keys: set[str],
+        strategy: SwingStrategyConfig,
+    ) -> bool:
+        if type(value) is not dict or set(value) != {
+            "status", "reason", "train_days", "test_days", "step_days",
+            "selected_variant", "variants",
+        } or type(value.get("variants")) is not list:
+            return False
+        summary_keys = {
+            "status", "reason", "metrics", "cumulative_return",
+            "maximum_drawdown", "completed_round_trips", "outperformance",
+        }
+        if any(
+            type(value.get(key)) is not int or value[key] <= 0
+            for key in ("train_days", "test_days", "step_days")
+        ) or (
+            value.get("status") not in {
+                "OK", "INSUFFICIENT_SAMPLE", "DATA_UNAVAILABLE",
+            }
+            or type(value.get("reason")) not in (str, type(None))
+            or (value["status"] == "OK") != (value["reason"] is None)
+            or value["train_days"] != strategy.walk_forward_train_days
+            or value["test_days"] != strategy.walk_forward_test_days
+            or value["step_days"] != strategy.walk_forward_step_days
+            or value.get("selected_variant") is not None
+        ):
+            return False
+        expected_parameters = [
+            {
+                "short_ma_days": short,
+                "long_ma_days": long,
+                "initial_stop_atr": initial,
+                "trailing_stop_atr": trailing,
+            }
+            for short in (18, 20, 22)
+            for long in (55, 60, 65)
+            for initial in (1.75, 2.0, 2.25)
+            for trailing in (2.75, 3.0, 3.25)
+        ]
+        if value.get("status") == "OK":
+            if len(value["variants"]) != 81:
+                return False
+        elif value["variants"]:
+            return False
+        for variant_index, variant in enumerate(value["variants"]):
+            if type(variant) is not dict or set(variant) != {
+                "parameters", "folds", "stability",
+            }:
+                return False
+            if (
+                type(variant.get("parameters")) is not dict
+                or set(variant["parameters"]) != {
+                    "short_ma_days", "long_ma_days", "initial_stop_atr",
+                    "trailing_stop_atr",
+                }
+                or type(variant.get("stability")) is not dict
+                or set(variant["stability"]) != {
+                    "fold_count", "test_ok_count", "mean_test_return",
+                    "positive_test_fold_count",
+                }
+                or type(variant.get("folds")) is not list
+            ):
+                return False
+            if variant["parameters"] != expected_parameters[variant_index]:
+                return False
+            if (
+                type(variant["stability"].get("fold_count")) is not int
+                or variant["stability"]["fold_count"] != len(variant["folds"])
+                or any(
+                    type(variant["stability"].get(key)) is not int
+                    or variant["stability"][key] < 0
+                    for key in (
+                        "test_ok_count", "positive_test_fold_count",
+                    )
+                )
+                or not cls._strict_optional_number(
+                    variant["stability"].get("mean_test_return"),
+                )
+            ):
+                return False
+            test_returns: list[float] = []
+            test_ok_count = 0
+            for expected_fold_index, fold in enumerate(variant["folds"]):
+                if type(fold) is not dict or set(fold) != {
+                    "fold_index", "train_start_date", "train_end_date",
+                    "test_start_date", "test_end_date", "train_bar_count",
+                    "test_bar_count", "train", "test",
+                }:
+                    return False
+                if (
+                    any(type(fold.get(key)) is not int or fold[key] < 0 for key in (
+                        "fold_index", "train_bar_count", "test_bar_count",
+                    ))
+                    or fold["fold_index"] != expected_fold_index
+                    or fold["train_bar_count"] != strategy.walk_forward_train_days
+                    or fold["test_bar_count"] != strategy.walk_forward_test_days
+                    or any(not cls._strict_date_text(fold.get(key)) for key in (
+                        "train_start_date", "train_end_date", "test_start_date",
+                        "test_end_date",
+                    ))
+                    or not (
+                        fold["train_start_date"] <= fold["train_end_date"]
+                        < fold["test_start_date"] <= fold["test_end_date"]
+                    )
+                ):
+                    return False
+                for phase in (fold.get("train"), fold.get("test")):
+                    if type(phase) is not dict or set(phase) != summary_keys:
+                        return False
+                    nested_metrics = phase.get("metrics")
+                    if nested_metrics is not None and (
+                        type(nested_metrics) is not dict
+                        or set(nested_metrics) != metrics_keys
+                        or not cls._valid_metrics(nested_metrics)
+                    ):
+                        return False
+                    completed = phase.get("completed_round_trips")
+                    if (
+                        phase.get("status") not in {
+                            "OK", "INSUFFICIENT_SAMPLE", "DATA_UNAVAILABLE",
+                        }
+                        or type(completed) is not int or completed < 0
+                        or (phase["status"] == "OK")
+                        != (phase.get("reason") is None)
+                        or type(phase.get("outperformance"))
+                        not in (int, float, type(None))
+                        or (
+                            phase["status"] != "OK"
+                            and phase.get("outperformance") is not None
+                        )
+                    ):
+                        return False
+                    if nested_metrics is None:
+                        if (
+                            completed != 0
+                            or phase.get("cumulative_return") is not None
+                            or phase.get("maximum_drawdown") is not None
+                        ):
+                            return False
+                    elif (
+                        not cls._same_cache_number(
+                            phase.get("cumulative_return"),
+                            nested_metrics["cumulative_return"],
+                        )
+                        or not cls._same_cache_number(
+                            phase.get("maximum_drawdown"),
+                            nested_metrics["maximum_drawdown"],
+                        )
+                        or (completed == 0) != (
+                            nested_metrics["win_rate"] is None
+                        )
+                        or phase["status"] == "OK" and completed <= 0
+                    ):
+                        return False
+                test_phase = fold["test"]
+                if test_phase["status"] == "OK":
+                    test_ok_count += 1
+                test_return = test_phase["cumulative_return"]
+                if type(test_return) in (int, float):
+                    test_returns.append(float(test_return))
+            expected_mean = (
+                None if not test_returns
+                else cls._clean_cache_number(
+                    sum(test_returns) / len(test_returns),
+                )
+            )
+            stability = variant["stability"]
+            if (
+                stability["test_ok_count"] != test_ok_count
+                or stability["positive_test_fold_count"] != sum(
+                    item > 0.0 for item in test_returns
+                )
+                or (stability["mean_test_return"] is None)
+                != (expected_mean is None)
+                or expected_mean is not None
+                and not cls._same_cache_number(
+                    stability["mean_test_return"], expected_mean,
+                )
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _strict_json_tree(cls, value: object) -> bool:
+        if value is None or type(value) in (str, bool, int):
+            return True
+        if type(value) is float:
+            return math.isfinite(value)
+        if type(value) is list:
+            return all(cls._strict_json_tree(item) for item in value)
+        if type(value) is dict:
+            return all(
+                type(key) is str and cls._strict_json_tree(item)
+                for key, item in value.items()
+            )
+        return False
+
+    @staticmethod
+    def _backtest_unavailable(
+        scope: str,
+        symbol: str | None,
+        status: str,
+        reason: str,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "scope": scope,
+            "symbol": symbol,
+            "status": status,
+            "reason": reason,
+            "outperformance": None,
+            "read_only": True,
+        }
+
+    def _run_backtest(
+        self,
+        scope: str,
+        symbol: str | None,
+        selected_symbols: tuple[str, ...],
+        histories: Mapping[str, tuple[DailyBar, ...]],
+        metadata: Mapping[str, EtfMetadata],
+        strategy: SwingStrategyConfig,
+    ) -> tuple[dict[str, object], dict[str, object] | None]:
+        initial_cash = 100_000.0
+        if scope == "symbol":
+            assert symbol is not None
+            bars = histories[symbol]
+            if len(bars) < strategy.minimum_daily_bars + 1:
+                return (
+                    self._backtest_unavailable(
+                        scope, symbol, "INSUFFICIENT_SAMPLE",
+                        "INSUFFICIENT_COMPLETED_DAILY_BARS",
+                    ),
+                    None,
+                )
+            try:
+                computed = SwingBacktester(
+                    strategy, metadata[symbol].trading,
+                ).run_symbol(bars, initial_cash)
+            except SwingBacktestError as error:
+                return (
+                    self._backtest_unavailable(
+                        scope, symbol, "DATA_UNAVAILABLE", str(error),
+                    ),
+                    None,
+                )
+            result = computed.to_dict()
+            result["scope"] = "symbol"
+            result["read_only"] = True
+            return result, {"root": computed.cache_evidence()}
+
+        first = selected_symbols[0]
+        backtester = SwingBacktester(strategy, metadata[first].trading)
+        trading_map = {
+            item: metadata[item].trading for item in selected_symbols
+        }
+        computed = backtester.run_portfolio(
+            histories,
+            initial_cash,
+            trading_by_symbol=trading_map,
+        )
+        result = computed.to_dict()
+        stability_report = backtester.walk_forward(
+            histories,
+            initial_cash,
+            trading_by_symbol=trading_map,
+        )
+        result["walk_forward"] = stability_report.to_dict()
+        result["symbol"] = None
+        result["read_only"] = True
+        return result, {
+            "root": computed.cache_evidence(),
+            "walk_forward": stability_report.cache_evidence(),
+        }
+
+    def alerts(
+        self,
+        *,
+        include_retracted: bool = False,
+        limit: int | None = None,
+    ) -> dict[str, object]:
+        if type(include_retracted) is not bool:
+            raise SwingServiceError("include_retracted must be boolean")
+        if limit is not None and (
+            type(limit) is not int or not 1 <= limit <= _MAX_ALERT_HISTORY_LIMIT
+        ):
+            raise SwingServiceError(
+                f"limit must be an integer from 1 to {_MAX_ALERT_HISTORY_LIMIT}",
+            )
+        with self.publish_condition:
+            source = (
+                self._published_alerts_history
+                if include_retracted else self._published_alerts_current
+            )
+            if limit is None:
+                return copy.deepcopy(source)
+            raw_items = source.get("items", [])
+            items = raw_items if isinstance(raw_items, list) else []
+            active = [
+                item for item in items
+                if isinstance(item, Mapping)
+                and item.get("currently_active") is True
+            ]
+            history = [
+                item for item in items
+                if not (
+                    isinstance(item, Mapping)
+                    and item.get("currently_active") is True
+                )
+            ]
+            selected = active + history[-limit:]
+            result = {
+                key: copy.deepcopy(value)
+                for key, value in source.items()
+                if key != "items"
+            }
+            result["items"] = copy.deepcopy(selected)
+            return result
+
+    def daily_quotes(
+        self,
+        symbol: str,
+        since: int,
+        limit: int = 500,
+    ) -> dict[str, object]:
+        normalized_symbol = self._validated_enabled_symbol(symbol)
+        if type(since) is not int or since < 0:
+            raise SwingServiceError("since must be a nonnegative integer")
+        if type(limit) is not int or not 1 <= limit <= _MAX_DAILY_QUOTE_LIMIT:
+            raise SwingServiceError(
+                f"limit must be an integer from 1 to {_MAX_DAILY_QUOTE_LIMIT}",
+            )
+        with self.publish_condition:
+            revision = self.revision
+            as_of = self.published.get("as_of_trading_date")
+            retained = copy.deepcopy(tuple(self.events))
+            history = tuple(
+                bar for bar in self._history if bar.symbol == normalized_symbol
+            )
+
+        reset = since == 0 or since > revision
+        if since < revision:
+            if not retained or since < int(retained[0]["revision"]) - 1:
+                reset = True
+            for event in retained:
+                if int(event["revision"]) <= since:
+                    continue
+                if (
+                    bool(event.get("force_reset"))
+                    or event.get("as_of_trading_date") != as_of
+                ):
+                    reset = True
+                    break
+        upserts: list[dict[str, object]]
+        if reset:
+            upserts = [bar.to_dict() for bar in history]
+        else:
+            indexed: dict[str, dict[str, object]] = {}
+            for event in retained:
+                if int(event["revision"]) <= since:
+                    continue
+                daily = event.get("daily_upserts", {})
+                if not isinstance(daily, Mapping):
+                    reset = True
+                    break
+                raw_values = daily.get(normalized_symbol, ())
+                if not isinstance(raw_values, (tuple, list)):
+                    reset = True
+                    break
+                for value in raw_values:
+                    if isinstance(value, Mapping):
+                        payload = copy.deepcopy(dict(value))
+                        key = str(payload.get("trading_date", ""))
+                        indexed[key] = payload
+            if reset:
+                upserts = [bar.to_dict() for bar in history]
+            else:
+                upserts = [indexed[key] for key in sorted(indexed)]
+        truncated = len(upserts) > limit
+        if truncated:
+            upserts = upserts[-limit:]
+            reset = True
+        return {
+            "symbol": normalized_symbol,
+            "revision": revision,
+            "as_of_trading_date": as_of,
+            "upserts": copy.deepcopy(upserts),
+            "reset": reset,
+            "truncated": truncated,
+            "read_only": True,
+        }
+
+    def wait_for_event(
+        self,
+        after_revision: int,
+        timeout: float = 30.0,
+    ) -> dict[str, object] | None:
+        if type(after_revision) is not int or after_revision < 0:
+            raise SwingServiceError("after_revision must be a nonnegative integer")
+        if (
+            type(timeout) not in (int, float)
+            or not math.isfinite(float(timeout))
+            or float(timeout) < 0.0
+        ):
+            raise SwingServiceError("timeout must be a finite nonnegative number")
+        deadline = monotonic_time.monotonic() + float(timeout)
+        with self.publish_condition:
+            while True:
+                selected = self._select_event_locked(after_revision)
+                if selected is not None:
+                    return copy.deepcopy(selected)
+                if self._stop_event.is_set():
+                    return None
+                remaining = deadline - monotonic_time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                self.publish_condition.wait(remaining)
+
+    def events_since(
+        self, after_revision: int, timeout: float = 30.0,
+    ) -> dict[str, object] | None:
+        return self.wait_for_event(after_revision, timeout)
+
+    def start_refresh(self) -> None:
+        if self._refresh_thread is not None:
+            return
+        with self.producer_lock:
+            if self._refresh_thread is not None:
+                return
+            self._stop_event.clear()
+            self._refresh_thread = threading.Thread(
+                target=self._refresh_loop,
+                name="swing-monitor-producer",
+                daemon=True,
+            )
+            self._refresh_thread.start()
+
+    def stop_refresh(self) -> None:
+        self._stop_event.set()
+        with self.publish_condition:
+            self.publish_condition.notify_all()
+        thread = self._refresh_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=min(5.0, self.refresh_interval + 1.0))
+        if thread is None or not thread.is_alive():
+            self._refresh_thread = None
+
+    # ---- Producer entry points ----------------------------------------
+
+    def refresh_once(self, now: datetime | None = None) -> bool:
+        with self.producer_lock:
+            used_clock = now is None
+            try:
+                cycle_time = self._local_time(self.clock() if now is None else now)
+            except Exception as error:
+                self._publish_component_failure(
+                    "service", "CLOCK_FAILED", error, now=self._fallback_now(),
+                )
+                return False
+            recovered = self._mark_clock_success() if used_clock else False
+            revision_before_refresh = self.revision
+            result = self._refresh_completed_daily(cycle_time)
+            if recovered and self.revision == revision_before_refresh:
+                self._publish(self._build_snapshot(cycle_time))
+            return result
+
+    def refresh_intraday(self) -> dict[str, object]:
+        with self.producer_lock:
+            try:
+                cycle_time = self._local_time(self.clock())
+            except Exception as error:
+                self._health["service"] = "CLOCK_FAILED"
+                self._errors["service"] = self._safe_error(error)
+                self._withdraw_intraday("CLOCK_FAILED", None, error)
+                return self.snapshot()
+            self._mark_clock_success()
+            return self._refresh_intraday_overlay(cycle_time)
+
+    # ---- Local mutation boundary (used by HTTP integration) -----------
+
+    def initialize_portfolio(
+        self,
+        name: str,
+        cash: float,
+        idempotency_key: str,
+        *,
+        initial_positions: Mapping[
+            str, InitialPositionInput | Mapping[str, object]
+        ] | None = None,
+        default_risk_per_trade: float | None = None,
+    ) -> dict[str, object]:
+        with self.producer_lock:
+            ledger = self._require_ledger()
+            risk = (
+                self._strategy.risk_per_trade
+                if default_risk_per_trade is None and self._strategy is not None
+                else default_risk_per_trade
+            )
+            if risk is None:
+                raise SwingServiceError("strategy configuration is unavailable")
+            event = ledger.initialize(
+                name, cash, idempotency_key,
+                initial_positions=initial_positions,
+                default_risk_per_trade=risk,
+            )
+            self._rebuild_after_portfolio_mutation(self._safe_now())
+            return event.to_dict()
+
+    def record_trade(
+        self, trade: TradeInput, idempotency_key: str,
+    ) -> dict[str, object]:
+        with self.producer_lock:
+            ledger = self._require_ledger()
+            normalized = trade
+            events = ledger.load_events()
+            prior = tuple(
+                event for event in events
+                if event.idempotency_key == idempotency_key
+            )
+            if len(prior) > 1:
+                raise SwingServiceError("duplicate trade idempotency keys")
+            if len(prior) == 1:
+                existing = prior[0]
+                if (
+                    type(trade) is TradeInput
+                    and trade.side == "SELL"
+                    and trade.exit_reason is None
+                    and existing.event_type is PortfolioEventType.SELL_CONFIRMED
+                    and existing.payload.get("exit_reason") == "STOP_EXIT"
+                ):
+                    normalized = replace(trade, exit_reason="STOP_EXIT")
+                event = ledger.record_trade(
+                    normalized, idempotency_key,
+                )
+                repair_now = self._trade_retry_reference_time(
+                    events, trade,
+                )
+                if self._trade_derivations_are_current(repair_now):
+                    self._ensure_current_formal_alerts(repair_now)
+                else:
+                    self._rebuild_after_portfolio_mutation(repair_now)
+                return event.to_dict()
+
+            inference_now = self._trusted_trade_now()
+            self._validate_trade_execution_time(trade, inference_now)
+            if (
+                type(trade) is TradeInput
+                and trade.side == "SELL"
+                and trade.exit_reason is None
+                and self._sell_completes_position(trade)
+                and inference_now is not None
+                and self._trade_executes_today(trade, inference_now)
+                and self._stop_exit_is_current(
+                    trade.symbol, inference_now, trade.executed_at,
+                )
+            ):
+                normalized = replace(trade, exit_reason="STOP_EXIT")
+            event = ledger.record_trade(
+                normalized, idempotency_key,
+            )
+            self._rebuild_after_portfolio_mutation(inference_now)
+            return event.to_dict()
+
+    def _trusted_trade_now(self) -> datetime:
+        try:
+            return self._local_time(self.clock())
+        except Exception as error:
+            raise SwingServiceError("trusted clock is unavailable") from error
+
+    def _trade_retry_reference_time(
+        self,
+        events: Sequence[PortfolioEvent],
+        trade: TradeInput,
+    ) -> datetime:
+        candidates = [
+            trade.executed_at.astimezone(SHANGHAI),
+            self._fallback_now(),
+        ]
+        for ledger_event in events:
+            if ledger_event.event_type not in {
+                PortfolioEventType.BUY_CONFIRMED,
+                PortfolioEventType.SELL_CONFIRMED,
+            }:
+                continue
+            raw_executed_at = ledger_event.payload.get("executed_at")
+            if type(raw_executed_at) is not str:
+                raise SwingServiceError(
+                    "authoritative ledger trade time is unavailable",
+                )
+            try:
+                executed_at = datetime.fromisoformat(raw_executed_at)
+                if (
+                    executed_at.tzinfo is None
+                    or executed_at.utcoffset() is None
+                ):
+                    raise ValueError("ledger trade time is timezone-naive")
+                candidates.append(executed_at.astimezone(SHANGHAI))
+            except (TypeError, ValueError, OverflowError) as error:
+                raise SwingServiceError(
+                    "authoritative ledger trade time is invalid",
+                ) from error
+        raw_generated = self.published.get("generated_at")
+        if type(raw_generated) is str:
+            try:
+                generated = datetime.fromisoformat(raw_generated)
+                if (
+                    generated.tzinfo is not None
+                    and generated.utcoffset() is not None
+                ):
+                    candidates.append(generated.astimezone(SHANGHAI))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        return max(candidates)
+
+    def _trade_derivations_are_current(self, now: datetime) -> bool:
+        projection, portfolio_status, portfolio_error = (
+            self._calculate_portfolio_projection(
+                self._history, now, persist=False,
+            )
+        )
+        formal = self._calculate_formal(
+            self._history,
+            projection,
+            portfolio_status,
+            self._health["daily"],
+            now,
+        )
+        projection_payload = (
+            projection.to_dict() if projection is not None else None
+        )
+        expected_formal = {
+            symbol: decision.to_dict() for symbol, decision in formal.items()
+        }
+        published_items = self.published.get("items")
+        if not isinstance(published_items, list):
+            return False
+        actual_formal = {
+            item.get("symbol"): item.get("formal_decision")
+            for item in published_items if isinstance(item, Mapping)
+        }
+        published_health = self.published.get("health")
+        published_errors = self.published.get("errors")
+        if not isinstance(published_health, Mapping):
+            return False
+        if not isinstance(published_errors, Mapping):
+            return False
+        if (
+            self._portfolio_projection != projection
+            or self._formal != formal
+            or self._health.get("portfolio") != portfolio_status
+            or self._errors.get("portfolio") != portfolio_error
+            or published_health != self._health
+            or published_errors != self._errors
+            or self.published.get("portfolio") != projection_payload
+            or actual_formal != expected_formal
+            or self._published_portfolio_view.get("status") != portfolio_status
+            or self._published_portfolio_view.get("projection")
+            != projection_payload
+            or self._published_portfolio_view.get("error") != portfolio_error
+            or not self._projection_file_matches(projection)
+        ):
+            return False
+        alert_history, active_alerts = self._alert_snapshot(
+            now, include_retracted=True,
+        )
+        alert_current = [
+            item for item in alert_history if not item.get("retracted")
+        ]
+        return bool(
+            self.published.get("active_alerts") == active_alerts
+            and self.published.get("alerts") == active_alerts
+            and self._published_alerts_current.get("items") == alert_current
+            and self._published_alerts_history.get("items") == alert_history
+        )
+
+    def _projection_file_matches(
+        self,
+        expected: PortfolioProjection | None,
+    ) -> bool:
+        if expected is None:
+            return False
+        try:
+            actual = load_projection(self.paths.portfolio_snapshot)
+        except PortfolioLedgerError:
+            return False
+        return actual == expected
+
+    @staticmethod
+    def _validate_trade_execution_time(
+        trade: TradeInput,
+        trusted_now: datetime,
+    ) -> None:
+        if type(trade) is not TradeInput:
+            return
+        try:
+            executed_at = trade.executed_at.astimezone(SHANGHAI)
+        except Exception as error:
+            raise SwingServiceError(
+                "trade executed_at cannot be compared with trusted clock",
+            ) from error
+        if executed_at > trusted_now + timedelta(
+            seconds=_TRADE_FUTURE_SKEW_SECONDS,
+        ):
+            raise SwingServiceError("trade executed_at exceeds trusted clock")
+
+    def _sell_completes_position(self, trade: TradeInput) -> bool:
+        projection = self._portfolio_projection
+        if projection is None:
+            return False
+        position = projection.positions.get(trade.symbol)
+        return position is not None and trade.shares == position.shares
+
+    @staticmethod
+    def _trade_executes_today(trade: TradeInput, now: datetime) -> bool:
+        try:
+            executed_at = trade.executed_at
+            return bool(
+                type(executed_at) is datetime
+                and executed_at.tzinfo is not None
+                and executed_at.utcoffset() is not None
+                and executed_at.astimezone(SHANGHAI).date() == now.date()
+            )
+        except Exception:
+            return False
+
+    def _stop_exit_is_current(
+        self,
+        symbol: str,
+        now: datetime,
+        executed_at: datetime,
+    ) -> bool:
+        if not self._is_trading_date(now.date()):
+            return False
+        formal = self._formal.get(symbol)
+        expected = self._last_completed_trading_date(now)
+        if (
+            formal is not None
+            and formal.state is SwingState.EXIT_CANDIDATE
+            and self._health["daily"] == "OK"
+            and self._health["portfolio"] == "OK"
+            and expected is not None
+            and formal.as_of_trading_date == expected
+            and (
+                formal.evidence.get("exit_hard_stop") is True
+                or formal.evidence.get("exit_trailing_stop") is True
+            )
+        ):
+            return True
+        try:
+            published_item = next(
+                item for item in self.published.get("items", ())
+                if isinstance(item, Mapping) and item.get("symbol") == symbol
+            )
+            raw_timestamp = published_item.get("current_price_time")
+            if type(raw_timestamp) is not str:
+                return False
+            timestamp = datetime.fromisoformat(raw_timestamp)
+            if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                return False
+            trigger_time = timestamp.astimezone(SHANGHAI)
+            execution_time = executed_at.astimezone(SHANGHAI)
+            return bool(
+                published_item.get("intraday_overlay")
+                == IntradayOverlay.PREDEFINED_STOP_TOUCHED.value
+                and published_item.get("intraday_health_status") == "REALTIME"
+                and trigger_time.date() == now.date()
+                and execution_time >= trigger_time
+            )
+        except Exception:
+            return False
+
+    def reverse_trade(
+        self, event_id: str, idempotency_key: str,
+    ) -> dict[str, object]:
+        with self.producer_lock:
+            event = self._require_ledger().reverse(event_id, idempotency_key)
+            self._rebuild_after_portfolio_mutation(self._safe_now())
+            return event.to_dict()
+
+    def acknowledge_alert(
+        self, alert_id: str, idempotency_key: str,
+    ) -> dict[str, object]:
+        with self.producer_lock:
+            store = self._require_alert_store()
+            result = store.acknowledge(alert_id, idempotency_key)
+            self._refresh_alert_snapshot(self._safe_now())
+            return result.to_dict()
+
+    def ignore_alert(
+        self, alert_id: str, idempotency_key: str,
+    ) -> dict[str, object]:
+        with self.producer_lock:
+            store = self._require_alert_store()
+            result = store.ignore(alert_id, idempotency_key)
+            self._refresh_alert_snapshot(self._safe_now())
+            return result.to_dict()
+
+    # ---- Bootstrap and formal recomputation ---------------------------
+
+    def _bootstrap(self) -> dict[str, object]:
+        now = self._safe_now()
+        try:
+            self._metadata = EtfMetadataStore(self.paths.metadata).load()
+            self._watchlist = load_watchlist(
+                self.paths.watchlist, self.paths.metadata,
+            )
+            self._strategy = load_strategy(self.paths.strategy)
+            self._health["configuration"] = "OK"
+        except Exception as error:
+            self._health["configuration"] = "BLOCKED"
+            self._errors["configuration"] = self._safe_error(error)
+
+        try:
+            self._closed_dates = frozenset(load_closed_dates(self.paths.calendar))
+            self._health["calendar"] = "OK"
+        except Exception as error:
+            self._closed_dates = None
+            self._health["calendar"] = "BLOCKED"
+            self._errors["calendar"] = self._safe_error(error)
+
+        if self._metadata and self._closed_dates is not None:
+            try:
+                self._history_store = DailyHistoryStore(
+                    self.paths.daily_history,
+                    self._metadata,
+                    self._closed_dates,
+                )
+                self._history = self._history_store.load()
+                self._health["daily"] = "OK"
+            except Exception as error:
+                self._history_store = None
+                self._history = ()
+                self._health["daily"] = "BLOCKED"
+                self._errors["daily"] = self._safe_error(error)
+        else:
+            self._health["daily"] = "BLOCKED"
+
+        if self._metadata:
+            try:
+                self._ledger = PortfolioLedger(
+                    self.paths.trades,
+                    self._metadata,
+                    clock=self.clock,
+                    max_portfolio_risk_rate=(
+                        self._strategy.max_portfolio_risk
+                        if self._strategy is not None else 0.02
+                    ),
+                    closed_dates=self._closed_dates,
+                )
+                if self._closed_dates is None:
+                    self._portfolio_projection = None
+                    self._health["portfolio"] = "BLOCKED"
+                    self._errors["portfolio"] = (
+                        "authoritative market calendar is unavailable"
+                    )
+                else:
+                    self._load_portfolio_projection(now)
+            except Exception as error:
+                self._portfolio_projection = None
+                self._health["portfolio"] = "BLOCKED"
+                self._errors["portfolio"] = self._safe_error(error)
+        else:
+            self._health["portfolio"] = "BLOCKED"
+
+        try:
+            self._alert_store = SwingAlertStore(self.paths.alerts, clock=self.clock)
+            self._alert_store.current(include_retracted=True)
+            self._health["alerts"] = "OK"
+        except Exception as error:
+            self._alert_store = None
+            self._health["alerts"] = "BLOCKED"
+            self._errors["alerts"] = self._safe_error(error)
+
+        self._recompute_formal(now, publish_alerts=False)
+        if self._health["service"] != "CLOCK_FAILED":
+            self._health["service"] = (
+                "OK" if self._health["configuration"] == "OK" else "BLOCKED"
+            )
+        return self._build_snapshot(now)
+
+    def _load_portfolio_projection(self, now: datetime) -> None:
+        projection, status, error = self._calculate_portfolio_projection(
+            self._history, now,
+        )
+        self._portfolio_projection = projection
+        self._health["portfolio"] = status
+        if error is None:
+            self._errors.pop("portfolio", None)
+        else:
+            self._errors["portfolio"] = error
+
+    def _calculate_portfolio_projection(
+        self,
+        history: Sequence[DailyBar],
+        now: datetime,
+        *,
+        persist: bool = True,
+    ) -> tuple[PortfolioProjection | None, str, str | None]:
+        ledger = self._require_ledger()
+        if self._closed_dates is None:
+            return (
+                None,
+                "BLOCKED",
+                "authoritative market calendar is unavailable",
+            )
+        as_of = self._portfolio_as_of(now)
+        marks = self._latest_marks(history)
+        try:
+            projection = (
+                ledger.load_or_rebuild_projection(
+                    self.paths.portfolio_snapshot, as_of, marks,
+                )
+                if persist
+                else ledger.project(as_of, marks)
+            )
+        except PortfolioLedgerError as error:
+            text = str(error).lower()
+            return (
+                None,
+                "UNINITIALIZED" if "not initialized" in text else "BLOCKED",
+                self._safe_error(error),
+            )
+        return projection, "OK", None
+
+    def _recompute_formal(self, now: datetime, *, publish_alerts: bool) -> None:
+        self._formal = self._calculate_formal(
+            self._history,
+            self._portfolio_projection,
+            self._health["portfolio"],
+            self._health["daily"],
+            now,
+        )
+        if publish_alerts:
+            next_by_symbol = {
+                symbol: self._next_trading_date(decision.as_of_trading_date)
+                for symbol, decision in self._formal.items()
+            }
+            self._publish_formal_alerts(now, next_by_symbol)
+
+    def _calculate_formal(
+        self,
+        history: Sequence[DailyBar],
+        projection: PortfolioProjection | None,
+        portfolio_health: str,
+        daily_health: str,
+        now: datetime,
+        *,
+        watchlist: Sequence[SwingWatchItem] | None = None,
+    ) -> dict[str, SwingDecision]:
+        if self._strategy is None:
+            return {}
+        grouped = self._bars_by_symbol(history)
+        expected = self._last_completed_trading_date(now)
+        result: dict[str, SwingDecision] = {}
+        for item in self._watchlist if watchlist is None else watchlist:
+            if not item.enabled:
+                continue
+            bars = grouped.get(item.symbol, ())
+            latest = bars[-1].trading_date if bars else None
+            data_healthy = bool(
+                daily_health == "OK"
+                and expected is not None
+                and latest == expected
+            )
+            next_date = (
+                self._next_trading_date(latest)
+                if latest is not None and self._closed_dates is not None else None
+            )
+            context = self._portfolio_context(
+                item.symbol, bars, data_healthy=data_healthy,
+                next_trading_date=next_date,
+                projection=projection,
+                portfolio_health=portfolio_health,
+            )
+            result[item.symbol] = evaluate_swing(
+                bars, self._strategy, context,
+            )
+        return result
+
+    def _portfolio_context(
+        self,
+        symbol: str,
+        bars: Sequence[DailyBar],
+        *,
+        data_healthy: bool,
+        next_trading_date: date | None,
+        projection: PortfolioProjection | None,
+        portfolio_health: str,
+    ) -> PortfolioContext:
+        metadata = self._metadata.get(symbol)
+        lot_size = metadata.trading.lot_size if metadata is not None else 100
+        ledger_healthy = portfolio_health == "OK" and projection is not None
+        equity = projection.equity if ledger_healthy else 1.0
+        cash = projection.cash if ledger_healthy else 0.0
+        market_value = projection.etf_market_value if ledger_healthy else 0.0
+        planned_risk = projection.planned_risk if ledger_healthy else 0.0
+        symbol_planned_risk = 0.0
+        position = None
+        last_stop_trading_date = (
+            self._last_stop_trading_date(symbol, bars) if ledger_healthy else None
+        )
+        if ledger_healthy and projection is not None:
+            projected = projection.positions.get(symbol)
+            if projected is not None:
+                symbol_planned_risk = projected.planned_risk
+            if projected is not None and projected.shares > 0 and bars:
+                position = self._position_context(symbol, projected, bars)
+        return PortfolioContext(
+            equity=equity,
+            cash=cash,
+            current_etf_market_value=market_value,
+            current_planned_risk_amount=planned_risk,
+            current_symbol_planned_risk_amount=symbol_planned_risk,
+            lot_size=lot_size,
+            data_healthy=data_healthy,
+            metadata_complete=metadata is not None,
+            ledger_healthy=ledger_healthy,
+            tradable=True,
+            next_trading_date=next_trading_date,
+            last_stop_trading_date=last_stop_trading_date,
+            position=position,
+        )
+
+    def _position_context(
+        self,
+        symbol: str,
+        position: PortfolioPosition,
+        bars: Sequence[DailyBar],
+    ) -> PositionContext | None:
+        latest = bars[-1]
+        raw_scale = latest.close / latest.adjusted_close
+        if not math.isfinite(raw_scale) or raw_scale <= 0.0:
+            return None
+        average = position.average_cost / raw_scale
+        risk = position.planned_risk / max(position.shares, 1) / raw_scale
+        if risk <= 0.0:
+            risk = max(average * 0.01, math.ulp(average))
+        hard_stop = max(average - risk, math.ulp(average))
+        entry_date, first_reduction, _ = self._event_lifecycle(symbol, bars)
+        if entry_date is None:
+            raise PortfolioLedgerError("projected position has no open event lifecycle")
+        completed_since_entry = tuple(
+            bar for bar in bars if bar.trading_date >= entry_date
+        )
+        if not completed_since_entry:
+            completed_since_entry = (latest,)
+        return PositionContext(
+            shares=position.shares,
+            sellable_shares=position.sellable_shares,
+            average_cost_adjusted=average,
+            initial_risk_per_share_adjusted=risk,
+            entry_trading_date=entry_date,
+            highest_completed_adjusted_close=max(
+                bar.adjusted_close for bar in completed_since_entry
+            ),
+            hard_stop_adjusted=hard_stop,
+            first_reduction_completed=first_reduction,
+        )
+
+    def _last_stop_trading_date(
+        self,
+        symbol: str,
+        bars: Sequence[DailyBar],
+    ) -> date | None:
+        if self._ledger is None:
+            return None
+        _, _, stopped = self._event_lifecycle(symbol, bars)
+        return stopped
+
+    def _event_lifecycle(
+        self,
+        symbol: str,
+        bars: Sequence[DailyBar],
+    ) -> tuple[date | None, bool, date | None]:
+        """Derive the open holding cycle solely from authoritative ledger events."""
+        ledger = self._require_ledger()
+        events = ledger.load_events()
+        reversed_ids = {
+            str(event.payload["target_event_id"])
+            for event in events
+            if event.event_type is PortfolioEventType.TRADE_REVERSED
+        }
+        shares = 0
+        entry_date: date | None = None
+        first_reduction = False
+        last_stop_date: date | None = None
+        if events:
+            initial = events[0].payload.get("initial_positions", {})
+            if isinstance(initial, Mapping):
+                raw = initial.get(symbol)
+                if isinstance(raw, Mapping) and type(raw.get("shares")) is int:
+                    shares = int(raw["shares"])
+                    if shares > 0:
+                        initialized = events[0].recorded_at.astimezone(SHANGHAI).date()
+                        entry_date = self._trading_date_on_or_before(initialized)
+        raw_trades = [
+            event for event in events
+            if (
+                event.event_type in {
+                    PortfolioEventType.BUY_CONFIRMED,
+                    PortfolioEventType.SELL_CONFIRMED,
+                }
+                and event.event_id not in reversed_ids
+                and event.payload.get("symbol") == symbol
+            )
+        ]
+        trades: list[tuple[datetime, Any]] = []
+        for event in raw_trades:
+            raw_shares = event.payload.get("shares")
+            raw_time = event.payload.get("executed_at")
+            if type(raw_shares) is not int or type(raw_time) is not str:
+                raise PortfolioLedgerError("portfolio trade lifecycle is invalid")
+            try:
+                executed_at = datetime.fromisoformat(raw_time)
+                if executed_at.tzinfo is None or executed_at.utcoffset() is None:
+                    raise ValueError("naive trade timestamp")
+                executed_at = executed_at.astimezone(SHANGHAI)
+            except Exception as error:
+                raise PortfolioLedgerError(
+                    "portfolio trade lifecycle timestamp is invalid",
+                ) from error
+            trades.append((executed_at, event))
+        trades.sort(key=lambda item: item[0])
+        for executed_at, event in trades:
+            raw_shares = event.payload["shares"]
+            executed = executed_at.date()
+            if event.event_type is PortfolioEventType.BUY_CONFIRMED:
+                if shares == 0:
+                    entry_date = executed
+                    first_reduction = False
+                shares += raw_shares
+            else:
+                shares -= raw_shares
+                if shares < 0:
+                    raise PortfolioLedgerError("portfolio lifecycle shares are negative")
+                if shares == 0:
+                    if event.payload.get("exit_reason") == "STOP_EXIT":
+                        last_stop_date = executed
+                    entry_date = None
+                    first_reduction = False
+                else:
+                    first_reduction = True
+        return entry_date, first_reduction, last_stop_date
+
+    def _trading_date_on_or_before(self, value: date) -> date:
+        candidate = value
+        for _ in range(370):
+            if self._is_trading_date(candidate):
+                return candidate
+            candidate -= timedelta(days=1)
+        raise PortfolioLedgerError("initialization date cannot map to a trading day")
+
+    # ---- Daily producer ------------------------------------------------
+
+    def _refresh_completed_daily(self, now: datetime) -> bool:
+        target = self._last_completed_trading_date(now)
+        enabled = tuple(item for item in self._watchlist if item.enabled)
+        if target is None or not enabled:
+            return False
+        latest = {
+            symbol: bars[-1].trading_date
+            for symbol, bars in self._bars_by_symbol().items() if bars
+        }
+        if all(latest.get(item.symbol) == target for item in enabled):
+            return False
+        if self.collector is None:
+            self._publish_component_failure(
+                "daily", "COLLECTOR_UNAVAILABLE",
+                SwingServiceError("daily collector is unavailable"), now=now,
+            )
+            return False
+        if self._history_store is None:
+            self._publish_component_failure(
+                "daily", "BLOCKED",
+                SwingServiceError("daily history store is unavailable"), now=now,
+            )
+            return False
+        try:
+            strategy_count = (
+                0 if self._strategy is None
+                else self._strategy.walk_forward_train_days
+                + self._strategy.walk_forward_test_days
+                + self._strategy.walk_forward_step_days
+            )
+            raw_records = self.collector.collect(
+                enabled, target, max(_DEFAULT_HISTORY_COUNT, strategy_count),
+            )
+            records = self._materialize_collected(raw_records)
+            self._validate_complete_batch(records, enabled, target)
+        except Exception as error:
+            self._publish_component_failure(
+                "daily", "COLLECTION_FAILED", error, now=now,
+            )
+            return False
+
+        crosscheck_health = "OK"
+        try:
+            for item in enabled:
+                target_bar = next(
+                    bar for bar in records
+                    if bar.symbol == item.symbol and bar.trading_date == target
+                )
+                outcome = self._crosscheck_minutes(target_bar)
+                if outcome == "UNAVAILABLE":
+                    crosscheck_health = "MINUTE_CROSSCHECK_UNAVAILABLE"
+        except Exception as error:
+            self._health["minute_crosscheck"] = "CROSSCHECK_FAILED"
+            self._publish_component_failure(
+                "daily", "CROSSCHECK_FAILED", error, now=now,
+            )
+            return False
+
+        before = {(bar.symbol, bar.trading_date): bar for bar in self._history}
+        try:
+            merged = self._candidate_history(records)
+            next_health = dict(self._health)
+            next_errors = dict(self._errors)
+            next_health["daily"] = "OK"
+            next_health["minute_crosscheck"] = crosscheck_health
+            next_errors.pop("daily", None)
+            next_errors.pop("minute_crosscheck", None)
+            projection, portfolio_status, portfolio_error = (
+                self._calculate_portfolio_projection(
+                    merged, now, persist=False,
+                )
+            )
+            next_health["portfolio"] = portfolio_status
+            if portfolio_error is None:
+                next_errors.pop("portfolio", None)
+            else:
+                next_errors["portfolio"] = portfolio_error
+            formal = self._calculate_formal(
+                merged, projection, portfolio_status, "OK", now,
+            )
+            # Exercise every public serialization path before the primary
+            # history file is replaced.  The second build below only reflects
+            # the alert-store outcome, which is isolated as its own component.
+            self._candidate_snapshot(
+                now,
+                history=merged,
+                projection=projection,
+                projection_is_explicit=True,
+                formal=formal,
+                health=next_health,
+                errors=next_errors,
+            )
+        except Exception as error:
+            self._publish_component_failure(
+                "daily", "STRATEGY_FAILED", error, now=now,
+            )
+            return False
+        changed = tuple(
+            bar for bar in merged
+            if before.get((bar.symbol, bar.trading_date)) != bar
+        )
+        old_as_of = self._snapshot_as_of()
+        try:
+            persisted = self._history_store.upsert(records)
+            if persisted != merged:
+                raise SwingServiceError("persisted daily history differs from staged batch")
+        except Exception as error:
+            self._publish_component_failure(
+                "daily", "PERSISTENCE_FAILED", error, now=now,
+            )
+            return False
+
+        try:
+            persisted_portfolio = self._calculate_portfolio_projection(
+                merged, now, persist=True,
+            )
+        except Exception as error:
+            self._publish_component_failure(
+                "portfolio", "PERSISTENCE_FAILED", error, now=now,
+            )
+            return False
+        candidate_portfolio = (
+            projection, portfolio_status, portfolio_error,
+        )
+        if persisted_portfolio != candidate_portfolio:
+            self._publish_component_failure(
+                "portfolio",
+                "PERSISTENCE_FAILED",
+                SwingServiceError(
+                    "persisted portfolio projection differs from staged projection",
+                ),
+                now=now,
+            )
+            return False
+        projection, portfolio_status, portfolio_error = persisted_portfolio
+
+        next_by_symbol = {
+            symbol: self._next_trading_date(decision.as_of_trading_date)
+            for symbol, decision in formal.items()
+        }
+        alert_error = self._persist_formal_alerts(
+            formal, next_by_symbol, portfolio_status,
+        )
+        if alert_error is None:
+            next_health["alerts"] = "OK"
+            next_errors.pop("alerts", None)
+        else:
+            next_health["alerts"] = "BLOCKED"
+            next_errors["alerts"] = alert_error
+        snapshot = self._candidate_snapshot(
+            now,
+            history=merged,
+            projection=projection,
+            projection_is_explicit=True,
+            formal=formal,
+            health=next_health,
+            errors=next_errors,
+        )
+        new_as_of = max(
+            (bar.trading_date for bar in merged), default=None,
+        )
+        with self.publish_condition:
+            self._history = merged
+            self._portfolio_projection = projection
+            self._formal = formal
+            self._health = next_health
+            self._errors = next_errors
+            self._publish_locked(
+                snapshot,
+                daily_upserts=self._group_bar_payloads(changed),
+                force_reset=(
+                    old_as_of
+                    != (new_as_of.isoformat() if new_as_of is not None else None)
+                ),
+            )
+        return True
+
+    @staticmethod
+    def _materialize_collected(value: object) -> tuple[DailyBar, ...]:
+        if isinstance(value, (str, bytes, bytearray)):
+            raise SwingServiceError("collector result must be a daily-bar sequence")
+        try:
+            records = tuple(value)  # type: ignore[arg-type]
+        except Exception as error:
+            raise SwingServiceError("collector result could not be read") from error
+        if any(type(record) is not DailyBar for record in records):
+            raise SwingServiceError("collector result contains invalid daily bars")
+        return records
+
+    def _validate_complete_batch(
+        self,
+        records: tuple[DailyBar, ...],
+        enabled: tuple[SwingWatchItem, ...],
+        target: date,
+    ) -> None:
+        expected_symbols = {item.symbol for item in enabled}
+        if any(bar.symbol not in expected_symbols for bar in records):
+            raise SwingServiceError("collector returned an unrequested symbol")
+        keys = tuple((bar.symbol, bar.trading_date) for bar in records)
+        if len(set(keys)) != len(keys):
+            raise SwingServiceError("collector returned a duplicate daily primary key")
+        if any(bar.trading_date > target for bar in records):
+            raise SwingServiceError("collector returned a future or incomplete daily bar")
+        target_counts = {
+            symbol: sum(
+                bar.symbol == symbol and bar.trading_date == target
+                for bar in records
+            )
+            for symbol in expected_symbols
+        }
+        missing = sorted(symbol for symbol, count in target_counts.items() if count != 1)
+        if missing:
+            raise SwingServiceError(
+                f"completed daily batch is missing or duplicates target bars: {missing}",
+            )
+        self._candidate_history(records)
+
+    def _candidate_history(
+        self, records: Sequence[DailyBar],
+    ) -> tuple[DailyBar, ...]:
+        if self._history_store is None:
+            raise SwingServiceError("daily history store is unavailable")
+        combined = {
+            (bar.symbol, bar.trading_date): bar for bar in self._history
+        }
+        for bar in records:
+            key = (bar.symbol, bar.trading_date)
+            existing = combined.get(key)
+            if existing is None or bar.observed_at >= existing.observed_at:
+                combined[key] = bar
+        merged = tuple(combined[key] for key in sorted(combined))
+        self._history_store.validator.validate_sequence(merged, self._metadata)
+        return merged
+
+    def _crosscheck_minutes(self, bar: DailyBar) -> str:
+        try:
+            payload = self.intraday_points_provider(bar.symbol)
+        except Exception:
+            return "UNAVAILABLE"
+        points = self._minute_points(payload, bar.trading_date)
+        if not points:
+            return "UNAVAILABLE"
+        aggregate = self._aggregate_minute_ohlc(points)
+        metadata = self._metadata[bar.symbol]
+        tick = float(metadata.trading.price_tick)
+        for field in ("open", "high", "low", "close"):
+            actual = aggregate[field]
+            expected = getattr(bar, field)
+            tolerance = tick + 8.0 * max(math.ulp(actual), math.ulp(expected))
+            if abs(actual - expected) > tolerance:
+                raise SwingServiceError(
+                    f"{bar.symbol} minute aggregate {field} differs by more than one tick",
+                )
+        return "OK"
+
+    @staticmethod
+    def _minute_points(
+        payload: object, trading_date: date,
+    ) -> tuple[Mapping[str, object], ...]:
+        if not isinstance(payload, Mapping):
+            return ()
+        candidates: object = payload.get("upserts")
+        if isinstance(candidates, Mapping):
+            candidates = candidates.get("upserts", ())
+        if not isinstance(candidates, (tuple, list)):
+            candidates = payload.get("points", ())
+        if not isinstance(candidates, (tuple, list)):
+            return ()
+        accepted: list[Mapping[str, object]] = []
+        timestamps: list[datetime] = []
+        for point in candidates:
+            if not isinstance(point, Mapping):
+                return ()
+            if (
+                type(point.get("schema_version")) is not int
+                or point.get("schema_version") != 3
+                or point.get("trading_date") != trading_date.isoformat()
+                or point.get("is_complete") is not True
+                or type(point.get("timestamp")) is not str
+            ):
+                return ()
+            try:
+                parsed = datetime.fromisoformat(str(point["timestamp"]))
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    return ()
+                local = parsed.astimezone(SHANGHAI)
+            except Exception:
+                return ()
+            if (
+                local.date() != trading_date
+                or local.second != 0
+                or local.microsecond != 0
+            ):
+                return ()
+            accepted.append(point)
+            timestamps.append(local)
+        if len(set(timestamps)) != len(timestamps):
+            return ()
+        if any(left >= right for left, right in zip(timestamps, timestamps[1:])):
+            return ()
+        if tuple(timestamps) != SwingService._expected_complete_minutes(trading_date):
+            return ()
+        return tuple(accepted)
+
+    @staticmethod
+    def _expected_complete_minutes(trading_date: date) -> tuple[datetime, ...]:
+        """Return Eastmoney/T-monitor's 241 completed minute timestamps."""
+        result: list[datetime] = []
+        current = datetime.combine(
+            trading_date, time(9, 30), tzinfo=SHANGHAI,
+        )
+        morning_end = current.replace(hour=11, minute=30)
+        while current <= morning_end:
+            result.append(current)
+            current += timedelta(minutes=1)
+        current = datetime.combine(
+            trading_date, time(13, 1), tzinfo=SHANGHAI,
+        )
+        afternoon_end = current.replace(hour=15, minute=0)
+        while current <= afternoon_end:
+            result.append(current)
+            current += timedelta(minutes=1)
+        return tuple(result)
+
+    @staticmethod
+    def _aggregate_minute_ohlc(
+        points: Sequence[Mapping[str, object]],
+    ) -> dict[str, float]:
+        def number(value: object, field: str) -> float:
+            if type(value) not in (int, float):
+                raise SwingServiceError(f"minute {field} must be numeric")
+            result = float(value)
+            if not math.isfinite(result) or result <= 0.0:
+                raise SwingServiceError(f"minute {field} must be positive")
+            return result
+
+        first = points[0]
+        last = points[-1]
+        first_price = first.get("price", first.get("close"))
+        last_price = last.get("price", last.get("close"))
+        opens = number(first.get("open", first_price), "open")
+        closes = number(last.get("close", last_price), "close")
+        highs = [
+            number(point.get("high", point.get("price", point.get("close"))), "high")
+            for point in points
+        ]
+        lows = [
+            number(point.get("low", point.get("price", point.get("close"))), "low")
+            for point in points
+        ]
+        return {"open": opens, "high": max(highs), "low": min(lows), "close": closes}
+
+    # ---- Intraday overlay ---------------------------------------------
+
+    def _refresh_intraday_overlay(self, now: datetime) -> dict[str, object]:
+        try:
+            return self._compose_intraday_overlay(now)
+        except Exception as error:
+            self._withdraw_intraday("INTRADAY_FEED_UNAVAILABLE", now, error)
+            return self.snapshot()
+
+    def _compose_intraday_overlay(self, now: datetime) -> dict[str, object]:
+        payload = self.intraday_provider()
+        if not isinstance(payload, Mapping):
+            raise SwingServiceError("intraday snapshot must be a mapping")
+        raw_items = payload.get("items")
+        if not isinstance(raw_items, (tuple, list)):
+            raise SwingServiceError("intraday snapshot items are unavailable")
+        by_symbol: dict[str, Mapping[str, object]] = {}
+        for raw in raw_items:
+            if isinstance(raw, Mapping) and type(raw.get("symbol")) is str:
+                by_symbol[str(raw["symbol"])] = raw
+
+        overlays: dict[str, str | None] = {}
+        current: dict[str, tuple[float | None, str | None, str, str]] = {}
+        desired_alerts: list[AlertInput] = []
+        for symbol, formal in self._formal.items():
+            raw = by_symbol.get(symbol)
+            healthy, timestamp, validated_health = (
+                self._validated_realtime_quote(raw, now)
+            )
+            price = raw.get("price") if raw is not None else None
+            intraday = evaluate_intraday_overlay(
+                formal,
+                price,
+                feed_healthy=healthy,
+                has_position=self._has_position(symbol),
+            )
+            resolved_status = self._execution_status(
+                formal, now, market_realtime=healthy,
+            )
+            if (
+                intraday.overlay is IntradayOverlay.APPROACHING_ENTRY_ZONE
+                and (
+                    formal.state is not SwingState.TRIAL_ENTRY_CANDIDATE
+                    or resolved_status != "READY_TO_EXECUTE"
+                )
+            ):
+                overlays[symbol] = None
+                normalized_price = intraday.price
+                status = resolved_status
+                current[symbol] = (
+                    normalized_price, timestamp, status, validated_health,
+                )
+                continue
+            if intraday.overlay is IntradayOverlay.INTRADAY_FEED_UNAVAILABLE:
+                overlays[symbol] = None
+                normalized_price = intraday.price
+                status = "PAUSED_MARKET_NOT_REALTIME"
+            else:
+                overlays[symbol] = (
+                    None if intraday.overlay is IntradayOverlay.NONE
+                    else intraday.overlay.value
+                )
+                normalized_price = intraday.price
+                status = resolved_status
+                style = _OVERLAY_ALERT_STYLE.get(intraday.overlay)
+                if style is not None and formal.as_of_trading_date is not None:
+                    desired_alerts.append(AlertInput(
+                        trading_date=now.date(),
+                        symbol=symbol,
+                        state=intraday.overlay.value,
+                        strategy_version=formal.strategy_version,
+                        level=style[0],
+                        label=style[1],
+                        evidence=intraday.to_dict()["evidence"],
+                    ))
+            current[symbol] = (
+                normalized_price, timestamp, status, validated_health,
+            )
+
+        validated_statuses = tuple(value[3] for value in current.values())
+        if validated_statuses and all(
+            status == "REALTIME" for status in validated_statuses
+        ):
+            aggregate_health = "REALTIME"
+        elif "UNAVAILABLE" in validated_statuses or not validated_statuses:
+            aggregate_health = "UNAVAILABLE"
+        elif "OUTAGE" in validated_statuses:
+            aggregate_health = "OUTAGE"
+        elif "STALE" in validated_statuses:
+            aggregate_health = "STALE"
+        elif "DELAYED" in validated_statuses:
+            aggregate_health = "DELAYED"
+        elif "LUNCH_BREAK" in validated_statuses:
+            aggregate_health = "LUNCH_BREAK"
+        else:
+            aggregate_health = "CLOSED"
+        self._health["intraday"] = aggregate_health
+        if aggregate_health == "REALTIME":
+            self._errors.pop("intraday", None)
+        else:
+            self._errors["intraday"] = (
+                f"intraday quotes are {aggregate_health.lower()}"
+            )
+        self._sync_overlay_alerts(desired_alerts)
+        snapshot = self._build_snapshot(now)
+        for item in snapshot["items"]:  # type: ignore[index]
+            symbol = str(item["symbol"])
+            price, timestamp, status, health_status = current.get(
+                symbol, (None, None, "PAUSED_MARKET_NOT_REALTIME", "UNAVAILABLE"),
+            )
+            item["current_price"] = price
+            item["current_price_time"] = timestamp
+            item["intraday_health_status"] = health_status
+            item["intraday_overlay"] = overlays.get(symbol)
+            item["execution_status"] = status
+        self._publish(snapshot)
+        return self.snapshot()
+
+    def _validated_realtime_quote(
+        self,
+        raw: Mapping[str, object] | None,
+        now: datetime,
+    ) -> tuple[bool, str | None, str]:
+        if self._closed_dates is None:
+            return False, None, "UNAVAILABLE"
+        now_time = now.timetz().replace(tzinfo=None)
+        if (
+            self._is_trading_date(now.date())
+            and time(11, 30) < now_time < time(13, 0)
+        ):
+            timestamp = raw.get("timestamp") if raw is not None else None
+            return (
+                False,
+                timestamp if type(timestamp) is str else None,
+                "LUNCH_BREAK",
+            )
+        if (
+            not self._is_trading_date(now.date())
+            or not self._in_continuous_session(now_time)
+        ):
+            timestamp = raw.get("timestamp") if raw is not None else None
+            return (
+                False,
+                timestamp if type(timestamp) is str else None,
+                "CLOSED",
+            )
+        if raw is None:
+            return False, None, "UNAVAILABLE"
+        status = raw.get("health_status")
+        raw_timestamp = raw.get("timestamp")
+        if type(raw_timestamp) is not str:
+            return False, None, "UNAVAILABLE"
+        if type(status) is not str:
+            return False, raw_timestamp, "UNAVAILABLE"
+        try:
+            timestamp = datetime.fromisoformat(raw_timestamp)
+            if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                return False, raw_timestamp, "UNAVAILABLE"
+            local_timestamp = timestamp.astimezone(SHANGHAI)
+            age = (now - local_timestamp).total_seconds()
+        except Exception:
+            return False, raw_timestamp, "UNAVAILABLE"
+        if status in {"DELAYED", "STALE", "OUTAGE"}:
+            return False, raw_timestamp, status
+        if status != "REALTIME":
+            return False, raw_timestamp, "UNAVAILABLE"
+        if (
+            local_timestamp.date() != now.date()
+            or not self._in_continuous_session(
+                local_timestamp.timetz().replace(tzinfo=None),
+            )
+            or age > REALTIME_MAX_AGE_SECONDS
+        ):
+            return False, raw_timestamp, "STALE"
+        if age < -_REALTIME_FUTURE_SKEW_SECONDS:
+            return False, raw_timestamp, "UNAVAILABLE"
+        return True, raw_timestamp, "REALTIME"
+
+    @staticmethod
+    def _in_continuous_session(value: time) -> bool:
+        return bool(
+            time(9, 30) <= value <= time(11, 30)
+            or time(13, 0) <= value <= time(15, 0)
+        )
+
+    def _withdraw_intraday(
+        self,
+        status: str,
+        now: datetime | None,
+        error: Exception,
+    ) -> None:
+        self._health["intraday"] = "UNAVAILABLE"
+        self._errors["intraday"] = self._safe_error(error)
+        if self._alert_store is not None:
+            try:
+                self._alert_store.retract_overlays(status)
+            except Exception as alert_error:
+                self._health["alerts"] = "BLOCKED"
+                self._errors["alerts"] = self._safe_error(alert_error)
+        effective = self._fallback_now() if now is None else now
+        snapshot = self._build_snapshot(effective)
+        for item in snapshot["items"]:  # type: ignore[index]
+            item["intraday_overlay"] = None
+            item["current_price"] = None
+            item["current_price_time"] = None
+            item["intraday_health_status"] = "UNAVAILABLE"
+            item["execution_status"] = "PAUSED_MARKET_NOT_REALTIME"
+        self._publish(snapshot)
+
+    def _sync_overlay_alerts(self, desired: Sequence[AlertInput]) -> None:
+        store = self._alert_store
+        if store is None:
+            return
+        try:
+            active = tuple(
+                item for item in store.current()
+                if item.scope == "INTRADAY" and not item.retracted
+            )
+            def projection_key(item: object) -> tuple[date, str, str, str]:
+                return (
+                    item.trading_date, item.symbol, item.state,
+                    item.strategy_version,
+                )
+
+            def input_key(item: AlertInput) -> tuple[date, str, str, str]:
+                return (
+                    item.trading_date, item.symbol, item.state,
+                    item.strategy_version,
+                )
+
+            active_by_key = {projection_key(item): item for item in active}
+            desired_by_key = {input_key(item): item for item in desired}
+            for key in active_by_key.keys() - desired_by_key.keys():
+                store.retract_overlay(
+                    active_by_key[key].alert_id, "INTRADAY_STATE_CHANGED",
+                )
+            for key in desired_by_key.keys() - active_by_key.keys():
+                store.publish_overlay(desired_by_key[key])
+            self._health["alerts"] = "OK"
+            self._errors.pop("alerts", None)
+        except Exception as error:
+            self._health["alerts"] = "BLOCKED"
+            self._errors["alerts"] = self._safe_error(error)
+            raise
+
+    # ---- Publishing helpers ------------------------------------------
+
+    def _candidate_snapshot(
+        self,
+        now: datetime,
+        *,
+        watchlist: tuple[SwingWatchItem, ...] | None = None,
+        history: tuple[DailyBar, ...] | None = None,
+        projection: PortfolioProjection | None = None,
+        formal: dict[str, SwingDecision] | None = None,
+        health: dict[str, str] | None = None,
+        errors: dict[str, str] | None = None,
+        projection_is_explicit: bool = False,
+    ) -> dict[str, object]:
+        """Build a snapshot from staged state without exposing that state."""
+        self.publish_condition.acquire()
+        old = (
+            self._watchlist,
+            self._history,
+            self._portfolio_projection,
+            self._formal,
+            self._health,
+            self._errors,
+        )
+        try:
+            if watchlist is not None:
+                self._watchlist = watchlist
+            if history is not None:
+                self._history = history
+            if projection_is_explicit:
+                self._portfolio_projection = projection
+            if formal is not None:
+                self._formal = formal
+            if health is not None:
+                self._health = health
+            if errors is not None:
+                self._errors = errors
+            return self._build_snapshot(now)
+        finally:
+            (
+                self._watchlist,
+                self._history,
+                self._portfolio_projection,
+                self._formal,
+                self._health,
+                self._errors,
+            ) = old
+            self.publish_condition.release()
+
+    def _write_watchlist(
+        self, watchlist: Sequence[SwingWatchItem],
+    ) -> None:
+        payload = {
+            "schema_version": 1,
+            "items": [
+                {"symbol": item.symbol, "enabled": item.enabled}
+                for item in watchlist
+            ],
+        }
+        destination = self.paths.watchlist
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        encoded = (json.dumps(
+            payload, ensure_ascii=False, indent=2, sort_keys=False,
+        ) + "\n").encode("utf-8")
+        with _SiblingFileLock(destination, shared=False):
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=destination.parent,
+                    prefix=f".{destination.name}.", suffix=".tmp",
+                    delete=False,
+                ) as handle:
+                    temporary = Path(handle.name)
+                    handle.write(encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, destination)
+                temporary = None
+            finally:
+                if temporary is not None:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
+
+    def _build_snapshot(self, now: datetime) -> dict[str, object]:
+        current = self.published if hasattr(self, "published") else {}
+        current_items = {
+            str(item.get("symbol")): item
+            for item in current.get("items", [])
+            if isinstance(item, Mapping)
+        }
+        items: list[dict[str, object]] = []
+        for watch in self._watchlist:
+            if not watch.enabled:
+                continue
+            formal = self._formal.get(watch.symbol)
+            if formal is None:
+                continue
+            previous = current_items.get(watch.symbol, {})
+            metadata = self._metadata.get(watch.symbol)
+            items.append({
+                "symbol": watch.symbol,
+                "name": metadata.name if metadata is not None else watch.symbol,
+                "formal_state": formal.state.value,
+                "formal_decision": formal.to_dict(),
+                "signal_data_date": (
+                    formal.as_of_trading_date.isoformat()
+                    if formal.as_of_trading_date is not None else None
+                ),
+                "blocked_reasons": list(formal.blocked_reasons),
+                "execution_status": self._execution_status(
+                    formal, now,
+                    market_realtime=self._health["intraday"] == "REALTIME",
+                ),
+                "intraday_overlay": previous.get("intraday_overlay"),
+                "current_price": previous.get("current_price"),
+                "current_price_time": previous.get("current_price_time"),
+                "intraday_health_status": previous.get(
+                    "intraday_health_status", "UNAVAILABLE",
+                ),
+            })
+        alert_history, active_alerts = self._alert_snapshot(
+            now, include_retracted=True,
+        )
+        alert_items = [
+            copy.deepcopy(item) for item in alert_history
+            if not item.get("retracted")
+        ]
+        watchlist_view = {
+            "items": [
+                {"symbol": item.symbol, "enabled": item.enabled}
+                for item in self._watchlist
+            ],
+            "read_only": False,
+            "revision": self.revision,
+        }
+        portfolio_view = {
+            "status": self._health["portfolio"],
+            "projection": (
+                self._portfolio_projection.to_dict()
+                if self._portfolio_projection is not None else None
+            ),
+            "error": copy.deepcopy(self._errors.get("portfolio")),
+            "revision": self.revision,
+            "local_only": True,
+        }
+        alert_current_view = {
+            "status": self._health["alerts"],
+            "items": alert_items,
+            "revision": self.revision,
+            "local_only": True,
+        }
+        alert_history_view = {
+            "status": self._health["alerts"],
+            "items": alert_history,
+            "revision": self.revision,
+            "local_only": True,
+        }
+        return {
+            "mode": "MONITOR_ONLY",
+            "auto_trade": False,
+            "strategy": (
+                self._strategy.strategy_version if self._strategy is not None
+                else "UNAVAILABLE"
+            ),
+            "revision": self.revision,
+            "generated_at": now.isoformat(),
+            "as_of_trading_date": self._history_as_of(),
+            "daily_history_digest": self._enabled_history_digest(),
+            "health": copy.deepcopy(self._health),
+            "errors": copy.deepcopy(self._errors),
+            "portfolio": (
+                self._portfolio_projection.to_dict()
+                if self._portfolio_projection is not None else None
+            ),
+            "items": items,
+            "alerts": copy.deepcopy(active_alerts),
+            "active_alerts": active_alerts,
+            "alert_counts": {
+                "active": len(active_alerts),
+                "current": len(alert_items),
+                "history": len(alert_history),
+            },
+            "watchlist": watchlist_view,
+            "read_only_market_data": True,
+            _READ_MODEL_KEY: {
+                "watchlist": watchlist_view,
+                "portfolio": portfolio_view,
+                "alerts_current": alert_current_view,
+                "alerts_history": alert_history_view,
+            },
+        }
+
+    def _publish(
+        self,
+        snapshot: Mapping[str, object],
+        *,
+        daily_upserts: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
+        force_reset: bool = False,
+    ) -> None:
+        value = copy.deepcopy(dict(snapshot))
+        with self.publish_condition:
+            self._publish_locked(
+                value, daily_upserts=daily_upserts, force_reset=force_reset,
+            )
+
+    def _publish_locked(
+        self,
+        snapshot: Mapping[str, object],
+        *,
+        daily_upserts: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
+        force_reset: bool = False,
+    ) -> None:
+        value = copy.deepcopy(dict(snapshot))
+        next_revision = self.revision + 1
+        self._install_published(value, revision=next_revision)
+        self.revision = next_revision
+        event = copy.deepcopy(self.published)
+        event.update({
+            "event": "reset" if force_reset else "update",
+            "reset": bool(force_reset),
+            "force_reset": bool(force_reset),
+            "daily_upserts": copy.deepcopy(dict(daily_upserts or {})),
+        })
+        self.events.append(event)
+        self.publish_condition.notify_all()
+
+    def _install_published(
+        self,
+        snapshot: Mapping[str, object],
+        *,
+        revision: int,
+    ) -> None:
+        """Install the public snapshot and all private GET views as one revision."""
+        value = copy.deepcopy(dict(snapshot))
+        read_model = value.pop(_READ_MODEL_KEY)
+        if not isinstance(read_model, Mapping):
+            raise SwingServiceError("published read model is unavailable")
+
+        def endpoint(name: str) -> dict[str, object]:
+            raw = read_model.get(name)
+            if not isinstance(raw, Mapping):
+                raise SwingServiceError(f"published {name} view is unavailable")
+            result = copy.deepcopy(dict(raw))
+            result["revision"] = revision
+            return result
+
+        value["revision"] = revision
+        watchlist = endpoint("watchlist")
+        value["watchlist"] = copy.deepcopy(watchlist)
+        portfolio = endpoint("portfolio")
+        alerts_current = endpoint("alerts_current")
+        alerts_history = endpoint("alerts_history")
+        self.published = value
+        self._published_watchlist_view = watchlist
+        self._published_portfolio_view = portfolio
+        self._published_alerts_current = alerts_current
+        self._published_alerts_history = alerts_history
+
+    def _publish_component_failure(
+        self,
+        component: str,
+        status: str,
+        error: Exception,
+        *,
+        now: datetime | None,
+    ) -> None:
+        self._health[component] = status
+        self._errors[component] = self._safe_error(error)
+        self._publish(self._build_snapshot(self._safe_now() if now is None else now))
+
+    def _select_event_locked(self, after_revision: int) -> dict[str, object] | None:
+        if after_revision > self.revision:
+            return self._reset_event_locked()
+        if after_revision == self.revision:
+            return None
+        if not self.events or after_revision < int(self.events[0]["revision"]) - 1:
+            return self._reset_event_locked()
+        selected = next(
+            (
+                event for event in self.events
+                if int(event["revision"]) > after_revision
+            ),
+            None,
+        )
+        if selected is None:
+            return None
+        if (
+            selected.get("as_of_trading_date")
+            != self.published.get("as_of_trading_date")
+        ):
+            return self._reset_event_locked()
+        return selected
+
+    def _reset_event_locked(self) -> dict[str, object]:
+        result = copy.deepcopy(self.published)
+        result.update({
+            "event": "reset",
+            "reset": True,
+            "force_reset": True,
+            "daily_upserts": {},
+        })
+        return result
+
+    # ---- Portfolio/alert mutation recomputation -----------------------
+
+    def _rebuild_after_portfolio_mutation(self, now: datetime) -> None:
+        self._load_portfolio_projection(now)
+        self._recompute_formal(now, publish_alerts=True)
+        self._publish(self._build_snapshot(now))
+
+    def _refresh_alert_snapshot(self, now: datetime) -> None:
+        self._publish(self._build_snapshot(now))
+
+    def _publish_formal_alerts(
+        self,
+        now: datetime,
+        next_by_symbol: Mapping[str, date | None],
+    ) -> None:
+        error = self._persist_formal_alerts(
+            self._formal, next_by_symbol, self._health["portfolio"],
+        )
+        if error is None:
+            self._health["alerts"] = "OK"
+            self._errors.pop("alerts", None)
+        else:
+            self._health["alerts"] = "BLOCKED"
+            self._errors["alerts"] = error
+
+    def _persist_formal_alerts(
+        self,
+        formal_by_symbol: Mapping[str, SwingDecision],
+        next_by_symbol: Mapping[str, date | None],
+        portfolio_health: str,
+    ) -> str | None:
+        store = self._alert_store
+        if store is None:
+            return "alert store is unavailable"
+        try:
+            for symbol, formal in formal_by_symbol.items():
+                style = _FORMAL_ALERT_STYLE.get(formal.state)
+                if style is None or formal.as_of_trading_date is None:
+                    continue
+                if (
+                    formal.state in _PORTFOLIO_DEPENDENT_STATES
+                    and portfolio_health != "OK"
+                ):
+                    continue
+                if formal.state is SwingState.TRIAL_ENTRY_CANDIDATE and (
+                    formal.valid_for_trading_date != next_by_symbol.get(symbol)
+                ):
+                    continue
+                store.publish_formal(AlertInput(
+                    trading_date=formal.as_of_trading_date,
+                    symbol=symbol,
+                    state=formal.state.value,
+                    strategy_version=formal.strategy_version,
+                    level=style[0],
+                    label=style[1],
+                    evidence=formal.to_dict()["evidence"],
+                ))
+        except Exception as error:
+            return self._safe_error(error)
+        return None
+
+    def _alert_snapshot(
+        self, now: datetime, *, include_retracted: bool = False,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        store = self._alert_store
+        if store is None or self._health["alerts"] != "OK":
+            return [], []
+        try:
+            current = store.current(include_retracted=include_retracted)
+        except Exception:
+            return [], []
+        items: list[dict[str, object]] = []
+        active: list[dict[str, object]] = []
+        enabled_symbols = {
+            item.symbol for item in self._watchlist if item.enabled
+        }
+        for item in current:
+            currently_active = item.active_notification
+            if item.scope == "FORMAL":
+                formal = self._formal.get(item.symbol)
+                currently_active = bool(
+                    currently_active
+                    and formal is not None
+                    and formal.as_of_trading_date == item.trading_date
+                    and formal.state.value == item.state
+                    and formal.strategy_version == item.strategy_version
+                    and formal.state in _ACTION_STATES
+                )
+                expected = self._last_completed_trading_date(now)
+                if formal is None or formal.as_of_trading_date != expected:
+                    currently_active = False
+                elif formal.state is SwingState.TRIAL_ENTRY_CANDIDATE:
+                    currently_active = bool(
+                        currently_active
+                        and formal.valid_for_trading_date == now.date()
+                        and now.timetz().replace(tzinfo=None) <= time(15, 0)
+                        and self._health["portfolio"] == "OK"
+                    )
+                elif formal.state in {
+                    SwingState.ADD_CANDIDATE,
+                    SwingState.REDUCE_CANDIDATE,
+                } and self._health["portfolio"] != "OK":
+                    currently_active = False
+            else:
+                formal = self._formal.get(item.symbol)
+                currently_active = bool(
+                    currently_active
+                    and item.symbol in enabled_symbols
+                    and item.trading_date == now.date()
+                    and item.state in _OVERLAY_ALERT_STATES
+                    and self._health["intraday"] == "REALTIME"
+                    and formal is not None
+                    and formal.strategy_version == item.strategy_version
+                )
+                if (
+                    currently_active
+                    and item.state
+                    == IntradayOverlay.APPROACHING_ENTRY_ZONE.value
+                ):
+                    currently_active = bool(
+                        formal is not None
+                        and formal.state is SwingState.TRIAL_ENTRY_CANDIDATE
+                        and self._execution_status(
+                            formal, now, market_realtime=True,
+                        ) == "READY_TO_EXECUTE"
+                    )
+                elif (
+                    currently_active
+                    and item.state
+                    == IntradayOverlay.PREDEFINED_STOP_TOUCHED.value
+                ):
+                    currently_active = self._has_position(item.symbol)
+            payload = item.to_dict()
+            payload["currently_active"] = currently_active
+            payload["active_notification"] = currently_active
+            items.append(payload)
+            if currently_active:
+                active.append(copy.deepcopy(payload))
+        return items, active
+
+    # ---- Calendar, history, and validation utilities ------------------
+
+    def _safe_now(self) -> datetime:
+        try:
+            value = self._local_time(self.clock())
+        except Exception as error:
+            self._health["service"] = "CLOCK_FAILED"
+            self._errors["service"] = self._safe_error(error)
+            return self._fallback_now()
+        self._mark_clock_success()
+        return value
+
+    def _mark_clock_success(self) -> bool:
+        if self._health.get("service") != "CLOCK_FAILED":
+            return False
+        before = (
+            self._health.get("service"), self._errors.get("service"),
+        )
+        self._errors.pop("service", None)
+        configuration = self._health.get("configuration", "UNKNOWN")
+        if configuration == "OK":
+            self._health["service"] = "OK"
+        elif configuration == "BLOCKED":
+            self._health["service"] = "BLOCKED"
+        elif self._health.get("service") == "CLOCK_FAILED":
+            self._health["service"] = "STARTING"
+        return before != (
+            self._health.get("service"), self._errors.get("service"),
+        )
+
+    def _mark_producer_success(self) -> bool:
+        if self._health.get("service") != "PRODUCER_FAILED":
+            return False
+        self._errors.pop("service", None)
+        self._health["service"] = (
+            "OK" if self._health.get("configuration") == "OK" else "BLOCKED"
+        )
+        return True
+
+    def _fallback_now(self) -> datetime:
+        latest = max(
+            (bar.observed_at for bar in self._history),
+            default=datetime(1970, 1, 1, tzinfo=SHANGHAI),
+        )
+        return latest.astimezone(SHANGHAI)
+
+    @staticmethod
+    def _local_time(value: object) -> datetime:
+        if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
+            raise SwingServiceError("clock must return a timezone-aware datetime")
+        try:
+            return value.astimezone(SHANGHAI)
+        except Exception as error:
+            raise SwingServiceError("clock timezone could not be converted") from error
+
+    def _last_completed_trading_date(self, now: datetime) -> date | None:
+        if self._closed_dates is None:
+            return None
+        candidate = now.date()
+        if (
+            not self._is_trading_date(candidate)
+            or now.timetz().replace(tzinfo=None) < _FINAL_DAILY_TIME
+        ):
+            candidate -= timedelta(days=1)
+        for _ in range(370):
+            if self._is_trading_date(candidate):
+                return candidate
+            candidate -= timedelta(days=1)
+        return None
+
+    def _next_trading_date(self, value: date | None) -> date | None:
+        if value is None or self._closed_dates is None:
+            return None
+        candidate = value + timedelta(days=1)
+        for _ in range(370):
+            if self._is_trading_date(candidate):
+                return candidate
+            candidate += timedelta(days=1)
+        return None
+
+    def _is_trading_date(self, value: date) -> bool:
+        return (
+            self._closed_dates is not None
+            and value.weekday() < 5
+            and value not in self._closed_dates
+        )
+
+    def _portfolio_as_of(self, now: datetime) -> date:
+        if self._is_trading_date(now.date()):
+            return now.date()
+        return self._last_completed_trading_date(now) or self._history_as_of_date() or now.date()
+
+    def _history_as_of_date(self) -> date | None:
+        enabled = {item.symbol for item in self._watchlist if item.enabled}
+        latest = [
+            bar.trading_date for bar in self._history if bar.symbol in enabled
+        ]
+        return max(latest, default=None)
+
+    def _history_as_of(self) -> str | None:
+        value = self._history_as_of_date()
+        return value.isoformat() if value is not None else None
+
+    def _enabled_history_digest(self) -> str:
+        """Fingerprint every enabled symbol's complete persisted daily history."""
+        enabled = {item.symbol for item in self._watchlist if item.enabled}
+        canonical_history = [
+            bar.to_dict()
+            for bar in sorted(
+                (bar for bar in self._history if bar.symbol in enabled),
+                key=lambda item: (item.symbol, item.trading_date),
+            )
+        ]
+        return self._canonical_digest(canonical_history)
+
+    def _snapshot_as_of(self) -> str | None:
+        with self.publish_condition:
+            value = self.published.get("as_of_trading_date")
+        return value if type(value) is str else None
+
+    def _bars_by_symbol(
+        self, history: Sequence[DailyBar] | None = None,
+    ) -> dict[str, tuple[DailyBar, ...]]:
+        result: dict[str, list[DailyBar]] = {}
+        for bar in self._history if history is None else history:
+            result.setdefault(bar.symbol, []).append(bar)
+        return {symbol: tuple(bars) for symbol, bars in result.items()}
+
+    def _latest_marks(
+        self, history: Sequence[DailyBar] | None = None,
+    ) -> dict[str, float]:
+        marks: dict[str, float] = {}
+        for symbol, bars in self._bars_by_symbol(history).items():
+            if bars:
+                marks[symbol] = bars[-1].close
+        return marks
+
+    @staticmethod
+    def _group_bar_payloads(
+        bars: Sequence[DailyBar],
+    ) -> dict[str, list[dict[str, object]]]:
+        result: dict[str, list[dict[str, object]]] = {}
+        for bar in bars:
+            result.setdefault(bar.symbol, []).append(bar.to_dict())
+        return result
+
+    def _has_position(self, symbol: str) -> bool:
+        projection = self._portfolio_projection
+        return bool(
+            projection is not None
+            and symbol in projection.positions
+            and projection.positions[symbol].shares > 0
+        )
+
+    def _execution_status(
+        self,
+        formal: SwingDecision,
+        now: datetime,
+        *,
+        market_realtime: bool,
+    ) -> str:
+        if not market_realtime:
+            return "PAUSED_MARKET_NOT_REALTIME"
+        if formal.state in _PORTFOLIO_DEPENDENT_STATES:
+            expected = self._last_completed_trading_date(now)
+            if (
+                self._health["daily"] != "OK"
+                or expected is None
+                or formal.as_of_trading_date != expected
+            ):
+                return "PAUSED_DAILY_DATA"
+        if formal.state in _PORTFOLIO_DEPENDENT_STATES and (
+            self._health["portfolio"] != "OK"
+        ):
+            return "PAUSED_PORTFOLIO_BLOCKED"
+        if formal.state is SwingState.TRIAL_ENTRY_CANDIDATE:
+            if formal.valid_for_trading_date is None:
+                return "PAUSED_PLAN_INVALID"
+            if now.date() > formal.valid_for_trading_date:
+                return "PAUSED_PLAN_EXPIRED"
+            if now.date() < formal.valid_for_trading_date:
+                return "WAITING_NEXT_TRADING_DAY"
+            if now.timetz().replace(tzinfo=None) > time(15, 0):
+                return "PAUSED_PLAN_EXPIRED"
+        if formal.state in _ACTION_STATES:
+            return "READY_TO_EXECUTE"
+        return "OBSERVE_ONLY"
+
+    def _validated_enabled_symbol(self, symbol: object) -> str:
+        if (
+            type(symbol) is not str
+            or len(symbol) != 6
+            or not symbol.isascii()
+            or not symbol.isdigit()
+        ):
+            raise SwingServiceError("symbol must be six ASCII digits")
+        if symbol not in {item.symbol for item in self._watchlist if item.enabled}:
+            raise SwingServiceError(f"symbol is not enabled: {symbol}")
+        return symbol
+
+    def _require_ledger(self) -> PortfolioLedger:
+        if self._ledger is None:
+            raise SwingServiceError("portfolio ledger is unavailable")
+        return self._ledger
+
+    def _require_alert_store(self) -> SwingAlertStore:
+        if self._alert_store is None:
+            raise SwingServiceError("alert store is unavailable")
+        return self._alert_store
+
+    @staticmethod
+    def _safe_error(error: Exception) -> str:
+        try:
+            text = str(error)
+        except Exception:
+            text = type(error).__name__
+        text = " ".join(text.split())
+        return (text or type(error).__name__)[:1024]
+
+    def _refresh_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self.refresh_once()
+                self.refresh_intraday()
+                with self.producer_lock:
+                    now = self._safe_now()
+                    if self._mark_producer_success():
+                        self._publish(self._build_snapshot(now))
+            except Exception as error:
+                with self.producer_lock:
+                    self._publish_component_failure(
+                        "service", "PRODUCER_FAILED", error, now=None,
+                    )
+            self._stop_event.wait(self.refresh_interval)
+
+
+__all__ = ["DailyCollector", "SwingPaths", "SwingService", "SwingServiceError"]

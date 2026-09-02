@@ -102,7 +102,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = Join-Path (Get-Location) 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_defaults -v
+python -m unittest tests.test_defaults -v
 ```
 
 Expected: import failure for `etf_rotation.constants`.
@@ -1428,7 +1428,7 @@ var/
 .vscode/
 ```
 
-Remove the tracked runtime data and bytecode listed in the file map. Do not remove the newly rebuilt ignored `var/monitor` files. Update PowerShell scripts to derive `$projectRoot = Split-Path -Parent $PSScriptRoot`; no script or README command may contain `F:\plan\money\zt`.
+Remove the tracked runtime data and bytecode listed in the file map. Do not remove the newly rebuilt ignored `var/monitor` files. Update PowerShell scripts to derive `$projectRoot = Split-Path -Parent $PSScriptRoot`; no script or README command may contain a machine-specific project-root path.
 
 Document the schema, health states, candidate gate, APIs, true backtest, rough replay, migration, and relative launch commands in README. In `docs/git-history-cleanup.md`, require a remote backup and explicit authorization before `git filter-repo`, explain rewritten commit IDs, and show verification without executing history rewriting.
 
@@ -1439,7 +1439,7 @@ Run:
 ```powershell
 $records = Get-Content -LiteralPath 'var\monitor\quotes.jsonl' | ForEach-Object { $_ | ConvertFrom-Json }
 [pscustomobject]@{Records=$records.Count; Keys=(($records | Group-Object symbol,timestamp).Count); Schema3=($records | Where-Object schema_version -eq 3).Count} | Format-List
-rg -n "F:\\plan\\money\\zt|黄金窗口|回补提醒|减仓提醒" README.md scripts src tests
+rg -n "<project-root>|黄金窗口|回补提醒|减仓提醒" README.md scripts src tests
 git ls-files | rg "(__pycache__|\.pyc$|data/monitor/(quotes|alerts|history))"
 & '.\scripts\run-tests.ps1'
 ```
@@ -1466,7 +1466,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = Join-Path (Get-Location) 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
 
 Expected: all tests pass with zero failures and zero errors.
