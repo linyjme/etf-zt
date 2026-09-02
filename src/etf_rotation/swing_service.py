@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 import json
 import hashlib
+import hmac
 import math
 import os
 from pathlib import Path
@@ -476,6 +477,7 @@ class SwingService:
             "engine_version": _BACKTEST_ENGINE_VERSION,
             "scope": scope,
             "symbol": normalized_symbol,
+            "selected_symbols": list(selected_symbols),
             "strategy_version": strategy.strategy_version,
             "latest_trading_date": (
                 None if latest is None else latest.isoformat()
@@ -485,21 +487,26 @@ class SwingService:
             "strategy_parameters_digest": self._canonical_digest(
                 strategy_parameters,
             ),
-            "result_assumptions_digests": sorted({
-                self._canonical_digest(result_assumptions),
-                self._canonical_digest(unavailable_result_assumptions),
-            }),
+            "result_assumptions_digest": self._canonical_digest(
+                result_assumptions,
+            ),
+            "unavailable_result_assumptions_digest": self._canonical_digest(
+                unavailable_result_assumptions,
+            ),
         }
         cache_name = self._canonical_digest(cache_key) + ".json"
         cache_path = self.paths.backtests / cache_name
         self.paths.backtests.mkdir(parents=True, exist_ok=True)
+        signing_key = self._backtest_signing_key()
         with self._backtest_registry_lock:
             key_lock = self._backtest_key_locks.setdefault(
                 cache_name, threading.Lock(),
             )
         with key_lock:
             with _SiblingFileLock(cache_path, shared=False):
-                cached = self._read_backtest_cache(cache_path, cache_key)
+                cached = self._read_backtest_cache(
+                    cache_path, cache_key, signing_key,
+                )
                 if cached is not None:
                     return cached
                 result = self._run_backtest(
@@ -510,16 +517,67 @@ class SwingService:
                     metadata,
                     strategy,
                 )
-                self._write_backtest_cache(cache_path, cache_key, result)
+                self._write_backtest_cache(
+                    cache_path, cache_key, result, signing_key,
+                )
                 return copy.deepcopy(result)
 
     @staticmethod
     def _canonical_digest(value: object) -> str:
-        payload = json.dumps(
+        return hashlib.sha256(SwingService._canonical_bytes(value)).hexdigest()
+
+    @staticmethod
+    def _canonical_bytes(value: object) -> bytes:
+        return json.dumps(
             value, ensure_ascii=True, allow_nan=False,
             sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")
-        return hashlib.sha256(payload).hexdigest()
+
+    @classmethod
+    def _cache_hmac(
+        cls, signing_key: bytes, envelope: Mapping[str, object],
+    ) -> str:
+        return hmac.new(
+            signing_key, cls._canonical_bytes(envelope), hashlib.sha256,
+        ).hexdigest()
+
+    def _backtest_signing_key(self) -> bytes:
+        path = self.paths.backtests.with_name(
+            f".{self.paths.backtests.name}.signing-key",
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _SiblingFileLock(path, shared=False):
+            try:
+                key = path.read_bytes()
+            except OSError:
+                key = b""
+            if len(key) == 32:
+                return key
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    "wb", dir=path.parent, prefix=f".{path.name}.",
+                    suffix=".tmp", delete=False,
+                ) as handle:
+                    temporary = Path(handle.name)
+                    key = os.urandom(32)
+                    handle.write(key)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                try:
+                    os.chmod(temporary, 0o600)
+                except OSError:
+                    pass
+                os.replace(temporary, path)
+                temporary = None
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+                return key
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -532,7 +590,10 @@ class SwingService:
 
     @classmethod
     def _read_backtest_cache(
-        cls, path: Path, cache_key: Mapping[str, object],
+        cls,
+        path: Path,
+        cache_key: Mapping[str, object],
+        signing_key: bytes,
     ) -> dict[str, object] | None:
         try:
             payload = json.loads(
@@ -546,6 +607,7 @@ class SwingService:
                 type(payload) is not dict
                 or set(payload) != {
                     "schema_version", "cache_key", "payload_sha256", "result",
+                    "hmac_sha256",
                 }
                 or type(payload.get("schema_version")) is not int
                 or payload.get("schema_version") != _BACKTEST_CACHE_SCHEMA_VERSION
@@ -556,11 +618,24 @@ class SwingService:
                 or any(character not in "0123456789abcdef"
                        for character in payload["payload_sha256"])
                 or type(payload.get("result")) is not dict
+                or type(payload.get("hmac_sha256")) is not str
+                or len(payload["hmac_sha256"]) != 64
+                or any(character not in "0123456789abcdef"
+                       for character in payload["hmac_sha256"])
             ):
                 return None
             result = payload["result"]
+            signed = {
+                key: payload[key]
+                for key in (
+                    "schema_version", "cache_key", "payload_sha256", "result",
+                )
+            }
             if (
                 payload["payload_sha256"] != cls._canonical_digest(result)
+                or not hmac.compare_digest(
+                    payload["hmac_sha256"], cls._cache_hmac(signing_key, signed),
+                )
                 or not cls._valid_backtest_result(result, cache_key)
             ):
                 return None
@@ -574,6 +649,7 @@ class SwingService:
         path: Path,
         cache_key: Mapping[str, object],
         result: Mapping[str, object],
+        signing_key: bytes,
     ) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary: Path | None = None
@@ -584,12 +660,17 @@ class SwingService:
             ) as handle:
                 temporary = Path(handle.name)
                 canonical_result = dict(result)
-                json.dump({
+                signed = {
                     "schema_version": _BACKTEST_CACHE_SCHEMA_VERSION,
                     "cache_key": dict(cache_key),
                     "payload_sha256": cls._canonical_digest(canonical_result),
                     "result": canonical_result,
-                }, handle, ensure_ascii=True, allow_nan=False,
+                }
+                envelope = {
+                    **signed,
+                    "hmac_sha256": cls._cache_hmac(signing_key, signed),
+                }
+                json.dump(envelope, handle, ensure_ascii=True, allow_nan=False,
                     sort_keys=True, separators=(",", ":"))
                 handle.write("\n")
                 handle.flush()
@@ -716,11 +797,10 @@ class SwingService:
             != cache_key.get("strategy_parameters_digest")
             or result.get("strategy_version") != cache_key.get("strategy_version")
             or type(result.get("strategy_version")) is not str
-            or cls._canonical_digest(result["execution_assumptions"])
-            not in cache_key.get("result_assumptions_digests", ())
         ):
             return False
         expected_assumptions = set(assumption_keys)
+        unavailable_shape = result.get("metrics") is None
         if cache_key.get("scope") == "portfolio":
             full_portfolio_assumptions = expected_assumptions | {
                 "portfolio_cash_model", "action_priority", "common_range_policy",
@@ -729,12 +809,22 @@ class SwingService:
             unavailable_portfolio_assumptions = expected_assumptions | {
                 "portfolio_cash_model",
             }
-            if set(result["execution_assumptions"]) not in (
-                full_portfolio_assumptions,
-                unavailable_portfolio_assumptions,
-            ):
+            required_assumption_keys = (
+                unavailable_portfolio_assumptions
+                if unavailable_shape else full_portfolio_assumptions
+            )
+            if set(result["execution_assumptions"]) != required_assumption_keys:
                 return False
         elif set(result["execution_assumptions"]) != expected_assumptions:
+            return False
+        expected_assumptions_digest = cache_key.get(
+            "unavailable_result_assumptions_digest"
+            if unavailable_shape else "result_assumptions_digest",
+        )
+        if (
+            cls._canonical_digest(result["execution_assumptions"])
+            != expected_assumptions_digest
+        ):
             return False
         for key in ("initial_cash", "cash"):
             if not cls._strict_number(result.get(key), nonnegative=True):
@@ -778,6 +868,32 @@ class SwingService:
             return False
         if result["completed_round_trips"] != len(result["round_trips"]):
             return False
+        selected_symbols = cache_key.get("selected_symbols")
+        if (
+            type(selected_symbols) is not list
+            or not selected_symbols
+            or any(type(symbol) is not str for symbol in selected_symbols)
+        ):
+            return False
+        allowed_symbols = set(selected_symbols)
+        if cache_key.get("scope") == "symbol" and selected_symbols != [
+            result.get("symbol"),
+        ]:
+            return False
+        if any(
+            item["symbol"] not in allowed_symbols
+            for key in ("trades", "rejections") for item in result[key]
+        ):
+            return False
+        if cache_key.get("scope") == "portfolio" and any(
+            item["symbol"] not in allowed_symbols for item in result["round_trips"]
+        ):
+            return False
+        expected_cash = cls._cash_after_fills(
+            result["initial_cash"], result["trades"],
+        )
+        if expected_cash is None or result["cash"] != expected_cash:
+            return False
         metrics = result.get("metrics")
         if metrics is not None and (
             type(metrics) is not dict
@@ -793,17 +909,43 @@ class SwingService:
             return False
         if metrics is not None and not cls._valid_metrics(metrics):
             return False
+        if metrics is not None and (
+            metrics["fees"] != cls._clean_cache_number(sum(
+                item["fee"] for item in result["trades"]
+            ))
+            or metrics["spread_cost"] != cls._clean_cache_number(sum(
+                item["spread_cost"] for item in result["trades"]
+            ))
+            or metrics["slippage"] != cls._clean_cache_number(sum(
+                item["slippage"] for item in result["trades"]
+            ))
+            or metrics["rejection_counts"] != cls._reason_counts(
+                result["rejections"],
+            )
+        ):
+            return False
         status = result["status"]
+        if (status == "OK") != (result.get("reason") is None):
+            return False
         if status == "OK" and (
             metrics is None
             or result.get("ending_equity") is None
             or result.get("outperformance") is None
+            or result["completed_round_trips"] <= 0
         ):
             return False
         if status == "DATA_UNAVAILABLE" and (
             metrics is not None
             or result.get("ending_equity") is not None
             or result.get("outperformance") is not None
+        ):
+            return False
+        if unavailable_shape and not cls._valid_unavailable_result_state(result):
+            return False
+        if metrics is not None and metrics["cumulative_return"] != (
+            cls._clean_cache_number(
+                result["ending_equity"] / result["initial_cash"] - 1.0,
+            )
         ):
             return False
         if cache_key.get("scope") == "symbol":
@@ -830,9 +972,28 @@ class SwingService:
                 and result["open_position_shares"] >= 0
             ):
                 return False
+            position_shares = cls._shares_after_fills(
+                result["trades"], [result["symbol"]],
+            )
+            if position_shares != {result["symbol"]: result["open_position_shares"]}:
+                return False
             if benchmark is not None and not cls._valid_symbol_benchmark(benchmark):
                 return False
-            return not (status == "OK" and benchmark is None)
+            if benchmark is not None and benchmark["cumulative_return"] != (
+                cls._clean_cache_number(
+                    benchmark["ending_equity"] / result["initial_cash"] - 1.0,
+                )
+            ):
+                return False
+            if status == "OK" and (
+                benchmark is None
+                or result["outperformance"] != cls._clean_cache_number(
+                    metrics["cumulative_return"]
+                    - benchmark["cumulative_return"],
+                )
+            ):
+                return False
+            return True
         baseline = result.get("baseline")
         if baseline is not None and (
             type(baseline) is not dict
@@ -845,6 +1006,18 @@ class SwingService:
             or type(baseline.get("shares_by_symbol")) is not dict
         ):
             return False
+        if baseline is not None and baseline["ending_equity"] is not None and (
+            baseline["cumulative_return"] != cls._clean_cache_number(
+                baseline["ending_equity"] / baseline["initial_cash"] - 1.0,
+            )
+        ):
+            return False
+        if status == "OK" and result["outperformance"] != (
+            cls._clean_cache_number(
+                metrics["cumulative_return"] - baseline["cumulative_return"],
+            )
+        ):
+            return False
         if baseline is not None and not cls._valid_portfolio_benchmark(baseline):
             return False
         for key in (
@@ -855,6 +1028,7 @@ class SwingService:
         symbols = result.get("symbols")
         if (
             type(symbols) is not list or not symbols
+            or symbols != selected_symbols
             or symbols != sorted(symbols) or len(set(symbols)) != len(symbols)
             or any(type(item) is not str or len(item) != 6 or not item.isascii()
                    or not item.isdigit() for item in symbols)
@@ -875,6 +1049,25 @@ class SwingService:
                 result.get("max_planned_risk"), nonnegative=True,
             )
         ):
+            return False
+        if cls._shares_after_fills(result["trades"], symbols) != result[
+            "open_position_shares"
+        ]:
+            return False
+        if baseline is not None and (
+            set(baseline["shares_by_symbol"]) != set(symbols)
+            or set(result["baseline_weights"]) != set(symbols)
+            or cls._cash_after_fills(
+                baseline["initial_cash"], baseline["trades"],
+            ) != baseline["cash"]
+            or cls._shares_after_fills(
+                baseline["trades"], symbols,
+            ) != baseline["shares_by_symbol"]
+        ):
+            return False
+        if not unavailable_shape and set(
+            result["execution_assumptions"]["trading_metadata_by_symbol"],
+        ) != set(symbols):
             return False
         for key in ("common_start_date", "common_end_date"):
             if not cls._strict_date_text(result.get(key), optional=True):
@@ -906,6 +1099,87 @@ class SwingService:
             type(value) in (int, float)
             and math.isfinite(float(value))
             and (not nonnegative or float(value) >= 0.0)
+        )
+
+    @staticmethod
+    def _clean_cache_number(value: float) -> float:
+        rounded = round(float(value), 12)
+        return 0.0 if rounded == 0.0 else rounded
+
+    @classmethod
+    def _cash_after_fills(
+        cls, initial_cash: object, fills: object,
+    ) -> float | None:
+        if (
+            not cls._strict_number(initial_cash, nonnegative=True)
+            or type(fills) is not list
+        ):
+            return None
+        cash = float(initial_cash)
+        for fill in fills:
+            if type(fill) is not dict:
+                return None
+            notional = float(fill["fill_price"]) * fill["shares"]
+            if fill["side"] == "BUY":
+                cash -= notional + float(fill["fee"])
+            else:
+                cash += notional - float(fill["fee"])
+        return cls._clean_cache_number(cash)
+
+    @staticmethod
+    def _shares_after_fills(
+        fills: list[Mapping[str, object]],
+        symbols: Sequence[str],
+    ) -> dict[str, int] | None:
+        shares = {symbol: 0 for symbol in symbols}
+        for fill in fills:
+            symbol = fill["symbol"]
+            if symbol not in shares:
+                return None
+            quantity = fill["shares"]
+            assert type(quantity) is int
+            shares[symbol] += quantity if fill["side"] == "BUY" else -quantity
+            if shares[symbol] < 0:
+                return None
+        return dict(sorted(shares.items()))
+
+    @staticmethod
+    def _valid_unavailable_result_state(result: Mapping[str, object]) -> bool:
+        common = (
+            (
+                result.get("status") == "DATA_UNAVAILABLE"
+                or (
+                    result.get("scope") == "portfolio"
+                    and result.get("status") == "INSUFFICIENT_SAMPLE"
+                )
+            )
+            and result.get("cash") == result.get("initial_cash")
+            and result.get("ending_equity") is None
+            and result.get("outperformance") is None
+            and result.get("trades") == []
+            and result.get("rejections") == []
+            and result.get("round_trips") == []
+            and result.get("completed_round_trips") == 0
+            and result.get("uncompleted_leg_count") == 0
+        )
+        if not common:
+            return False
+        if result.get("scope") == "symbol":
+            return (
+                result.get("benchmark") is None
+                and result.get("open_position_shares") == 0
+            )
+        return (
+            result.get("event_dates") == []
+            and result.get("rejection_counts") == {}
+            and result.get("baseline") is None
+            and result.get("baseline_weights") == {}
+            and result.get("max_equity_weight") == 0.0
+            and result.get("max_planned_risk") == 0.0
+            and all(
+                shares == 0
+                for shares in result.get("open_position_shares", {}).values()
+            )
         )
 
     @classmethod

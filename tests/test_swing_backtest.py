@@ -320,6 +320,99 @@ class PortfolioSwingBacktestTests(unittest.TestCase):
         self.assertAlmostEqual(shared, 5.8)
         self.assertEqual(allowed.shares, 0)
 
+    def test_buy_uses_portfolio_equity_for_limits_but_shared_cash_for_payment(self) -> None:
+        config = replace(
+            self.config,
+            risk_per_trade=0.01,
+            max_symbol_weight=0.40,
+            max_equity_weight=0.90,
+            max_portfolio_risk=0.02,
+        )
+        account = BacktestAccount(
+            44_000.0, self.trading, config,
+            buy_fee_rate=0.0, sell_fee_rate=0.0, minimum_fee=0.0,
+            slippage_rate=0.0, half_spread_ticks=0.0,
+        )
+        bars = swing_strategy_bars(2, pattern="rising")
+        bar = replace(
+            bars[1], open=4.0, high=4.1, low=3.9, close=4.0,
+            previous_close=4.0, adjusted_open=4.0, adjusted_high=4.1,
+            adjusted_low=3.9, adjusted_close=4.0,
+        )
+        fill = account.execute(
+            _decision(
+                SwingState.TRIAL_ENTRY_CANDIDATE,
+                bars[0].trading_date,
+                bars[1].trading_date,
+                shares=7_000,
+                stop=3.9,
+                entry_low=3.9,
+                entry_high=4.1,
+            ),
+            bar,
+            execution_index=1,
+            portfolio_equity_override=100_000.0,
+            portfolio_market_value_override=56_000.0,
+            portfolio_risk_override=0.0,
+        )
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.shares, 7_000)
+        self.assertEqual(account.cash, 16_000.0)
+
+    def test_three_same_day_buys_keep_portfolio_equity_basis(self) -> None:
+        config = replace(
+            self.config,
+            risk_per_trade=0.01,
+            max_symbol_weight=0.40,
+            max_equity_weight=0.90,
+            max_portfolio_risk=0.02,
+        )
+        backtester = SwingBacktester(
+            config, self.trading,
+            buy_fee_rate=0.0, sell_fee_rate=0.0, minimum_fee=0.0,
+            slippage_rate=0.0, half_spread_ticks=0.0,
+        )
+        histories = {
+            symbol: swing_strategy_bars(
+                72, symbol=symbol, pattern="pullback_reclaim", raw_scale=0.04,
+            )
+            for symbol in ("510300", "510500", "159915")
+        }
+
+        def evaluate(signal_bars, _config, context, **_kwargs):
+            symbol = signal_bars[-1].symbol
+            state = (
+                SwingState.TRIAL_ENTRY_CANDIDATE
+                if context.position is None and len(signal_bars) == 70
+                else SwingState.HOLDING
+                if context.position is not None
+                else SwingState.UPTREND_WATCH
+            )
+            return replace(
+                _decision(
+                    state,
+                    signal_bars[-1].trading_date,
+                    context.next_trading_date,
+                    shares=7_000,
+                    stop=4.2,
+                ),
+                symbol=symbol,
+            )
+
+        with patch("etf_rotation.swing_backtest.evaluate_swing", side_effect=evaluate):
+            result = backtester.run_portfolio(histories, 100_000.0)
+
+        buys = [trade for trade in result.trades if trade.side == "BUY"]
+        self.assertEqual(len(buys), 3)
+        self.assertEqual([trade.shares for trade in buys], [7_000] * 3)
+        self.assertLessEqual(result.max_equity_weight, 0.90 + 1e-12)
+        entry_risks = [
+            trade.shares * (trade.fill_price - trade.planned_stop)
+            for trade in buys
+        ]
+        self.assertTrue(all(risk <= 1_000.0 + 1e-9 for risk in entry_risks))
+        self.assertLessEqual(sum(entry_risks), 2_000.0 + 1e-9)
+
     def test_common_range_and_equal_weight_baseline_use_actual_shared_cash(self) -> None:
         histories = self.histories(95)
         histories["510500"] = histories["510500"][5:]

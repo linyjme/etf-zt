@@ -852,6 +852,9 @@ class BacktestAccount:
         known_volume: float | None = None,
         execution_phase: str = "NEXT_OPEN",
         liquidity: _ExecutionDayLiquidity | None = None,
+        portfolio_equity_override: float | None = None,
+        portfolio_market_value_override: float | None = None,
+        portfolio_risk_override: float | None = None,
     ) -> SwingFill | None:
         if type(decision) is not SwingDecision or type(bar) is not DailyBar:
             raise SwingBacktestError("execute requires SwingDecision and DailyBar")
@@ -863,6 +866,29 @@ class BacktestAccount:
             "NEXT_OPEN", "OPEN_GAP_STOP", "INTRADAY_STOP",
         }:
             raise SwingBacktestError("execution_phase is invalid")
+        overrides = (
+            portfolio_equity_override,
+            portfolio_market_value_override,
+            portfolio_risk_override,
+        )
+        if any(value is not None for value in overrides):
+            if any(value is None for value in overrides):
+                raise SwingBacktestError(
+                    "portfolio execution overrides must be supplied together",
+                )
+            portfolio_equity_override = _finite(
+                portfolio_equity_override,
+                "portfolio_equity_override",
+                positive=True,
+            )
+            portfolio_market_value_override = _finite(
+                portfolio_market_value_override,
+                "portfolio_market_value_override",
+            )
+            portfolio_risk_override = _finite(
+                portfolio_risk_override,
+                "portfolio_risk_override",
+            )
         if decision.state not in _BUY_STATES | _SELL_STATES:
             return None
         side = "BUY" if decision.state in _BUY_STATES else "SELL"
@@ -997,6 +1023,11 @@ class BacktestAccount:
                 reference_price,
                 execution_stop,
                 executable,
+                portfolio_equity_override=portfolio_equity_override,
+                portfolio_market_value_override=(
+                    portfolio_market_value_override
+                ),
+                portfolio_risk_override=portfolio_risk_override,
             )
             if risk_capacity <= 0:
                 self._reject(
@@ -1317,6 +1348,10 @@ class BacktestAccount:
         reference_price: float,
         execution_stop: float | None,
         maximum: int,
+        *,
+        portfolio_equity_override: float | None = None,
+        portfolio_market_value_override: float | None = None,
+        portfolio_risk_override: float | None = None,
     ) -> int:
         """Cap an opening order from actual fill, stop, equity and exposure."""
         if execution_stop is None or execution_stop <= 0.0:
@@ -1326,25 +1361,45 @@ class BacktestAccount:
         existing_risk = self.shares * max(
             0.0, reference_price - execution_stop,
         )
+        local_equity = self.cash + self.shares * reference_price
+        equity_before = (
+            local_equity
+            if portfolio_equity_override is None
+            else portfolio_equity_override
+        )
+        market_before = (
+            self.shares * reference_price
+            if portfolio_market_value_override is None
+            else portfolio_market_value_override
+        )
+        portfolio_risk_before = (
+            existing_risk
+            if portfolio_risk_override is None
+            else portfolio_risk_override
+        )
         while candidate > 0:
             notional = candidate * fill_price
             fee = max(notional * self.buy_fee_rate, self.minimum_fee)
             cash_after = self.cash - notional - fee
-            shares_after = self.shares + candidate
-            equity_after = cash_after + shares_after * reference_price
+            adverse_cost = candidate * max(0.0, fill_price - reference_price)
+            equity_after = equity_before - fee - adverse_cost
             new_risk = candidate * max(0.0, fill_price - execution_stop)
-            total_risk = existing_risk + new_risk
-            market_value = shares_after * reference_price
+            symbol_risk = existing_risk + new_risk
+            total_risk = portfolio_risk_before + new_risk
+            symbol_market_value = (
+                self.shares + candidate
+            ) * reference_price
+            total_market_value = market_before + candidate * reference_price
             if (
                 cash_after >= -1e-9
                 and equity_after > 0.0
-                and market_value <= (
+                and symbol_market_value <= (
                     equity_after * self.config.max_symbol_weight + 1e-9
                 )
-                and market_value <= (
+                and total_market_value <= (
                     equity_after * self.config.max_equity_weight + 1e-9
                 )
-                and total_risk <= (
+                and symbol_risk <= (
                     equity_after * self.config.risk_per_trade + 1e-9
                 )
                 and total_risk <= (
@@ -2659,6 +2714,7 @@ class SwingBacktester:
                 history = normalized[symbol]
                 index = indices[symbol][execution_date]
                 bar = history[index]
+                execution_overrides: dict[str, float] = {}
                 if action.kind in {"ADD", "TRIAL_ENTRY"}:
                     signal_index, _, signal_bars = signal_inputs[symbol]
                     refreshed_context = self._portfolio_context(
@@ -2700,16 +2756,26 @@ class SwingBacktester:
                         )
                         continue
                     decision = replace(decision, planned_shares=capped)
+                    portfolio_equity, portfolio_market, portfolio_risk = (
+                        self._portfolio_values(accounts, cash, open_prices)
+                    )
+                    execution_overrides = {
+                        "portfolio_equity_override": portfolio_equity,
+                        "portfolio_market_value_override": portfolio_market,
+                        "portfolio_risk_override": portfolio_risk,
+                    }
                 cash, _ = self._execute_with_shared_cash(
                     account, accounts, cash,
                     lambda account=account, decision=decision, bar=bar,
-                    index=index, liquidity=liquidities[symbol]: account.execute(
+                    index=index, liquidity=liquidities[symbol],
+                    execution_overrides=execution_overrides: account.execute(
                         decision,
                         bar,
                         execution_index=index,
                         known_volume=history[index - 1].volume,
                         execution_phase="NEXT_OPEN",
                         liquidity=liquidity,
+                        **execution_overrides,
                     ),
                     mark_prices=open_prices,
                 )
