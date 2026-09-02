@@ -89,7 +89,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_market_data.MarketSessionStateTests -v
+python -m unittest tests.test_market_data.MarketSessionStateTests -v
 ```
 
 Expected: FAIL because `market_session_state` does not exist.
@@ -163,7 +163,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_market_data.MarketSessionStateTests tests.test_market_data.MarketHealthTests -v
+python -m unittest tests.test_market_data.MarketSessionStateTests tests.test_market_data.MarketHealthTests -v
 ```
 
 Expected: all tests PASS.
@@ -242,7 +242,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_runtime_api.RuntimeTests.test_bootstrap_never_exposes_previous_day_as_live_data tests.test_runtime_api.RuntimeTests.test_quote_cursor_uses_generated_date_not_latest_point_date -v
+python -m unittest tests.test_runtime_api.RuntimeTests.test_bootstrap_never_exposes_previous_day_as_live_data tests.test_runtime_api.RuntimeTests.test_quote_cursor_uses_generated_date_not_latest_point_date -v
 ```
 
 Expected: FAIL because the old 2026-08-28 quote and its points remain published.
@@ -392,7 +392,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_runtime_api.RuntimeTests.test_bootstrap_never_exposes_previous_day_as_live_data tests.test_runtime_api.RuntimeTests.test_quote_cursor_uses_generated_date_not_latest_point_date tests.test_t_monitor.MonitorWebTests.test_page_market_state_hard_gates_candidates_and_connection_status -v
+python -m unittest tests.test_runtime_api.RuntimeTests.test_bootstrap_never_exposes_previous_day_as_live_data tests.test_runtime_api.RuntimeTests.test_quote_cursor_uses_generated_date_not_latest_point_date tests.test_t_monitor.MonitorWebTests.test_page_market_state_hard_gates_candidates_and_connection_status -v
 ```
 
 Expected: all focused tests PASS.
@@ -479,7 +479,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_runtime_api.RuntimeTests.test_closed_session_with_current_data_does_not_collect tests.test_runtime_api.RuntimeTests.test_closed_session_without_current_data_allows_one_catch_up tests.test_runtime_api.RuntimeTests.test_weekend_never_collects_even_without_current_data tests.test_runtime_api.RuntimeTests.test_active_failure_is_outage_but_closed_failure_stays_closed tests.test_runtime_api.RuntimeTests.test_failure_backoff_is_bounded_and_resets_after_success tests.test_defaults -v
+python -m unittest tests.test_runtime_api.RuntimeTests.test_closed_session_with_current_data_does_not_collect tests.test_runtime_api.RuntimeTests.test_closed_session_without_current_data_allows_one_catch_up tests.test_runtime_api.RuntimeTests.test_weekend_never_collects_even_without_current_data tests.test_runtime_api.RuntimeTests.test_active_failure_is_outage_but_closed_failure_stays_closed tests.test_runtime_api.RuntimeTests.test_failure_backoff_is_bounded_and_resets_after_success tests.test_defaults -v
 ```
 
 Expected: FAIL because the scheduling API and shared defaults do not exist, and closed failures publish `OUTAGE`.
@@ -584,7 +584,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_runtime_api.RuntimeTests.test_closed_session_with_current_data_does_not_collect tests.test_runtime_api.RuntimeTests.test_closed_session_without_current_data_allows_one_catch_up tests.test_runtime_api.RuntimeTests.test_weekend_never_collects_even_without_current_data tests.test_runtime_api.RuntimeTests.test_active_failure_is_outage_but_closed_failure_stays_closed tests.test_runtime_api.RuntimeTests.test_failure_backoff_is_bounded_and_resets_after_success tests.test_runtime_api.RuntimeTests.test_start_refresh_is_idempotent tests.test_runtime_api.RuntimeTests.test_stop_cancels_blocked_generation_without_any_commit_side_effect tests.test_defaults -v
+python -m unittest tests.test_runtime_api.RuntimeTests.test_closed_session_with_current_data_does_not_collect tests.test_runtime_api.RuntimeTests.test_closed_session_without_current_data_allows_one_catch_up tests.test_runtime_api.RuntimeTests.test_weekend_never_collects_even_without_current_data tests.test_runtime_api.RuntimeTests.test_active_failure_is_outage_but_closed_failure_stays_closed tests.test_runtime_api.RuntimeTests.test_failure_backoff_is_bounded_and_resets_after_success tests.test_runtime_api.RuntimeTests.test_start_refresh_is_idempotent tests.test_runtime_api.RuntimeTests.test_stop_cancels_blocked_generation_without_any_commit_side_effect tests.test_defaults -v
 ```
 
 Expected: all tests PASS and the stop test completes without waiting for the full backoff.
@@ -652,7 +652,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_runtime_api.RuntimeTests.test_sse_treats_windows_client_abort_as_normal_disconnect tests.test_runtime_api.RuntimeTests.test_sse_does_not_hide_unexpected_write_errors -v
+python -m unittest tests.test_runtime_api.RuntimeTests.test_sse_treats_windows_client_abort_as_normal_disconnect tests.test_runtime_api.RuntimeTests.test_sse_does_not_hide_unexpected_write_errors -v
 ```
 
 Expected: the Windows-abort test errors with `ConnectionAbortedError`; the unexpected-error test already passes.
@@ -672,7 +672,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_runtime_api.RuntimeTests.test_sse_treats_windows_client_abort_as_normal_disconnect tests.test_runtime_api.RuntimeTests.test_sse_does_not_hide_unexpected_write_errors tests.test_runtime_api.RuntimeTests.test_sse_uses_revision_ids_cursor_and_heartbeat_without_sleeping tests.test_runtime_api.RuntimeTests.test_sse_restart_cursor_ahead_of_current_gets_full_snapshot -v
+python -m unittest tests.test_runtime_api.RuntimeTests.test_sse_treats_windows_client_abort_as_normal_disconnect tests.test_runtime_api.RuntimeTests.test_sse_does_not_hide_unexpected_write_errors tests.test_runtime_api.RuntimeTests.test_sse_uses_revision_ids_cursor_and_heartbeat_without_sleeping tests.test_runtime_api.RuntimeTests.test_sse_restart_cursor_ahead_of_current_gets_full_snapshot -v
 ```
 
 Expected: all four tests PASS.
@@ -721,7 +721,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_market_data.CliPathTests.test_monitor_defaults_to_minute_refresh_interval tests.test_run_tests_script.RunTestsScriptTests.test_start_monitor_uses_minute_feed_interval -v
+python -m unittest tests.test_market_data.CliPathTests.test_monitor_defaults_to_minute_refresh_interval tests.test_run_tests_script.RunTestsScriptTests.test_start_monitor_uses_minute_feed_interval -v
 ```
 
 Expected: both assertions report the existing five-second default.
@@ -766,7 +766,7 @@ Run:
 ```powershell
 $null = [scriptblock]::Create((Get-Content -LiteralPath 'scripts/start-monitor.ps1' -Raw))
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest tests.test_market_data.CliPathTests.test_monitor_defaults_to_minute_refresh_interval tests.test_run_tests_script -v
+python -m unittest tests.test_market_data.CliPathTests.test_monitor_defaults_to_minute_refresh_interval tests.test_run_tests_script -v
 ```
 
 Expected: PowerShell parsing succeeds and all focused tests PASS.
@@ -805,7 +805,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH = 'src'
-& 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
 
 Expected: all tests PASS with zero failures and zero errors.
@@ -839,7 +839,7 @@ try {
     Push-Location $root
     try {
         $env:PYTHONPATH = 'src'
-        & 'C:\Users\linyongjie\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m unittest discover -s tests -v
+        python -m unittest discover -s tests -v
         if ($LASTEXITCODE -ne 0) { throw 'archive suite failed' }
     } finally {
         Pop-Location

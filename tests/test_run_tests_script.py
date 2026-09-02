@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,31 @@ import unittest
 
 
 class RunTestsScriptTests(unittest.TestCase):
+    def test_tracked_text_does_not_expose_windows_user_or_workspace_paths(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        listed = subprocess.run(
+            ["git", "ls-files", "README.md", "scripts", "docs", "src", "tests"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        private_path = re.compile(
+            r"[A-Za-z]:[\\/](?:Users|plan|dev)[\\/]",
+            re.IGNORECASE,
+        )
+        hits: list[str] = []
+        for relative in listed.stdout.splitlines():
+            path = root / relative
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for number, line in enumerate(text.splitlines(), 1):
+                if private_path.search(line):
+                    hits.append(f"{relative}:{number}")
+        self.assertEqual(hits, [], "tracked private paths: " + ", ".join(hits))
+
     def test_start_monitor_passes_all_swing_paths_to_same_process(self) -> None:
         root = Path(__file__).resolve().parents[1]
         script = (root / "scripts" / "start-monitor.ps1").read_text(encoding="utf-8")
