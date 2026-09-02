@@ -587,20 +587,23 @@ class BacktestAccount:
         prior_completed_volume: float,
     ) -> _ExecutionDayLiquidity:
         volume = _finite(prior_completed_volume, "prior_completed_volume")
-        capacity = _lot_floor(
-            volume * self.trading.volume_unit_shares
-            * self.config.max_volume_participation,
-            self.trading.lot_size,
-        )
-        physical_capacity = _lot_floor(
-            bar.volume * self.trading.volume_unit_shares,
-            self.trading.lot_size,
-        )
-        capacity = min(capacity, physical_capacity)
+        capacity = self._shared_volume_capacity(volume, bar.volume)
         return _ExecutionDayLiquidity(
             execution_date=bar.trading_date,
             capacity=capacity,
             remaining=capacity,
+        )
+
+    def _shared_volume_capacity(
+        self,
+        prior_completed_volume: float,
+        execution_day_volume: float,
+    ) -> int:
+        return _lot_floor(
+            min(prior_completed_volume, execution_day_volume)
+            * self.trading.volume_unit_shares
+            * self.config.max_volume_participation,
+            self.trading.lot_size,
         )
 
     def execute(
@@ -673,16 +676,9 @@ class BacktestAccount:
                 bar.volume if known_volume is None
                 else _finite(known_volume, "known_volume")
             )
-            capacity = _lot_floor(
-                available_volume * self.trading.volume_unit_shares
-                * self.config.max_volume_participation,
-                self.trading.lot_size,
+            capacity = self._shared_volume_capacity(
+                available_volume, bar.volume,
             )
-            physical_capacity = _lot_floor(
-                bar.volume * self.trading.volume_unit_shares,
-                self.trading.lot_size,
-            )
-            capacity = min(capacity, physical_capacity)
         limit_blocked = (
             self._limit_locked(bar, side)
             if execution_phase == "INTRADAY_STOP"
@@ -1394,10 +1390,10 @@ class SwingBacktester:
             "intraday_turnaround": self.trading.intraday_turnaround,
             "lot_size": self.trading.lot_size,
             "liquidity_budget_policy": (
-                "single_shared_A_B_C_budget_is_min_of_prior_completed_day_"
-                "participation_capacity_and_execution_day_total_physical_"
-                "shares_lot_floored;current_volume_only_reduces_fills_and_"
-                "never_changes_signal_or_price"
+                "single_shared_A_B_C_budget=floor_to_lot(min(prior_completed_"
+                "volume_units,execution_day_volume_units)*volume_unit_shares*"
+                "max_volume_participation);execution_volume_only_reduces_"
+                "fills_and_never_changes_signal_or_price"
             ),
             "mark_to_market_policy": (
                 "final_raw_close_without_forced_liquidation"
@@ -1805,16 +1801,9 @@ class SwingBacktester:
                 if notional + fee <= initial_cash + 1e-9:
                     break
                 maximum -= self.trading.lot_size
-            capacity = _lot_floor(
-                known_volume * self.trading.volume_unit_shares
-                * self.config.max_volume_participation,
-                self.trading.lot_size,
+            capacity = limit_account._shared_volume_capacity(
+                known_volume, bar.volume,
             )
-            physical_capacity = _lot_floor(
-                bar.volume * self.trading.volume_unit_shares,
-                self.trading.lot_size,
-            )
-            capacity = min(capacity, physical_capacity)
             maximum = min(maximum, capacity)
             if maximum <= 0:
                 continue

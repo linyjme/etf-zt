@@ -486,8 +486,8 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         bars[71] = replace(
             bars[71], open=105.0, high=106.0, low=98.0, close=104.0,
             previous_close=bars[70].close,
-            volume=1.0,
-            amount=104.0 * self.trading.volume_unit_shares,
+            volume=10.0,
+            amount=104.0 * 10.0 * self.trading.volume_unit_shares,
             adjusted_open=105.0, adjusted_high=106.0,
             adjusted_low=98.0, adjusted_close=104.0,
         )
@@ -520,15 +520,17 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
             if trade.execution_date == execution_date
         )
         self.assertEqual(sum(trade.shares for trade in day_fills), 100)
-        self.assertEqual(self.trading.volume_unit_shares * bars[71].volume, 100)
+        self.assertEqual(
+            self.trading.volume_unit_shares * bars[71].volume, 1_000,
+        )
         self.assertEqual(result.rejections[-1].reason, "VOLUME_PARTICIPATION")
 
         benchmark_bars = list(swing_strategy_bars(72, pattern="falling_ma60"))
         benchmark_bars[70] = replace(
-            benchmark_bars[70], volume=1.0,
+            benchmark_bars[70], volume=10.0,
             amount=(
                 benchmark_bars[70].close
-                * self.trading.volume_unit_shares
+                * 10.0 * self.trading.volume_unit_shares
             ),
         )
         benchmark = self.backtester.run_symbol(
@@ -536,6 +538,17 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         ).benchmark
         self.assertEqual(benchmark.start_date, benchmark_bars[70].trading_date)
         self.assertEqual(benchmark.shares, 100)
+
+        ten_share_lot = replace(self.trading, lot_size=10)
+        ten_share_account = BacktestAccount(
+            100_000.0, ten_share_lot, self.config,
+        )
+        self.assertEqual(
+            ten_share_account.execution_day_liquidity(
+                benchmark_bars[70], prior_completed_volume=5.0,
+            ).capacity,
+            50,
+        )
 
     def test_same_day_new_entry_stop_obeys_turnaround_metadata(self) -> None:
         bars = list(swing_strategy_bars(71, pattern="rising"))
@@ -1160,10 +1173,10 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
             "intraday_turnaround": False,
             "lot_size": 100,
             "liquidity_budget_policy": (
-                "single_shared_A_B_C_budget_is_min_of_prior_completed_day_"
-                "participation_capacity_and_execution_day_total_physical_"
-                "shares_lot_floored;current_volume_only_reduces_fills_and_"
-                "never_changes_signal_or_price"
+                "single_shared_A_B_C_budget=floor_to_lot(min(prior_completed_"
+                "volume_units,execution_day_volume_units)*volume_unit_shares*"
+                "max_volume_participation);execution_volume_only_reduces_"
+                "fills_and_never_changes_signal_or_price"
             ),
             "mark_to_market_policy": (
                 "final_raw_close_without_forced_liquidation"
