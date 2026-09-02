@@ -26,9 +26,21 @@ class RunTestsScriptTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         guide = (root / "docs" / "git-history-cleanup.md").read_text(encoding="utf-8")
         self.assertIn("Read-Host", guide)
-        self.assertIn("git rev-list --all", guide)
-        self.assertIn("git grep -I -n -E -- $sensitivePattern $revision", guide)
+        self.assertIn("$revisions = @(git rev-list --all)", guide)
+        self.assertIn("if ($LASTEXITCODE -ne 0)", guide)
+        self.assertIn("if ($revisions.Count -eq 0)", guide)
+        self.assertLess(
+            guide.index("if ($LASTEXITCODE -ne 0)"),
+            guide.index("foreach ($revision in $revisions)"),
+        )
+        self.assertIn("git grep -n -E -- $sensitivePattern $revision", guide)
+        self.assertNotIn("git grep -I", guide)
         self.assertNotIn("git rev-list --objects --all | Select-String", guide)
+        for name_pattern in (
+            "var/", "data/monitor/quotes", "data/monitor/alerts",
+            "data/monitor/history", "__pycache__", "\\.pyc$",
+        ):
+            self.assertIn(name_pattern, guide)
 
     def test_private_path_scanner_rejects_raw_and_markdown_escaped_paths(self) -> None:
         raw = "C:" + "\\" + "Users" + "\\" + "somebody" + "\\" + "project"
