@@ -8,6 +8,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from etf_rotation import swing_strategy as swing_strategy_module
 from etf_rotation.etf_metadata import TradingMetadata
 from etf_rotation.swing_backtest import (
     BacktestAccount,
@@ -161,6 +162,7 @@ class PortfolioSwingBacktestTests(unittest.TestCase):
                     signal_bars[-1].trading_date,
                     context.next_trading_date,
                     shares=0,
+                    stop=None,
                 ),
                 symbol=symbol,
             )
@@ -174,6 +176,91 @@ class PortfolioSwingBacktestTests(unittest.TestCase):
         buys = [item for item in result.trades if item.side == "BUY"]
         self.assertTrue(buys)
         self.assertEqual(buys[0].symbol, "510300")
+
+    def test_same_day_fills_recheck_shared_budget_at_actual_cost(self) -> None:
+        config = replace(
+            self.config,
+            risk_per_trade=0.50,
+            max_symbol_weight=0.40,
+            max_equity_weight=0.80,
+            max_portfolio_risk=0.50,
+        )
+        backtester = SwingBacktester(
+            config, self.trading, slippage_rate=0.01,
+        )
+        histories = self.histories(72)
+        first = list(histories["510300"])
+        execution = first[70]
+        scale = execution.close / execution.adjusted_close
+        gap_open = execution.previous_close * 1.20
+        gap_high = max(gap_open, execution.high)
+        first[70] = replace(
+            execution,
+            open=gap_open,
+            high=gap_high,
+            adjusted_open=gap_open / scale,
+            adjusted_high=gap_high / scale,
+        )
+        histories["510300"] = tuple(first)
+        refreshed_market_values: list[tuple[str, date, float]] = []
+
+        def evaluate(signal_bars, _config, context, **_kwargs):
+            symbol = signal_bars[-1].symbol
+            if context.position is None and len(signal_bars) == 70:
+                refreshed_market_values.append(
+                    (
+                        symbol, context.next_trading_date,
+                        context.current_etf_market_value,
+                    ),
+                )
+                return replace(
+                    _decision(
+                        SwingState.TRIAL_ENTRY_CANDIDATE,
+                        signal_bars[-1].trading_date,
+                        context.next_trading_date,
+                        shares=1_000_000,
+                        stop=0.01,
+                    ),
+                    symbol=symbol,
+                    trend_score=2.0 if symbol == "510300" else 1.0,
+                )
+            return replace(
+                _decision(
+                    SwingState.HOLDING if context.position else SwingState.UPTREND_WATCH,
+                    signal_bars[-1].trading_date,
+                    context.next_trading_date,
+                    shares=0,
+                    stop=None,
+                ),
+                symbol=symbol,
+            )
+
+        with patch("etf_rotation.swing_backtest.evaluate_swing", side_effect=evaluate):
+            result = backtester.run_portfolio(histories, 100_000.0)
+        buys = [item for item in result.trades if item.side == "BUY"]
+        self.assertEqual(len(buys), 2)
+        first_buy = buys[0]
+        second_refresh = [
+            value for symbol, execution_date, value in refreshed_market_values
+            if symbol == buys[1].symbol
+            and execution_date == buys[1].execution_date
+            and value > 0.0
+        ][-1]
+        self.assertAlmostEqual(
+            second_refresh,
+            histories[first_buy.symbol][71].open * first_buy.shares,
+        )
+        shared_cash = 100_000.0 - sum(
+            item.fill_price * item.shares + item.fee for item in buys
+        )
+        current_open_value = sum(
+            item.raw_reference_price * item.shares for item in buys
+        )
+        actual_equity = shared_cash + current_open_value
+        self.assertLessEqual(
+            current_open_value / actual_equity,
+            config.max_equity_weight + 1e-12,
+        )
 
     def test_common_range_and_equal_weight_baseline_use_actual_shared_cash(self) -> None:
         histories = self.histories(95)
@@ -218,6 +305,27 @@ class PortfolioSwingBacktestTests(unittest.TestCase):
         self.assertEqual(first.test_bar_count, 126)
         self.assertLess(first.train_end_date, first.test_start_date)
         self.assertEqual(report.selected_variant, None)
+
+    def test_walk_forward_reuses_equivalent_variant_decisions(self) -> None:
+        config = replace(
+            self.config,
+            walk_forward_train_days=80,
+            walk_forward_test_days=3,
+            walk_forward_step_days=3,
+        )
+        backtester = SwingBacktester(config, self.trading)
+        histories = self.histories(83)
+        with patch(
+            "etf_rotation.swing_backtest.evaluate_swing",
+            wraps=evaluate_swing,
+        ) as evaluate, patch(
+            "etf_rotation.swing_strategy._compute_metrics",
+            wraps=swing_strategy_module._compute_metrics,
+        ) as compute_metrics:
+            report = backtester.walk_forward(histories, 100_000.0)
+        self.assertEqual(len(report.variants), 81)
+        self.assertLess(evaluate.call_count, 1_000)
+        self.assertLess(compute_metrics.call_count, 700)
 
 
 class SingleSymbolSwingBacktestTests(unittest.TestCase):

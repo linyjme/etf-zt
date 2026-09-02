@@ -63,6 +63,8 @@ from .swing_strategy import (
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FINAL_DAILY_TIME = time(15, 10)
+_BACKTEST_CACHE_SCHEMA_VERSION = 2
+_BACKTEST_ENGINE_VERSION = "SWING_BACKTEST_ENGINE_V2"
 _DEFAULT_HISTORY_COUNT = 260
 _MAX_DAILY_QUOTE_LIMIT = 10_000
 _MAX_ALERT_HISTORY_LIMIT = 500
@@ -201,7 +203,8 @@ class SwingService:
         self._published_portfolio_view: dict[str, object] = {}
         self._published_alerts_current: dict[str, object] = {}
         self._published_alerts_history: dict[str, object] = {}
-        self._backtest_lock = threading.Lock()
+        self._backtest_registry_lock = threading.Lock()
+        self._backtest_key_locks: dict[str, threading.Lock] = {}
         self._install_published(self._bootstrap(), revision=0)
 
     # ---- Public read and lifecycle API ---------------------------------
@@ -419,7 +422,7 @@ class SwingService:
         latest = max(
             (bar.trading_date for bar in history), default=None,
         )
-        assumptions_digest = self._canonical_digest({
+        execution_contract = {
             "strategy": {
                 field: getattr(strategy, field)
                 for field in sorted(strategy.__dataclass_fields__)
@@ -428,9 +431,27 @@ class SwingService:
                 item: metadata[item].trading.to_dict()
                 for item in selected_symbols
             },
+            "engine_version": _BACKTEST_ENGINE_VERSION,
+            "cache_schema_version": _BACKTEST_CACHE_SCHEMA_VERSION,
+            "execution_assumptions": {
+                item: SwingBacktester(
+                    strategy, metadata[item].trading,
+                )._execution_assumptions()
+                for item in selected_symbols
+            },
+            "portfolio_policies": {
+                "cash": "ONE_SHARED_CASH_BALANCE",
+                "priority": "EXIT,REDUCE,ADD,TRIAL_ENTRY",
+                "common_range": "INTERSECTION_AFTER_WARMUP",
+                "walk_forward_variants": 81,
+                "walk_forward_selection": None,
+            },
             "initial_cash": 100_000.0,
-        })
+        }
+        assumptions_digest = self._canonical_digest(execution_contract)
         cache_key = {
+            "cache_schema_version": _BACKTEST_CACHE_SCHEMA_VERSION,
+            "engine_version": _BACKTEST_ENGINE_VERSION,
             "scope": scope,
             "symbol": normalized_symbol,
             "strategy_version": strategy.strategy_version,
@@ -443,7 +464,11 @@ class SwingService:
         cache_name = self._canonical_digest(cache_key) + ".json"
         cache_path = self.paths.backtests / cache_name
         self.paths.backtests.mkdir(parents=True, exist_ok=True)
-        with self._backtest_lock:
+        with self._backtest_registry_lock:
+            key_lock = self._backtest_key_locks.setdefault(
+                cache_name, threading.Lock(),
+            )
+        with key_lock:
             with _SiblingFileLock(cache_path, shared=False):
                 cached = self._read_backtest_cache(cache_path, cache_key)
                 if cached is not None:
@@ -489,32 +514,34 @@ class SwingService:
                 ),
             )
             if (
-                not isinstance(payload, dict)
-                or payload.get("schema_version") != 1
+                type(payload) is not dict
+                or set(payload) != {
+                    "schema_version", "cache_key", "payload_sha256", "result",
+                }
+                or type(payload.get("schema_version")) is not int
+                or payload.get("schema_version") != _BACKTEST_CACHE_SCHEMA_VERSION
+                or type(payload.get("cache_key")) is not dict
                 or payload.get("cache_key") != dict(cache_key)
-                or not isinstance(payload.get("result"), dict)
+                or type(payload.get("payload_sha256")) is not str
+                or len(payload["payload_sha256"]) != 64
+                or any(character not in "0123456789abcdef"
+                       for character in payload["payload_sha256"])
+                or type(payload.get("result")) is not dict
             ):
                 return None
             result = payload["result"]
             if (
-                result.get("schema_version") != 1
-                or result.get("scope") != cache_key.get("scope")
-                or result.get("symbol") != cache_key.get("symbol")
-                or result.get("status") not in {
-                    "OK", "INSUFFICIENT_SAMPLE", "DATA_UNAVAILABLE",
-                }
-                or (
-                    result.get("status") != "OK"
-                    and result.get("outperformance") is not None
-                )
+                payload["payload_sha256"] != cls._canonical_digest(result)
+                or not cls._valid_backtest_result(result, cache_key)
             ):
                 return None
             return copy.deepcopy(result)
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
             return None
 
-    @staticmethod
+    @classmethod
     def _write_backtest_cache(
+        cls,
         path: Path,
         cache_key: Mapping[str, object],
         result: Mapping[str, object],
@@ -527,10 +554,12 @@ class SwingService:
                 prefix=f".{path.name}.", suffix=".tmp", delete=False,
             ) as handle:
                 temporary = Path(handle.name)
+                canonical_result = dict(result)
                 json.dump({
-                    "schema_version": 1,
+                    "schema_version": _BACKTEST_CACHE_SCHEMA_VERSION,
                     "cache_key": dict(cache_key),
-                    "result": dict(result),
+                    "payload_sha256": cls._canonical_digest(canonical_result),
+                    "result": canonical_result,
                 }, handle, ensure_ascii=True, allow_nan=False,
                     sort_keys=True, separators=(",", ":"))
                 handle.write("\n")
@@ -541,6 +570,260 @@ class SwingService:
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+
+    @classmethod
+    def _valid_backtest_result(
+        cls,
+        result: Mapping[str, object],
+        cache_key: Mapping[str, object],
+    ) -> bool:
+        unavailable_keys = {
+            "schema_version", "scope", "symbol", "status", "reason",
+            "outperformance", "read_only",
+        }
+        symbol_keys = {
+            "schema_version", "strategy_version", "strategy_parameters",
+            "execution_assumptions", "symbol", "status", "reason",
+            "initial_cash", "cash", "ending_equity", "start_date", "end_date",
+            "trades", "rejections", "completed_round_trips", "round_trips",
+            "open_position_shares", "uncompleted_leg_count", "benchmark",
+            "outperformance", "metrics", "metric_conventions", "scope",
+            "read_only",
+        }
+        portfolio_keys = {
+            "schema_version", "scope", "strategy_version", "status", "reason",
+            "symbols", "initial_cash", "cash", "ending_equity",
+            "common_start_date", "common_end_date", "event_dates", "trades",
+            "rejections", "rejection_counts", "completed_round_trips",
+            "round_trips", "open_position_shares", "uncompleted_leg_count",
+            "max_equity_weight", "max_planned_risk", "metrics", "baseline",
+            "baseline_weights", "outperformance", "strategy_parameters",
+            "execution_assumptions", "walk_forward", "symbol", "read_only",
+        }
+        keys = set(result)
+        if keys == unavailable_keys:
+            expected_keys = unavailable_keys
+        elif cache_key.get("scope") == "symbol":
+            expected_keys = symbol_keys
+        else:
+            expected_keys = portfolio_keys
+        if keys != expected_keys:
+            return False
+        if (
+            type(result.get("schema_version")) is not int
+            or result.get("schema_version") != 1
+            or result.get("scope") != cache_key.get("scope")
+            or result.get("symbol") != cache_key.get("symbol")
+            or type(result.get("status")) is not str
+            or result.get("status") not in {
+                "OK", "INSUFFICIENT_SAMPLE", "DATA_UNAVAILABLE",
+            }
+            or result.get("read_only") is not True
+            or type(result.get("reason")) not in (str, type(None))
+            or type(result.get("outperformance")) not in (int, float, type(None))
+            or (
+                result.get("status") != "OK"
+                and result.get("outperformance") is not None
+            )
+            or not cls._strict_json_tree(result)
+        ):
+            return False
+        if expected_keys != unavailable_keys:
+            required_mappings = (
+                "strategy_parameters", "execution_assumptions",
+            )
+            required_lists = ("trades", "rejections", "round_trips")
+            if any(type(result.get(key)) is not dict for key in required_mappings):
+                return False
+            if any(type(result.get(key)) is not list for key in required_lists):
+                return False
+            if not cls._valid_backtest_result_components(result, cache_key):
+                return False
+        return True
+
+    @classmethod
+    def _valid_backtest_result_components(
+        cls,
+        result: Mapping[str, object],
+        cache_key: Mapping[str, object],
+    ) -> bool:
+        strategy_keys = set(SwingStrategyConfig.__dataclass_fields__)
+        assumption_keys = {
+            "actual_buy_sizing_policy", "asset_type",
+            "benchmark_liquidated_at_end", "benchmark_policy", "buy_fee_rate",
+            "buy_fill_price_formula", "corporate_action_policy",
+            "default_half_spread_ticks", "default_half_spread_ticks_rationale",
+            "entry_execution_policy", "exchange", "execution_cost_order",
+            "execution_day_phases", "execution_timing", "execution_volume_gate",
+            "fee_formula", "fill_cap_policy", "financing_policy",
+            "half_spread_ticks", "intraday_turnaround", "liquidity_budget_policy",
+            "lot_size", "mark_to_market_policy", "max_volume_participation",
+            "minimum_fee", "price_limit_pct", "price_limit_policy", "price_tick",
+            "raw_adjusted_policy", "sell_fee_cash_policy", "sell_fee_rate",
+            "sell_fill_price_formula", "sellability_policy", "sellable_delay_days",
+            "signal_bar_policy", "slippage_rate", "spread_slippage_attribution",
+            "stop_execution_policy", "volume_policy", "volume_unit_shares",
+        }
+        if set(result["strategy_parameters"]) != strategy_keys:
+            return False
+        expected_assumptions = set(assumption_keys)
+        if cache_key.get("scope") == "portfolio":
+            expected_assumptions.update({
+                "portfolio_cash_model", "action_priority", "common_range_policy",
+                "trading_metadata_by_symbol",
+            })
+        if set(result["execution_assumptions"]) != expected_assumptions:
+            return False
+        if any(
+            type(result.get(key)) is not int
+            for key in ("completed_round_trips", "uncompleted_leg_count")
+        ):
+            return False
+        fill_keys = {
+            "symbol", "side", "requested_shares", "shares", "signal_date",
+            "execution_date", "raw_reference_price", "fill_price", "fee",
+            "spread_cost", "slippage", "planned_stop", "reason",
+        }
+        rejection_keys = {
+            "symbol", "side", "signal_date", "execution_date",
+            "requested_shares", "rejected_shares", "reason",
+        }
+        round_trip_keys = {
+            "entry_date", "exit_date", "net_pnl", "holding_days",
+        }
+        if cache_key.get("scope") == "portfolio":
+            round_trip_keys.add("symbol")
+        if not cls._valid_record_list(result["trades"], fill_keys):
+            return False
+        if not cls._valid_record_list(result["rejections"], rejection_keys):
+            return False
+        if not cls._valid_record_list(result["round_trips"], round_trip_keys):
+            return False
+        metrics = result.get("metrics")
+        if metrics is not None and (
+            type(metrics) is not dict
+            or set(metrics) != {
+                "cumulative_return", "annualized_return", "maximum_drawdown",
+                "calmar", "sharpe", "win_rate", "average_profit",
+                "average_loss", "payoff_ratio", "average_holding_days",
+                "utilization", "longest_losing_streak", "fees", "spread_cost",
+                "slippage", "rejection_counts",
+            }
+            or type(metrics.get("rejection_counts")) is not dict
+        ):
+            return False
+        if cache_key.get("scope") == "symbol":
+            benchmark = result.get("benchmark")
+            if benchmark is not None and (
+                type(benchmark) is not dict
+                or set(benchmark) != {
+                    "start_date", "shares", "cash", "ending_equity",
+                    "cumulative_return", "fee", "spread_cost", "slippage",
+                }
+            ):
+                return False
+            conventions = result.get("metric_conventions")
+            return type(conventions) is dict and set(conventions) == {
+                "annualization_sessions", "sharpe_frequency",
+                "sharpe_risk_free_rate", "sharpe_zero_variance",
+                "drawdown_sign", "holding_days",
+            } and type(result.get("open_position_shares")) is int
+        baseline = result.get("baseline")
+        if baseline is not None and (
+            type(baseline) is not dict
+            or set(baseline) != {
+                "status", "reason", "initial_cash", "cash", "ending_equity",
+                "trades", "fees", "spread_cost", "slippage",
+                "shares_by_symbol", "cumulative_return",
+            }
+            or not cls._valid_record_list(baseline.get("trades"), fill_keys)
+            or type(baseline.get("shares_by_symbol")) is not dict
+        ):
+            return False
+        for key in (
+            "rejection_counts", "open_position_shares", "baseline_weights",
+        ):
+            if type(result.get(key)) is not dict:
+                return False
+        return cls._valid_walk_forward(result.get("walk_forward"), metrics_keys={
+            "cumulative_return", "annualized_return", "maximum_drawdown",
+            "calmar", "sharpe", "win_rate", "average_profit", "average_loss",
+            "payoff_ratio", "average_holding_days", "utilization",
+            "longest_losing_streak", "fees", "spread_cost", "slippage",
+            "rejection_counts",
+        })
+
+    @classmethod
+    def _valid_record_list(cls, value: object, keys: set[str]) -> bool:
+        return type(value) is list and all(
+            type(item) is dict and set(item) == keys
+            for item in value
+        )
+
+    @classmethod
+    def _valid_walk_forward(
+        cls, value: object, *, metrics_keys: set[str],
+    ) -> bool:
+        if type(value) is not dict or set(value) != {
+            "status", "reason", "train_days", "test_days", "step_days",
+            "selected_variant", "variants",
+        } or type(value.get("variants")) is not list:
+            return False
+        summary_keys = {
+            "status", "reason", "metrics", "cumulative_return",
+            "maximum_drawdown", "completed_round_trips", "outperformance",
+        }
+        for variant in value["variants"]:
+            if type(variant) is not dict or set(variant) != {
+                "parameters", "folds", "stability",
+            }:
+                return False
+            if (
+                type(variant.get("parameters")) is not dict
+                or set(variant["parameters"]) != {
+                    "short_ma_days", "long_ma_days", "initial_stop_atr",
+                    "trailing_stop_atr",
+                }
+                or type(variant.get("stability")) is not dict
+                or set(variant["stability"]) != {
+                    "fold_count", "test_ok_count", "mean_test_return",
+                    "positive_test_fold_count",
+                }
+                or type(variant.get("folds")) is not list
+            ):
+                return False
+            for fold in variant["folds"]:
+                if type(fold) is not dict or set(fold) != {
+                    "fold_index", "train_start_date", "train_end_date",
+                    "test_start_date", "test_end_date", "train_bar_count",
+                    "test_bar_count", "train", "test",
+                }:
+                    return False
+                for phase in (fold.get("train"), fold.get("test")):
+                    if type(phase) is not dict or set(phase) != summary_keys:
+                        return False
+                    nested_metrics = phase.get("metrics")
+                    if nested_metrics is not None and (
+                        type(nested_metrics) is not dict
+                        or set(nested_metrics) != metrics_keys
+                    ):
+                        return False
+        return True
+
+    @classmethod
+    def _strict_json_tree(cls, value: object) -> bool:
+        if value is None or type(value) in (str, bool, int):
+            return True
+        if type(value) is float:
+            return math.isfinite(value)
+        if type(value) is list:
+            return all(cls._strict_json_tree(item) for item in value)
+        if type(value) is dict:
+            return all(
+                type(key) is str and cls._strict_json_tree(item)
+                for key, item in value.items()
+            )
+        return False
 
     @staticmethod
     def _backtest_unavailable(

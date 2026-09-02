@@ -1563,6 +1563,15 @@ class SwingBacktester:
             "buy_fee_rate", "sell_fee_rate", "slippage_rate",
         )):
             raise SwingBacktestError("rates must not exceed 1")
+        all_config_fields = tuple(fields(SwingStrategyConfig))
+        self._decision_config_key = tuple(
+            (field.name, getattr(config, field.name))
+            for field in all_config_fields
+        )
+        self._positionless_decision_config_key = tuple(
+            item for item in self._decision_config_key
+            if item[0] != "trailing_stop_atr"
+        )
 
     def _strategy_parameters(self) -> dict[str, object]:
         return {
@@ -2245,15 +2254,29 @@ class SwingBacktester:
     @staticmethod
     def _portfolio_values(
         accounts: Mapping[str, BacktestAccount], cash: float,
+        mark_prices: Mapping[str, float] | None = None,
     ) -> tuple[float, float, float]:
         market_value = sum(
-            account.shares * account._last_mark_price
-            for account in accounts.values()
+            account.shares * (
+                account._last_mark_price
+                if mark_prices is None else mark_prices[symbol]
+            )
+            for symbol, account in accounts.items()
         )
-        risk = sum(
-            SwingBacktester._portfolio_position_risk(account)
-            for account in accounts.values()
-        )
+        risk = 0.0
+        for symbol, account in accounts.items():
+            if account.shares <= 0:
+                continue
+            price = (
+                account._last_mark_price
+                if mark_prices is None else mark_prices[symbol]
+            )
+            scale = (
+                account._last_mark_price / account._last_adjusted_close
+                if account._last_adjusted_close > 0.0 else 1.0
+            )
+            stop = account._hard_stop_adjusted * scale
+            risk += account.shares * max(0.0, price - stop)
         return cash + market_value, market_value, risk
 
     def _portfolio_context(
@@ -2263,8 +2286,11 @@ class SwingBacktester:
         cash: float,
         execution_date: date,
         execution_index: int,
+        mark_prices: Mapping[str, float] | None = None,
     ) -> PortfolioContext:
-        equity, market_value, risk = self._portfolio_values(accounts, cash)
+        equity, market_value, risk = self._portfolio_values(
+            accounts, cash, mark_prices,
+        )
         local = account.context(
             next_trading_date=execution_date,
             execution_index=execution_index,
@@ -2323,6 +2349,7 @@ class SwingBacktester:
         accounts: Mapping[str, BacktestAccount],
         cash: float,
         bar: DailyBar,
+        mark_prices: Mapping[str, float],
     ) -> tuple[int, str | None]:
         requested = _lot_floor(decision.planned_shares, account.trading.lot_size)
         if requested <= 0:
@@ -2344,8 +2371,10 @@ class SwingBacktester:
         stop = account._execution_stop(decision, bar)
         if stop is None or stop >= fill_price:
             return 0, "ACTUAL_RISK_LIMIT"
-        equity, total_market, current_risk = self._portfolio_values(accounts, cash)
-        symbol_market = account.shares * account._last_mark_price
+        equity, total_market, current_risk = self._portfolio_values(
+            accounts, cash, mark_prices,
+        )
+        symbol_market = account.shares * mark_prices[bar.symbol]
         lot = account.trading.lot_size
         candidate = requested
         last_reason = "PORTFOLIO_RISK_LIMIT"
@@ -2355,7 +2384,8 @@ class SwingBacktester:
                 account.minimum_fee,
             )
             cash_after = cash - candidate * fill_price - fee
-            equity_after = equity - fee
+            adverse_cost = candidate * max(0.0, fill_price - bar.open)
+            equity_after = equity - fee - adverse_cost
             symbol_after = symbol_market + candidate * bar.open
             total_after = total_market + candidate * bar.open
             risk_after = current_risk + candidate * max(0.0, fill_price - stop)
@@ -2378,16 +2408,68 @@ class SwingBacktester:
         accounts: Mapping[str, BacktestAccount],
         shared_cash: float,
         operation: Any,
+        mark_prices: Mapping[str, float] | None = None,
     ) -> tuple[float, object]:
         other_market = sum(
-            item.shares * item._last_mark_price
-            for item in accounts.values() if item is not account
+            item.shares * (
+                item._last_mark_price
+                if mark_prices is None else mark_prices[symbol]
+            )
+            for symbol, item in accounts.items() if item is not account
         )
         virtual_before = shared_cash + other_market
         account.cash = virtual_before
         result = operation()
         delta = account.cash - virtual_before
         return shared_cash + delta, result
+
+    @staticmethod
+    def _cached_portfolio_decision(
+        bars: tuple[DailyBar, ...],
+        config: SwingStrategyConfig,
+        context: PortfolioContext,
+        cache: dict[tuple[object, ...], SwingDecision] | None,
+        worker: SwingBacktester,
+        *,
+        full_bar_count: int,
+        signal_index: int,
+        trading_date_indices: Mapping[date, int],
+    ) -> SwingDecision:
+        if cache is None:
+            decision = evaluate_swing(
+                bars, config, context, _trusted_completed_bars=True,
+            )
+            return worker._restore_full_history_evidence(
+                decision,
+                full_bar_count=full_bar_count,
+                signal_index=signal_index,
+                trading_date_indices=trading_date_indices,
+                last_stop_trading_date=context.last_stop_trading_date,
+                has_position=context.position is not None,
+            )
+        config_key = (
+            worker._positionless_decision_config_key
+            if context.position is None else worker._decision_config_key
+        )
+        key = (
+            bars[0].symbol, bars[0].trading_date, bars[-1].trading_date,
+            len(bars), config_key, context, full_bar_count, signal_index,
+        )
+        decision = cache.get(key)
+        if decision is None:
+            decision = evaluate_swing(
+                bars, config, context, _trusted_completed_bars=True,
+            )
+            decision = worker._restore_full_history_evidence(
+                decision,
+                full_bar_count=full_bar_count,
+                signal_index=signal_index,
+                trading_date_indices=trading_date_indices,
+                last_stop_trading_date=context.last_stop_trading_date,
+                has_position=context.position is not None,
+            )
+            cache[key] = decision
+        return decision
 
     def run_portfolio(
         self,
@@ -2397,6 +2479,7 @@ class SwingBacktester:
         trading_by_symbol: Mapping[str, TradingMetadata] | None = None,
         _assume_validated: bool = False,
         _include_baseline: bool = True,
+        _decision_cache: dict[tuple[object, ...], SwingDecision] | None = None,
     ) -> PortfolioBacktestResult:
         """Run all symbols on one chronological event stream and cash balance."""
         cash = _finite(initial_cash, "initial_cash", positive=True)
@@ -2518,19 +2601,15 @@ class SwingBacktester:
                     accounts[symbol], accounts, cash,
                     execution_date, execution_index,
                 )
-                decision = evaluate_swing(
+                decision = self._cached_portfolio_decision(
                     history[signal_start:signal_index + 1],
                     self.config,
                     context,
-                    _trusted_completed_bars=True,
-                )
-                decision = workers[symbol]._restore_full_history_evidence(
-                    decision,
+                    _decision_cache,
+                    workers[symbol],
                     full_bar_count=signal_index + 1,
                     signal_index=signal_index,
                     trading_date_indices=indices[symbol],
-                    last_stop_trading_date=context.last_stop_trading_date,
-                    has_position=context.position is not None,
                 )
                 decisions[symbol] = decision
                 signal_inputs[symbol] = (
@@ -2541,6 +2620,11 @@ class SwingBacktester:
                 liquidities[symbol] = accounts[symbol].execution_day_liquidity(
                     history[execution_index], history[signal_index].volume,
                 )
+
+            open_prices = {
+                symbol: normalized[symbol][indices[symbol][execution_date]].open
+                for symbol in symbols
+            }
 
             gap_symbols: set[str] = set()
             for symbol in symbols:
@@ -2557,6 +2641,7 @@ class SwingBacktester:
                         known_volume=history[index - 1].volume,
                         liquidity=liquidity,
                     ),
+                    mark_prices=open_prices,
                 )
                 if triggered:
                     gap_symbols.add(symbol)
@@ -2584,22 +2669,17 @@ class SwingBacktester:
                     signal_index, _, signal_bars = signal_inputs[symbol]
                     refreshed_context = self._portfolio_context(
                         account, accounts, cash, execution_date, index,
+                        open_prices,
                     )
-                    refreshed = evaluate_swing(
+                    refreshed = self._cached_portfolio_decision(
                         signal_bars,
                         self.config,
                         refreshed_context,
-                        _trusted_completed_bars=True,
-                    )
-                    refreshed = workers[symbol]._restore_full_history_evidence(
-                        refreshed,
+                        _decision_cache,
+                        workers[symbol],
                         full_bar_count=signal_index + 1,
                         signal_index=signal_index,
                         trading_date_indices=indices[symbol],
-                        last_stop_trading_date=(
-                            refreshed_context.last_stop_trading_date
-                        ),
-                        has_position=refreshed_context.position is not None,
                     )
                     expected_state = (
                         SwingState.ADD_CANDIDATE
@@ -2617,7 +2697,7 @@ class SwingBacktester:
                         continue
                     decision = refreshed
                     capped, reason = self._portfolio_buy_cap(
-                        decision, account, accounts, cash, bar,
+                        decision, account, accounts, cash, bar, open_prices,
                     )
                     if capped <= 0:
                         account._reject(
@@ -2637,6 +2717,7 @@ class SwingBacktester:
                         execution_phase="NEXT_OPEN",
                         liquidity=liquidity,
                     ),
+                    mark_prices=open_prices,
                 )
 
             for symbol in symbols:
@@ -2651,6 +2732,7 @@ class SwingBacktester:
                     account.execute_intraday_stop(
                         decision, bar, execution_index=index, liquidity=liquidity,
                     ),
+                    mark_prices=open_prices,
                 )
             for symbol in symbols:
                 index = indices[symbol][execution_date]
@@ -3056,6 +3138,7 @@ class SwingBacktester:
             for symbol in symbols
         }
         variants: list[WalkForwardVariantResult] = []
+        decision_cache: dict[tuple[object, ...], SwingDecision] = {}
         for short in (18, 20, 22):
             for long in (55, 60, 65):
                 for initial in (1.75, 2.0, 2.25):
@@ -3097,11 +3180,13 @@ class SwingBacktester:
                                 train_histories, cash,
                                 trading_by_symbol=trading_map,
                                 _assume_validated=True,
+                                _decision_cache=decision_cache,
                             )
                             test_result = worker.run_portfolio(
                                 test_histories, cash,
                                 trading_by_symbol=trading_map,
                                 _assume_validated=True,
+                                _decision_cache=decision_cache,
                             )
                             test_summary = self._fold_summary(test_result)
                             value = test_summary["cumulative_return"]

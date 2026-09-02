@@ -188,6 +188,64 @@ class SwingServiceTests(unittest.TestCase):
         self.assertTrue(all(item == results[0] for item in results))
         self.assertEqual(len(tuple(self.paths.backtests.glob("*.json"))), 1)
 
+    def test_different_backtest_keys_compute_concurrently(self) -> None:
+        service = self.make_service()
+        barrier = threading.Barrier(2)
+
+        def compute(*args, **_kwargs):
+            barrier.wait(timeout=2)
+            return service._backtest_unavailable(
+                args[0], args[1], "INSUFFICIENT_SAMPLE", "TEST_RESULT",
+            )
+
+        with patch.object(service, "_run_backtest", side_effect=compute):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = (
+                    pool.submit(service.backtest, "510300", "symbol"),
+                    pool.submit(service.backtest, None, "portfolio"),
+                )
+                results = tuple(item.result(timeout=4) for item in futures)
+        self.assertEqual({item["scope"] for item in results}, {"symbol", "portfolio"})
+
+    def test_backtest_cache_rejects_forged_or_noncanonical_envelopes(self) -> None:
+        DailyHistoryStore(
+            self.paths.daily_history, self.metadata, frozenset(),
+        ).upsert(self.final_bars)
+        service = self.make_service()
+        expected = service.backtest("510300", "symbol")
+        cache_path = next(self.paths.backtests.glob("*.json"))
+        valid = json.loads(cache_path.read_text(encoding="utf-8"))
+        nested_extra = json.loads(json.dumps(valid))
+        nested_extra["result"]["strategy_parameters"]["unexpected"] = 1
+        nested_extra["payload_sha256"] = service._canonical_digest(
+            nested_extra["result"],
+        )
+        wrong_type = json.loads(json.dumps(valid))
+        wrong_type["result"]["completed_round_trips"] = True
+        wrong_type["payload_sha256"] = service._canonical_digest(
+            wrong_type["result"],
+        )
+
+        for forged in (
+            expected,
+            {**valid, "unexpected": True},
+            {
+                **valid,
+                "result": {**valid["result"], "unexpected": True},
+            },
+            nested_extra,
+            wrong_type,
+        ):
+            cache_path.write_text(
+                json.dumps(forged, allow_nan=False), encoding="utf-8",
+            )
+            with patch.object(
+                service, "_run_backtest", wraps=service._run_backtest,
+            ) as run:
+                rebuilt = service.backtest("510300", "symbol")
+            self.assertEqual(rebuilt, expected)
+            self.assertEqual(run.call_count, 1)
+
     def test_backtest_cache_uses_content_not_mtime_and_invalidates_config(self) -> None:
         service = self.make_service()
         service.backtest("510300", "symbol")
