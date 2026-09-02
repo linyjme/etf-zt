@@ -23,7 +23,19 @@
 ```powershell
 git fsck --full
 git log --all --name-only -- data/monitor/quotes.json data/monitor/quotes.jsonl data/monitor/alerts.jsonl
-git rev-list --objects --all | Select-String '__pycache__|\.pyc$|<project-root>'
+$sensitivePattern = Read-Host '输入旧路径的正则（仅保存在本次会话变量中）'
+$historyMatches = $false
+foreach ($revision in (git rev-list --all)) {
+    git grep -I -n -E -- $sensitivePattern $revision
+    if ($LASTEXITCODE -eq 0) {
+        $historyMatches = $true
+    } elseif ($LASTEXITCODE -ne 1) {
+        throw "历史内容扫描失败: $revision"
+    }
+}
+if ($historyMatches) { throw '可达提交中仍存在敏感内容' }
 ```
+
+上述循环使用 `git grep` 检查每个可达提交的 blob 内容，而不把真实旧路径写入文档或仓库。扫描没有输出且最终未抛错，表示当前 refs 可达的提交中没有匹配；退出码 1 表示该提交无匹配，其他退出码视为扫描失败。reflog、备份 refs、远端旧 refs 和不可达对象不在这个结论内，仍须按备份与协作计划单独检查，并在确认不再需要后由维护者处理。
 
 确认扫描无残留、测试通过并经维护者复核后，才可以协调强制更新远端。所有旧克隆都应重新克隆，不能继续在旧历史上推送。本项目本次改造**不会自动执行历史重写**。

@@ -22,6 +22,14 @@ def _contains_private_windows_path(text: str) -> bool:
 
 
 class RunTestsScriptTests(unittest.TestCase):
+    def test_history_cleanup_audits_reachable_blob_contents(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        guide = (root / "docs" / "git-history-cleanup.md").read_text(encoding="utf-8")
+        self.assertIn("Read-Host", guide)
+        self.assertIn("git rev-list --all", guide)
+        self.assertIn("git grep -I -n -E -- $sensitivePattern $revision", guide)
+        self.assertNotIn("git rev-list --objects --all | Select-String", guide)
+
     def test_private_path_scanner_rejects_raw_and_markdown_escaped_paths(self) -> None:
         raw = "C:" + "\\" + "Users" + "\\" + "somebody" + "\\" + "project"
         escaped = "F:" + "\\\\" + "plan" + "\\\\" + "money"
