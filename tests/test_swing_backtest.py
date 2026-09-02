@@ -435,6 +435,52 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
                 self.assertEqual(result.open_position_shares, 0)
                 self.assertEqual(result.rejections[-1].reason, "LIMIT_LOCKED")
 
+    def test_pending_open_stop_preserves_exact_or_gap_classification(self) -> None:
+        bars = swing_strategy_bars(3, pattern="rising")
+        config = replace(
+            self.config, risk_per_trade=0.05, max_portfolio_risk=0.05,
+            max_symbol_weight=1.0, max_equity_weight=1.0,
+        )
+        unlocked = replace(
+            bars[2], previous_close=100.0,
+            open=80.0, high=90.0, low=80.0, close=85.0,
+            adjusted_open=80.0, adjusted_high=90.0,
+            adjusted_low=80.0, adjusted_close=85.0,
+        )
+
+        for stop, expected_reason in (
+            (80.0, "STOP_EXIT"),
+            (81.0, "GAP_THROUGH_STOP"),
+        ):
+            with self.subTest(stop=stop):
+                account = BacktestAccount(100_000.0, self.trading, config)
+                account.execute(
+                    _decision(
+                        SwingState.TRIAL_ENTRY_CANDIDATE,
+                        bars[0].trading_date,
+                        bars[1].trading_date,
+                        shares=100,
+                        stop=stop,
+                    ),
+                    bars[1],
+                    execution_index=1,
+                )
+                account.mark(bars[1], 1)
+                self.assertTrue(account.execute_protective_stop(
+                    _decision(
+                        SwingState.HOLDING,
+                        bars[1].trading_date,
+                        bars[2].trading_date,
+                        stop=stop,
+                    ),
+                    unlocked,
+                    execution_index=2,
+                ))
+
+                self.assertEqual(account.rejections[-1].reason, "LIMIT_LOCKED")
+                self.assertEqual(account.trades[-1].reason, expected_reason)
+                self.assertEqual(account.trades[-1].raw_reference_price, 80.0)
+
     def test_current_physical_volume_only_reduces_shared_capacity(self) -> None:
         bars = list(swing_strategy_bars(72, pattern="rising"))
         bars[71] = replace(
@@ -1157,7 +1203,8 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
             "stop_execution_policy": (
                 "preexisting_open_le_stop_first_and_suppress_stale_signal;"
                 "rejected_or_partial_open_stop_remains_pending_and_on_unlock_"
-                "retries_at_adverse_open_with_GAP_THROUGH_STOP;otherwise_after_"
+                "retries_at_adverse_open_preserving_open_eq_stop_STOP_EXIT_"
+                "versus_open_lt_stop_GAP_THROUGH_STOP;otherwise_after_"
                 "formal_open_order_intraday_low_le_stop_le_high_at_stop"
             ),
             "volume_policy": (

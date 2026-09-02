@@ -457,6 +457,7 @@ class _ExecutionDayLiquidity:
     remaining: int
     pending_gap_stop: bool = False
     pending_gap_reference: float | None = None
+    pending_stop_reason: str | None = None
 
     def consume(self, shares: int) -> None:
         if shares < 0 or shares > self.remaining:
@@ -862,6 +863,10 @@ class BacktestAccount:
         if liquidity is not None:
             liquidity.pending_gap_stop = True
             liquidity.pending_gap_reference = bar.open
+            liquidity.pending_stop_reason = (
+                "GAP_THROUGH_STOP"
+                if bar.open < execution_stop else "STOP_EXIT"
+            )
         protective = self._protective_decision(decision, execution_stop)
         gap = bar.open < execution_stop
         self.execute(
@@ -896,6 +901,11 @@ class BacktestAccount:
                 raise SwingBacktestError(
                     "pending gap stop is missing its reference price",
                 )
+            reason = liquidity.pending_stop_reason
+            if reason not in {"GAP_THROUGH_STOP", "STOP_EXIT"}:
+                raise SwingBacktestError(
+                    "pending gap stop is missing its classification",
+                )
             protective = self._protective_decision(
                 decision,
                 execution_stop if execution_stop is not None else reference,
@@ -905,7 +915,7 @@ class BacktestAccount:
                 bar,
                 execution_index=execution_index,
                 raw_reference_price=reference,
-                forced_reason="GAP_THROUGH_STOP",
+                forced_reason=reason,
                 execution_phase="INTRADAY_STOP",
                 liquidity=liquidity,
             )
@@ -1427,7 +1437,8 @@ class SwingBacktester:
             "stop_execution_policy": (
                 "preexisting_open_le_stop_first_and_suppress_stale_signal;"
                 "rejected_or_partial_open_stop_remains_pending_and_on_unlock_"
-                "retries_at_adverse_open_with_GAP_THROUGH_STOP;otherwise_after_"
+                "retries_at_adverse_open_preserving_open_eq_stop_STOP_EXIT_"
+                "versus_open_lt_stop_GAP_THROUGH_STOP;otherwise_after_"
                 "formal_open_order_intraday_low_le_stop_le_high_at_stop"
             ),
             "volume_policy": (
