@@ -353,7 +353,7 @@ class PortfolioSwingBacktestTests(unittest.TestCase):
             execution_index=1,
             portfolio_equity_override=100_000.0,
             portfolio_market_value_override=56_000.0,
-            portfolio_risk_override=0.0,
+            other_portfolio_risk_override=0.0,
         )
         self.assertIsNotNone(fill)
         self.assertEqual(fill.shares, 7_000)
@@ -412,6 +412,128 @@ class PortfolioSwingBacktestTests(unittest.TestCase):
         ]
         self.assertTrue(all(risk <= 1_000.0 + 1e-9 for risk in entry_risks))
         self.assertLessEqual(sum(entry_risks), 2_000.0 + 1e-9)
+
+    def test_add_replaces_old_symbol_risk_when_stop_changes(self) -> None:
+        config = replace(
+            self.config,
+            risk_per_trade=0.01,
+            max_symbol_weight=1.0,
+            max_equity_weight=1.0,
+            max_portfolio_risk=0.02,
+        )
+        backtester = SwingBacktester(
+            config, self.trading,
+            buy_fee_rate=0.0, sell_fee_rate=0.0, minimum_fee=0.0,
+            slippage_rate=0.0, half_spread_ticks=0.0,
+        )
+        bars = swing_strategy_bars(2, pattern="rising")
+        bar = replace(
+            bars[1], open=4.0, high=4.1, low=3.7, close=4.0,
+            previous_close=4.0, adjusted_open=2.0, adjusted_high=2.05,
+            adjusted_low=1.85, adjusted_close=2.0,
+        )
+
+        def seeded() -> BacktestAccount:
+            account = BacktestAccount(
+                60_000.0, self.trading, config,
+                buy_fee_rate=0.0, sell_fee_rate=0.0, minimum_fee=0.0,
+                slippage_rate=0.0, half_spread_ticks=0.0,
+            )
+            account.shares = 10_000
+            account._lots = [(0, 10_000)]
+            account._hard_stop_adjusted = 1.9
+            account._last_mark_price = 4.0
+            account._last_adjusted_close = 2.0
+            return account
+
+        tightened = seeded()
+        tightened_decision = _decision(
+            SwingState.ADD_CANDIDATE,
+            bars[0].trading_date,
+            bars[1].trading_date,
+            shares=7_000,
+            stop=3.95,
+        )
+        capped, reason = backtester._portfolio_buy_cap(
+            tightened_decision,
+            tightened,
+            {"510300": tightened},
+            60_000.0,
+            bar,
+            {"510300": 4.0},
+            other_portfolio_risk=0.0,
+        )
+        self.assertEqual((capped, reason), (7_000, None))
+        fill = tightened.execute(
+            tightened_decision,
+            bar,
+            execution_index=1,
+            portfolio_equity_override=100_000.0,
+            portfolio_market_value_override=40_000.0,
+            other_portfolio_risk_override=0.0,
+        )
+        self.assertIsNotNone(fill)
+        self.assertEqual(fill.shares, 7_000)
+
+        widened = seeded()
+        widened_decision = _decision(
+            SwingState.ADD_CANDIDATE,
+            bars[0].trading_date,
+            bars[1].trading_date,
+            shares=7_000,
+            stop=3.7,
+        )
+        capped, reason = backtester._portfolio_buy_cap(
+            widened_decision,
+            widened,
+            {"510300": widened},
+            60_000.0,
+            bar,
+            {"510300": 4.0},
+            other_portfolio_risk=0.0,
+        )
+        self.assertEqual((capped, reason), (0, "PORTFOLIO_RISK_LIMIT"))
+        self.assertIsNone(widened.execute(
+            widened_decision,
+            bar,
+            execution_index=1,
+            portfolio_equity_override=100_000.0,
+            portfolio_market_value_override=40_000.0,
+            other_portfolio_risk_override=0.0,
+        ))
+        self.assertEqual(widened.rejections[-1].reason, "ACTUAL_RISK_LIMIT")
+
+        peer_blocked = seeded()
+        peer = BacktestAccount(0.01, self.trading, config)
+        peer.shares = 2_500
+        peer._hard_stop_adjusted = 1.7
+        peer._last_mark_price = 8.0
+        peer._last_adjusted_close = 2.0
+        peer_bar = replace(bar, symbol="510500")
+        risk_by_symbol = backtester._portfolio_risks_at_bars(
+            {"510300": peer_blocked, "510500": peer},
+            {"510300": bar, "510500": peer_bar},
+        )
+        self.assertAlmostEqual(risk_by_symbol["510300"], 2_000.0)
+        self.assertAlmostEqual(risk_by_symbol["510500"], 1_500.0)
+        capped, reason = backtester._portfolio_buy_cap(
+            tightened_decision,
+            peer_blocked,
+            {"510300": peer_blocked},
+            60_000.0,
+            bar,
+            {"510300": 4.0},
+            other_portfolio_risk=1_500.0,
+        )
+        self.assertEqual((capped, reason), (0, "PORTFOLIO_RISK_LIMIT"))
+        self.assertIsNone(peer_blocked.execute(
+            tightened_decision,
+            bar,
+            execution_index=1,
+            portfolio_equity_override=100_000.0,
+            portfolio_market_value_override=40_000.0,
+            other_portfolio_risk_override=1_500.0,
+        ))
 
     def test_common_range_and_equal_weight_baseline_use_actual_shared_cash(self) -> None:
         histories = self.histories(95)
@@ -1555,7 +1677,8 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
             "actual_buy_sizing_policy": (
                 "recompute_at_actual_fill_and_stop_then_cap_cash_lot_prior_"
                 "volume_symbol_weight_total_exposure_risk_per_trade_and_"
-                "portfolio_risk"
+                "portfolio_risk;add_replaces_current_symbol_risk_using_"
+                "execution_day_raw_adjusted_scale_and_effective_stop"
             ),
             "exchange": "SSE",
             "execution_cost_order": (
