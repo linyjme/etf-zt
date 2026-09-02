@@ -11,6 +11,7 @@ from unittest.mock import patch
 from etf_rotation.etf_metadata import TradingMetadata
 from etf_rotation.swing_backtest import (
     BacktestAccount,
+    PendingAction,
     SwingBacktestError,
     SwingBacktester,
     strategy_lookback,
@@ -52,6 +53,7 @@ def _decision(
         strategy_version="SWING_V1",
         as_of_trading_date=signal_date,
         state=state,
+        trend_score=0.0,
         evidence={} if evidence is None else evidence,
         blocked_reasons=(),
         planned_entry_low=(
@@ -68,6 +70,154 @@ def _decision(
             execution_date if state is SwingState.TRIAL_ENTRY_CANDIDATE else None
         ),
     )
+
+
+class PortfolioSwingBacktestTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = load_strategy(ROOT / "data" / "swing" / "strategy.json")
+        self.trading = TradingMetadata(
+            exchange="SSE",
+            asset_type="DOMESTIC_EQUITY_ETF",
+            intraday_turnaround=False,
+            sellable_delay_days=1,
+            lot_size=100,
+            price_tick=0.001,
+            price_limit_pct=0.20,
+            volume_unit_shares=100,
+        )
+        self.backtester = SwingBacktester(self.config, self.trading)
+
+    @staticmethod
+    def histories(count: int = 90) -> dict[str, tuple[object, ...]]:
+        return {
+            symbol: swing_strategy_bars(
+                count, symbol=symbol, pattern="pullback_reclaim",
+                raw_scale=0.04 + index * 0.001,
+            )
+            for index, symbol in enumerate(("510300", "510500"))
+        }
+
+    def test_exit_reduce_add_and_trial_priority_is_stable(self) -> None:
+        actions = tuple(
+            PendingAction(kind, symbol, score, None)
+            for kind, symbol, score in (
+                ("TRIAL_ENTRY", "510500", 9.0),
+                ("ADD", "510300", 2.0),
+                ("EXIT", "510500", 0.1),
+                ("REDUCE", "510300", 3.0),
+                ("TRIAL_ENTRY", "510300", 9.0),
+            )
+        )
+        ranked = self.backtester.rank_actions(actions)
+        self.assertEqual(
+            [(item.kind, item.symbol) for item in ranked],
+            [
+                ("EXIT", "510500"),
+                ("REDUCE", "510300"),
+                ("ADD", "510300"),
+                ("TRIAL_ENTRY", "510300"),
+                ("TRIAL_ENTRY", "510500"),
+            ],
+        )
+
+    def test_portfolio_uses_one_cash_budget_and_deterministic_json(self) -> None:
+        histories = self.histories()
+        first = self.backtester.run_portfolio(histories, 100_000.0)
+        second = self.backtester.run_portfolio(histories, 100_000.0)
+        self.assertEqual(first.to_json(), second.to_json())
+        self.assertLessEqual(first.max_equity_weight, self.config.max_equity_weight + 1e-12)
+        self.assertLessEqual(first.max_planned_risk, self.config.max_portfolio_risk + 1e-12)
+        self.assertEqual(first.symbols, ("510300", "510500"))
+        self.assertEqual(first.event_dates, tuple(sorted(first.event_dates)))
+
+    def test_simultaneous_candidates_compete_for_one_portfolio_risk_budget(self) -> None:
+        config = replace(
+            self.config,
+            risk_per_trade=0.02,
+            max_symbol_weight=1.0,
+            max_equity_weight=1.0,
+            max_portfolio_risk=0.02,
+        )
+        backtester = SwingBacktester(config, self.trading)
+        histories = self.histories(72)
+
+        def evaluate(signal_bars, _config, context, **_kwargs):
+            symbol = signal_bars[-1].symbol
+            if context.position is None and len(signal_bars) == 70:
+                return replace(
+                    _decision(
+                        SwingState.TRIAL_ENTRY_CANDIDATE,
+                        signal_bars[-1].trading_date,
+                        context.next_trading_date,
+                        shares=100_000,
+                        stop=3.0,
+                    ),
+                    symbol=symbol,
+                    trend_score=2.0 if symbol == "510300" else 1.0,
+                )
+            return replace(
+                _decision(
+                    SwingState.HOLDING if context.position else SwingState.UPTREND_WATCH,
+                    signal_bars[-1].trading_date,
+                    context.next_trading_date,
+                    shares=0,
+                ),
+                symbol=symbol,
+            )
+
+        with patch("etf_rotation.swing_backtest.evaluate_swing", side_effect=evaluate):
+            result = backtester.run_portfolio(histories, 100_000.0)
+        self.assertLessEqual(result.max_planned_risk, config.max_portfolio_risk + 1e-12)
+        self.assertGreater(
+            result.metrics.rejection_counts.get("PORTFOLIO_RISK_LIMIT", 0), 0,
+        )
+        buys = [item for item in result.trades if item.side == "BUY"]
+        self.assertTrue(buys)
+        self.assertEqual(buys[0].symbol, "510300")
+
+    def test_common_range_and_equal_weight_baseline_use_actual_shared_cash(self) -> None:
+        histories = self.histories(95)
+        histories["510500"] = histories["510500"][5:]
+        result = self.backtester.run_portfolio(histories, 100_000.0)
+        expected = histories["510500"][self.config.minimum_daily_bars].trading_date
+        self.assertEqual(result.common_start_date, expected)
+        if result.baseline is not None:
+            self.assertAlmostEqual(sum(result.baseline_weights.values()), 1.0)
+            self.assertGreaterEqual(result.baseline.cash, -1e-9)
+            self.assertLessEqual(
+                sum(fill.shares * fill.fill_price + fill.fee for fill in result.baseline.trades),
+                100_000.0 + 1e-9,
+            )
+
+    def test_walk_forward_reports_all_81_variants_and_exact_untouched_windows(self) -> None:
+        histories = self.histories(650)
+        report = self.backtester.walk_forward(histories, 100_000.0)
+        self.assertEqual(len(report.variants), 81)
+        self.assertEqual(
+            [
+                (
+                    item.parameters["short_ma_days"],
+                    item.parameters["long_ma_days"],
+                    item.parameters["initial_stop_atr"],
+                    item.parameters["trailing_stop_atr"],
+                )
+                for item in report.variants
+            ],
+            sorted(
+                (
+                    short, long, initial, trailing,
+                )
+                for short in (18, 20, 22)
+                for long in (55, 60, 65)
+                for initial in (1.75, 2.0, 2.25)
+                for trailing in (2.75, 3.0, 3.25)
+            ),
+        )
+        first = report.variants[0].folds[0]
+        self.assertEqual(first.train_bar_count, 504)
+        self.assertEqual(first.test_bar_count, 126)
+        self.assertLess(first.train_end_date, first.test_start_date)
+        self.assertEqual(report.selected_variant, None)
 
 
 class SingleSymbolSwingBacktestTests(unittest.TestCase):
@@ -1007,6 +1157,7 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
                 strategy_version="SWING_V1",
                 as_of_trading_date=signal_bars[-1].trading_date,
                 state=SwingState.PULLBACK_WATCH,
+                trend_score=0.0,
                 evidence={"trial_technical_ok": True},
                 blocked_reasons=("portfolio_risk_cap",),
                 planned_entry_low=95.0,

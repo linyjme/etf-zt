@@ -280,6 +280,24 @@ class CompletedRoundTrip:
 
 
 @dataclass(frozen=True)
+class PortfolioCompletedRoundTrip:
+    symbol: str
+    entry_date: date
+    exit_date: date
+    net_pnl: float
+    holding_days: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "symbol": self.symbol,
+            "entry_date": self.entry_date.isoformat(),
+            "exit_date": self.exit_date.isoformat(),
+            "net_pnl": _clean(self.net_pnl),
+            "holding_days": self.holding_days,
+        }
+
+
+@dataclass(frozen=True)
 class SwingBacktestMetrics:
     cumulative_return: float
     annualized_return: float | None
@@ -377,7 +395,7 @@ class SwingBacktestResult:
     end_date: date
     trades: tuple[SwingFill, ...]
     rejections: tuple[SwingRejection, ...]
-    round_trips: tuple[CompletedRoundTrip, ...]
+    round_trips: tuple[PortfolioCompletedRoundTrip, ...]
     open_position_shares: int
     uncompleted_leg_count: int
     benchmark: SwingBenchmarkResult | None
@@ -448,6 +466,223 @@ class SwingBacktestResult:
             self.to_dict(), ensure_ascii=True, allow_nan=False,
             sort_keys=True, separators=(",", ":"),
         )
+
+
+@dataclass(frozen=True)
+class PendingAction:
+    """One completed-close action awaiting the next executable open."""
+
+    kind: str
+    symbol: str
+    trend_score: float
+    decision: SwingDecision | None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"EXIT", "REDUCE", "ADD", "TRIAL_ENTRY"}:
+            raise SwingBacktestError("pending action kind is invalid")
+        if (
+            type(self.symbol) is not str
+            or len(self.symbol) != 6
+            or not self.symbol.isascii()
+            or not self.symbol.isdigit()
+        ):
+            raise SwingBacktestError("pending action symbol is invalid")
+        object.__setattr__(
+            self, "trend_score", _finite(self.trend_score, "trend_score"),
+        )
+        if self.decision is not None and type(self.decision) is not SwingDecision:
+            raise SwingBacktestError("pending action decision is invalid")
+
+
+@dataclass(frozen=True)
+class PortfolioBenchmarkResult:
+    status: str
+    reason: str | None
+    initial_cash: float
+    cash: float
+    ending_equity: float | None
+    trades: tuple[SwingFill, ...]
+    shares_by_symbol: Mapping[str, int]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "initial_cash": _clean(self.initial_cash),
+            "cash": _clean(self.cash),
+            "ending_equity": (
+                None if self.ending_equity is None else _clean(self.ending_equity)
+            ),
+            "trades": [item.to_dict() for item in self.trades],
+            "fees": _clean(sum(item.fee for item in self.trades)),
+            "spread_cost": _clean(sum(item.spread_cost for item in self.trades)),
+            "slippage": _clean(sum(item.slippage for item in self.trades)),
+            "shares_by_symbol": dict(sorted(self.shares_by_symbol.items())),
+            "cumulative_return": (
+                None if self.ending_equity is None
+                else _clean(self.ending_equity / self.initial_cash - 1.0)
+            ),
+        }
+
+
+class PortfolioRejections(tuple[SwingRejection, ...]):
+    """Immutable audit events with convenient deterministic reason counts."""
+
+    def __new__(cls, values: Sequence[SwingRejection]) -> PortfolioRejections:
+        return tuple.__new__(cls, tuple(values))
+
+    @property
+    def counts(self) -> Mapping[str, int]:
+        result: dict[str, int] = {}
+        for item in self:
+            result[item.reason] = result.get(item.reason, 0) + 1
+        return MappingProxyType(dict(sorted(result.items())))
+
+    def __getitem__(self, key: int | slice | str):
+        if type(key) is str:
+            return self.counts.get(key, 0)
+        return super().__getitem__(key)
+
+
+@dataclass(frozen=True)
+class PortfolioBacktestResult:
+    schema_version: int
+    scope: str
+    strategy_version: str
+    status: str
+    reason: str | None
+    symbols: tuple[str, ...]
+    initial_cash: float
+    cash: float
+    ending_equity: float | None
+    common_start_date: date | None
+    common_end_date: date | None
+    event_dates: tuple[date, ...]
+    trades: tuple[SwingFill, ...]
+    rejections: tuple[SwingRejection, ...]
+    round_trips: tuple[CompletedRoundTrip, ...]
+    open_position_shares: Mapping[str, int]
+    uncompleted_leg_count: int
+    max_equity_weight: float
+    max_planned_risk: float
+    metrics: SwingBacktestMetrics | None
+    baseline: PortfolioBenchmarkResult | None
+    baseline_weights: Mapping[str, float]
+    outperformance: float | None
+    strategy_parameters: Mapping[str, object]
+    execution_assumptions: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "rejections", PortfolioRejections(self.rejections))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "scope": self.scope,
+            "strategy_version": self.strategy_version,
+            "status": self.status,
+            "reason": self.reason,
+            "symbols": list(self.symbols),
+            "initial_cash": _clean(self.initial_cash),
+            "cash": _clean(self.cash),
+            "ending_equity": (
+                None if self.ending_equity is None else _clean(self.ending_equity)
+            ),
+            "common_start_date": (
+                None if self.common_start_date is None
+                else self.common_start_date.isoformat()
+            ),
+            "common_end_date": (
+                None if self.common_end_date is None
+                else self.common_end_date.isoformat()
+            ),
+            "event_dates": [item.isoformat() for item in self.event_dates],
+            "trades": [item.to_dict() for item in self.trades],
+            "rejections": [item.to_dict() for item in self.rejections],
+            "rejection_counts": dict(self.rejections.counts),
+            "completed_round_trips": len(self.round_trips),
+            "round_trips": [item.to_dict() for item in self.round_trips],
+            "open_position_shares": dict(sorted(self.open_position_shares.items())),
+            "uncompleted_leg_count": self.uncompleted_leg_count,
+            "max_equity_weight": _clean(self.max_equity_weight),
+            "max_planned_risk": _clean(self.max_planned_risk),
+            "metrics": None if self.metrics is None else self.metrics.to_dict(),
+            "baseline": None if self.baseline is None else self.baseline.to_dict(),
+            "baseline_weights": dict(sorted(self.baseline_weights.items())),
+            "outperformance": (
+                None if self.outperformance is None else _clean(self.outperformance)
+            ),
+            "strategy_parameters": dict(self.strategy_parameters),
+            "execution_assumptions": dict(self.execution_assumptions),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.to_dict(), ensure_ascii=True, allow_nan=False,
+            sort_keys=True, separators=(",", ":"),
+        )
+
+
+@dataclass(frozen=True)
+class WalkForwardFoldResult:
+    fold_index: int
+    train_start_date: date
+    train_end_date: date
+    test_start_date: date
+    test_end_date: date
+    train_bar_count: int
+    test_bar_count: int
+    train: Mapping[str, object]
+    test: Mapping[str, object]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "fold_index": self.fold_index,
+            "train_start_date": self.train_start_date.isoformat(),
+            "train_end_date": self.train_end_date.isoformat(),
+            "test_start_date": self.test_start_date.isoformat(),
+            "test_end_date": self.test_end_date.isoformat(),
+            "train_bar_count": self.train_bar_count,
+            "test_bar_count": self.test_bar_count,
+            "train": dict(self.train),
+            "test": dict(self.test),
+        }
+
+
+@dataclass(frozen=True)
+class WalkForwardVariantResult:
+    parameters: Mapping[str, object]
+    folds: tuple[WalkForwardFoldResult, ...]
+    stability: Mapping[str, object]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "parameters": dict(self.parameters),
+            "folds": [item.to_dict() for item in self.folds],
+            "stability": dict(self.stability),
+        }
+
+
+@dataclass(frozen=True)
+class WalkForwardReport:
+    status: str
+    reason: str | None
+    train_days: int
+    test_days: int
+    step_days: int
+    selected_variant: None
+    variants: tuple[WalkForwardVariantResult, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "train_days": self.train_days,
+            "test_days": self.test_days,
+            "step_days": self.step_days,
+            "selected_variant": None,
+            "variants": [item.to_dict() for item in self.variants],
+        }
 
 
 @dataclass
@@ -968,6 +1203,7 @@ class BacktestAccount:
             strategy_version=decision.strategy_version,
             as_of_trading_date=decision.as_of_trading_date,
             state=SwingState.EXIT_CANDIDATE,
+            trend_score=decision.trend_score,
             evidence=evidence,
             blocked_reasons=(),
             planned_entry_low=None,
@@ -1921,10 +2157,1003 @@ class SwingBacktester:
             rejection_counts=counts,
         )
 
+    def rank_actions(
+        self, actions: Sequence[PendingAction],
+    ) -> tuple[PendingAction, ...]:
+        """Apply the documented portfolio allocation order deterministically."""
+        priority = {"EXIT": 0, "REDUCE": 1, "ADD": 2, "TRIAL_ENTRY": 3}
+        materialized = tuple(actions)
+        if any(type(item) is not PendingAction for item in materialized):
+            raise SwingBacktestError("actions must contain PendingAction")
+        return tuple(sorted(
+            materialized,
+            key=lambda action: (
+                priority[action.kind], -action.trend_score, action.symbol,
+            ),
+        ))
+
+    def _portfolio_trading(
+        self,
+        symbols: tuple[str, ...],
+        trading_by_symbol: Mapping[str, TradingMetadata] | None,
+    ) -> dict[str, TradingMetadata]:
+        if trading_by_symbol is None:
+            return {symbol: self.trading for symbol in symbols}
+        if set(trading_by_symbol) != set(symbols):
+            raise SwingBacktestError(
+                "trading metadata must exactly cover portfolio symbols",
+            )
+        result: dict[str, TradingMetadata] = {}
+        for symbol in symbols:
+            trading = trading_by_symbol[symbol]
+            _validate_trading(trading)
+            result[symbol] = trading
+        return result
+
+    def _portfolio_unavailable(
+        self,
+        symbols: tuple[str, ...],
+        initial_cash: float,
+        reason: str,
+        *,
+        start: date | None = None,
+        end: date | None = None,
+        status: str = "DATA_UNAVAILABLE",
+    ) -> PortfolioBacktestResult:
+        return PortfolioBacktestResult(
+            schema_version=1,
+            scope="portfolio",
+            strategy_version=self.config.strategy_version,
+            status=status,
+            reason=reason,
+            symbols=symbols,
+            initial_cash=initial_cash,
+            cash=initial_cash,
+            ending_equity=None,
+            common_start_date=start,
+            common_end_date=end,
+            event_dates=(),
+            trades=(),
+            rejections=(),
+            round_trips=(),
+            open_position_shares={symbol: 0 for symbol in symbols},
+            uncompleted_leg_count=0,
+            max_equity_weight=0.0,
+            max_planned_risk=0.0,
+            metrics=None,
+            baseline=None,
+            baseline_weights={},
+            outperformance=None,
+            strategy_parameters=self._strategy_parameters(),
+            execution_assumptions={
+                **self._execution_assumptions(),
+                "portfolio_cash_model": "ONE_SHARED_CASH_BALANCE",
+            },
+        )
+
+    @staticmethod
+    def _portfolio_position_risk(account: BacktestAccount) -> float:
+        if account.shares <= 0 or account._last_mark_price <= 0.0:
+            return 0.0
+        scale = (
+            account._last_mark_price / account._last_adjusted_close
+            if account._last_adjusted_close > 0.0 else 1.0
+        )
+        stop = account._hard_stop_adjusted * scale
+        return account.shares * max(0.0, account._last_mark_price - stop)
+
+    @staticmethod
+    def _portfolio_values(
+        accounts: Mapping[str, BacktestAccount], cash: float,
+    ) -> tuple[float, float, float]:
+        market_value = sum(
+            account.shares * account._last_mark_price
+            for account in accounts.values()
+        )
+        risk = sum(
+            SwingBacktester._portfolio_position_risk(account)
+            for account in accounts.values()
+        )
+        return cash + market_value, market_value, risk
+
+    def _portfolio_context(
+        self,
+        account: BacktestAccount,
+        accounts: Mapping[str, BacktestAccount],
+        cash: float,
+        execution_date: date,
+        execution_index: int,
+    ) -> PortfolioContext:
+        equity, market_value, risk = self._portfolio_values(accounts, cash)
+        local = account.context(
+            next_trading_date=execution_date,
+            execution_index=execution_index,
+        )
+        return PortfolioContext(
+            equity=max(equity, max(cash, 1e-9)),
+            cash=cash,
+            current_etf_market_value=market_value,
+            current_planned_risk_amount=risk,
+            lot_size=account.trading.lot_size,
+            data_healthy=True,
+            metadata_complete=True,
+            ledger_healthy=True,
+            tradable=True,
+            next_trading_date=execution_date,
+            last_stop_trading_date=local.last_stop_trading_date,
+            position=local.position,
+        )
+
+    @staticmethod
+    def _action_kind(decision: SwingDecision) -> str | None:
+        return {
+            SwingState.EXIT_CANDIDATE: "EXIT",
+            SwingState.REDUCE_CANDIDATE: "REDUCE",
+            SwingState.ADD_CANDIDATE: "ADD",
+            SwingState.TRIAL_ENTRY_CANDIDATE: "TRIAL_ENTRY",
+        }.get(decision.state)
+
+    @staticmethod
+    def _blocked_buy_kind(decision: SwingDecision) -> str | None:
+        if decision.evidence.get("trial_technical_ok") is True:
+            return "TRIAL_ENTRY"
+        if decision.evidence.get("add_candidate_technical_ok") is True:
+            return "ADD"
+        return None
+
+    @staticmethod
+    def _portfolio_block_reason(decision: SwingDecision) -> str:
+        reasons = decision.blocked_reasons
+        if any("portfolio_risk" in reason for reason in reasons):
+            return "PORTFOLIO_RISK_LIMIT"
+        if any("total_exposure" in reason for reason in reasons):
+            return "EQUITY_WEIGHT_LIMIT"
+        if any("single_symbol" in reason for reason in reasons):
+            return "SYMBOL_WEIGHT_LIMIT"
+        if any("cash" in reason for reason in reasons):
+            return "CASH"
+        if any("lot" in reason or "quantity" in reason for reason in reasons):
+            return "LOT_SIZE"
+        return "CANDIDATE_GATE"
+
+    def _portfolio_buy_cap(
+        self,
+        decision: SwingDecision,
+        account: BacktestAccount,
+        accounts: Mapping[str, BacktestAccount],
+        cash: float,
+        bar: DailyBar,
+    ) -> tuple[int, str | None]:
+        requested = _lot_floor(decision.planned_shares, account.trading.lot_size)
+        if requested <= 0:
+            return 0, "LOT_SIZE"
+        fill_price = _execution_price(
+            bar.open,
+            "BUY",
+            tick=account.trading.price_tick,
+            half_spread_ticks=account.half_spread_ticks,
+            slippage_rate=account.slippage_rate,
+        )
+        if not account._is_scale_transition(bar):
+            fill_price = min(fill_price, _effective_limit_price(
+                bar.previous_close,
+                account.trading.price_limit_pct,
+                account.trading.price_tick,
+                "BUY",
+            ))
+        stop = account._execution_stop(decision, bar)
+        if stop is None or stop >= fill_price:
+            return 0, "ACTUAL_RISK_LIMIT"
+        equity, total_market, current_risk = self._portfolio_values(accounts, cash)
+        symbol_market = account.shares * account._last_mark_price
+        lot = account.trading.lot_size
+        candidate = requested
+        last_reason = "PORTFOLIO_RISK_LIMIT"
+        while candidate > 0:
+            fee = max(
+                candidate * fill_price * account.buy_fee_rate,
+                account.minimum_fee,
+            )
+            cash_after = cash - candidate * fill_price - fee
+            equity_after = equity - fee
+            symbol_after = symbol_market + candidate * bar.open
+            total_after = total_market + candidate * bar.open
+            risk_after = current_risk + candidate * max(0.0, fill_price - stop)
+            if cash_after < -1e-9:
+                last_reason = "CASH"
+            elif symbol_after > equity_after * self.config.max_symbol_weight + 1e-9:
+                last_reason = "SYMBOL_WEIGHT_LIMIT"
+            elif total_after > equity_after * self.config.max_equity_weight + 1e-9:
+                last_reason = "EQUITY_WEIGHT_LIMIT"
+            elif risk_after > equity_after * self.config.max_portfolio_risk + 1e-9:
+                last_reason = "PORTFOLIO_RISK_LIMIT"
+            else:
+                return candidate, None
+            candidate -= lot
+        return 0, last_reason
+
+    @staticmethod
+    def _execute_with_shared_cash(
+        account: BacktestAccount,
+        accounts: Mapping[str, BacktestAccount],
+        shared_cash: float,
+        operation: Any,
+    ) -> tuple[float, object]:
+        other_market = sum(
+            item.shares * item._last_mark_price
+            for item in accounts.values() if item is not account
+        )
+        virtual_before = shared_cash + other_market
+        account.cash = virtual_before
+        result = operation()
+        delta = account.cash - virtual_before
+        return shared_cash + delta, result
+
+    def run_portfolio(
+        self,
+        bars_by_symbol: Mapping[str, Sequence[DailyBar]],
+        initial_cash: float,
+        *,
+        trading_by_symbol: Mapping[str, TradingMetadata] | None = None,
+        _assume_validated: bool = False,
+        _include_baseline: bool = True,
+    ) -> PortfolioBacktestResult:
+        """Run all symbols on one chronological event stream and cash balance."""
+        cash = _finite(initial_cash, "initial_cash", positive=True)
+        if not isinstance(bars_by_symbol, Mapping) or not bars_by_symbol:
+            raise SwingBacktestError("bars_by_symbol must be a nonempty mapping")
+        symbols = tuple(sorted(bars_by_symbol))
+        if any(
+            type(symbol) is not str or len(symbol) != 6
+            or not symbol.isascii() or not symbol.isdigit()
+            for symbol in symbols
+        ):
+            raise SwingBacktestError("portfolio symbols must be six ASCII digits")
+        trading_map = self._portfolio_trading(symbols, trading_by_symbol)
+        normalized: dict[str, tuple[DailyBar, ...]] = {}
+        try:
+            for symbol in symbols:
+                try:
+                    supplied_count = len(bars_by_symbol[symbol])
+                except Exception as error:
+                    raise SwingBacktestError(
+                        "portfolio history must be a sized sequence",
+                    ) from error
+                if supplied_count < self.config.minimum_daily_bars + 1:
+                    return self._portfolio_unavailable(
+                        symbols,
+                        cash,
+                        "INSUFFICIENT_COMPLETED_DAILY_BARS",
+                        status="INSUFFICIENT_SAMPLE",
+                    )
+                if _assume_validated:
+                    history = tuple(bars_by_symbol[symbol])
+                    if not history or any(type(bar) is not DailyBar for bar in history):
+                        raise SwingBacktestError("validated histories are invalid")
+                else:
+                    worker = SwingBacktester(
+                        self.config, trading_map[symbol], **self.costs,
+                    )
+                    history = worker._validate_bars(bars_by_symbol[symbol])
+                if history[0].symbol != symbol:
+                    raise SwingBacktestError("portfolio history key mismatches symbol")
+                normalized[symbol] = history
+        except _CorporateActionUnsupported:
+            return self._portfolio_unavailable(
+                symbols, cash, "CORPORATE_ACTION_UNSUPPORTED",
+            )
+        except SwingBacktestError as error:
+            return self._portfolio_unavailable(symbols, cash, str(error))
+
+        common_start_candidate = max(
+            normalized[symbol][self.config.minimum_daily_bars].trading_date
+            for symbol in symbols
+        )
+        common_end_candidate = min(
+            normalized[symbol][-1].trading_date for symbol in symbols
+        )
+        if common_start_candidate > common_end_candidate:
+            return self._portfolio_unavailable(
+                symbols, cash, "INSUFFICIENT_COMMON_HISTORY",
+            )
+        comparable_sets = tuple(
+            {
+                bar.trading_date for bar in normalized[symbol]
+                if common_start_candidate <= bar.trading_date <= common_end_candidate
+            }
+            for symbol in symbols
+        )
+        if not comparable_sets[0] or any(
+            dates != comparable_sets[0] for dates in comparable_sets[1:]
+        ):
+            return self._portfolio_unavailable(
+                symbols,
+                cash,
+                "NON_CONTIGUOUS_COMMON_HISTORY",
+                start=common_start_candidate,
+                end=common_end_candidate,
+            )
+        common_dates = tuple(sorted(comparable_sets[0]))
+        common_start, common_end = common_dates[0], common_dates[-1]
+        indices = {
+            symbol: {bar.trading_date: index for index, bar in enumerate(history)}
+            for symbol, history in normalized.items()
+        }
+        accounts = {
+            symbol: BacktestAccount(
+                cash, trading_map[symbol], self.config, **self.costs,
+            )
+            for symbol in symbols
+        }
+        for symbol, account in accounts.items():
+            first_index = indices[symbol][common_start]
+            prior = normalized[symbol][first_index - 1]
+            account._last_mark_price = prior.close
+            account._last_adjusted_close = prior.adjusted_close
+            account._last_index = first_index - 1
+
+        event_dates: list[date] = []
+        equity_curve: list[float] = []
+        utilization: list[float] = []
+        max_weight = 0.0
+        max_risk_rate = 0.0
+        workers = {
+            symbol: SwingBacktester(
+                self.config, trading_map[symbol], **self.costs,
+            )
+            for symbol in symbols
+        }
+        lookback = strategy_lookback(self.config)
+
+        for execution_date in common_dates:
+            decisions: dict[str, SwingDecision] = {}
+            liquidities: dict[str, _ExecutionDayLiquidity] = {}
+            signal_inputs: dict[str, tuple[int, int, tuple[DailyBar, ...]]] = {}
+            for symbol in symbols:
+                history = normalized[symbol]
+                execution_index = indices[symbol][execution_date]
+                signal_index = execution_index - 1
+                signal_start = max(0, signal_index + 1 - lookback)
+                context = self._portfolio_context(
+                    accounts[symbol], accounts, cash,
+                    execution_date, execution_index,
+                )
+                decision = evaluate_swing(
+                    history[signal_start:signal_index + 1],
+                    self.config,
+                    context,
+                    _trusted_completed_bars=True,
+                )
+                decision = workers[symbol]._restore_full_history_evidence(
+                    decision,
+                    full_bar_count=signal_index + 1,
+                    signal_index=signal_index,
+                    trading_date_indices=indices[symbol],
+                    last_stop_trading_date=context.last_stop_trading_date,
+                    has_position=context.position is not None,
+                )
+                decisions[symbol] = decision
+                signal_inputs[symbol] = (
+                    signal_index,
+                    execution_index,
+                    history[signal_start:signal_index + 1],
+                )
+                liquidities[symbol] = accounts[symbol].execution_day_liquidity(
+                    history[execution_index], history[signal_index].volume,
+                )
+
+            gap_symbols: set[str] = set()
+            for symbol in symbols:
+                account = accounts[symbol]
+                history = normalized[symbol]
+                index = indices[symbol][execution_date]
+                bar = history[index]
+                cash, triggered = self._execute_with_shared_cash(
+                    account, accounts, cash,
+                    lambda account=account, decision=decisions[symbol], bar=bar,
+                    index=index, liquidity=liquidities[symbol]:
+                    account.execute_open_gap_stop(
+                        decision, bar, execution_index=index,
+                        known_volume=history[index - 1].volume,
+                        liquidity=liquidity,
+                    ),
+                )
+                if triggered:
+                    gap_symbols.add(symbol)
+
+            actions = []
+            for symbol, decision in decisions.items():
+                kind = self._action_kind(decision)
+                if kind is None:
+                    kind = self._blocked_buy_kind(decision)
+                if kind is not None and symbol not in gap_symbols:
+                    actions.append(PendingAction(
+                        kind, symbol, decision.trend_score, decision,
+                    ))
+                else:
+                    accounts[symbol].record_blocked_decision(decision)
+            for action in self.rank_actions(actions):
+                decision = action.decision
+                assert decision is not None
+                symbol = action.symbol
+                account = accounts[symbol]
+                history = normalized[symbol]
+                index = indices[symbol][execution_date]
+                bar = history[index]
+                if action.kind in {"ADD", "TRIAL_ENTRY"}:
+                    signal_index, _, signal_bars = signal_inputs[symbol]
+                    refreshed_context = self._portfolio_context(
+                        account, accounts, cash, execution_date, index,
+                    )
+                    refreshed = evaluate_swing(
+                        signal_bars,
+                        self.config,
+                        refreshed_context,
+                        _trusted_completed_bars=True,
+                    )
+                    refreshed = workers[symbol]._restore_full_history_evidence(
+                        refreshed,
+                        full_bar_count=signal_index + 1,
+                        signal_index=signal_index,
+                        trading_date_indices=indices[symbol],
+                        last_stop_trading_date=(
+                            refreshed_context.last_stop_trading_date
+                        ),
+                        has_position=refreshed_context.position is not None,
+                    )
+                    expected_state = (
+                        SwingState.ADD_CANDIDATE
+                        if action.kind == "ADD"
+                        else SwingState.TRIAL_ENTRY_CANDIDATE
+                    )
+                    if refreshed.state is not expected_state:
+                        account._reject(
+                            decision,
+                            bar,
+                            "BUY",
+                            max(decision.planned_shares, account.trading.lot_size),
+                            self._portfolio_block_reason(refreshed),
+                        )
+                        continue
+                    decision = refreshed
+                    capped, reason = self._portfolio_buy_cap(
+                        decision, account, accounts, cash, bar,
+                    )
+                    if capped <= 0:
+                        account._reject(
+                            decision, bar, "BUY", decision.planned_shares,
+                            reason or "PORTFOLIO_RISK_LIMIT",
+                        )
+                        continue
+                    decision = replace(decision, planned_shares=capped)
+                cash, _ = self._execute_with_shared_cash(
+                    account, accounts, cash,
+                    lambda account=account, decision=decision, bar=bar,
+                    index=index, liquidity=liquidities[symbol]: account.execute(
+                        decision,
+                        bar,
+                        execution_index=index,
+                        known_volume=history[index - 1].volume,
+                        execution_phase="NEXT_OPEN",
+                        liquidity=liquidity,
+                    ),
+                )
+
+            for symbol in symbols:
+                account = accounts[symbol]
+                history = normalized[symbol]
+                index = indices[symbol][execution_date]
+                bar = history[index]
+                cash, _ = self._execute_with_shared_cash(
+                    account, accounts, cash,
+                    lambda account=account, decision=decisions[symbol], bar=bar,
+                    index=index, liquidity=liquidities[symbol]:
+                    account.execute_intraday_stop(
+                        decision, bar, execution_index=index, liquidity=liquidity,
+                    ),
+                )
+            for symbol in symbols:
+                index = indices[symbol][execution_date]
+                accounts[symbol].mark(normalized[symbol][index], index)
+            equity, market_value, risk = self._portfolio_values(accounts, cash)
+            event_dates.append(execution_date)
+            equity_curve.append(equity)
+            weight = 0.0 if equity <= 0.0 else market_value / equity
+            risk_rate = 0.0 if equity <= 0.0 else risk / equity
+            utilization.append(weight)
+            max_weight = max(max_weight, weight)
+            max_risk_rate = max(max_risk_rate, risk_rate)
+
+        ending_equity = equity_curve[-1]
+        all_trades = tuple(sorted(
+            (trade for account in accounts.values() for trade in account.trades),
+            key=lambda item: (
+                item.execution_date, 0 if item.side == "SELL" else 1,
+                item.symbol, item.reason,
+            ),
+        ))
+        all_rejections = tuple(sorted(
+            (
+                rejection
+                for account in accounts.values()
+                for rejection in account.rejections
+            ),
+            key=lambda item: (
+                item.execution_date, item.symbol, item.side, item.reason,
+                item.requested_shares, item.rejected_shares,
+            ),
+        ))
+        round_trips = tuple(sorted(
+            (
+                PortfolioCompletedRoundTrip(
+                    symbol=symbol,
+                    entry_date=trip.entry_date,
+                    exit_date=trip.exit_date,
+                    net_pnl=trip.net_pnl,
+                    holding_days=trip.holding_days,
+                )
+                for symbol in symbols for trip in accounts[symbol].round_trips
+            ),
+            key=lambda item: (
+                item.exit_date, item.entry_date, item.net_pnl, item.holding_days,
+            ),
+        ))
+        metrics = self._portfolio_metrics(
+            cash_start=initial_cash,
+            equity_curve=tuple(equity_curve),
+            utilization=tuple(utilization),
+            trades=all_trades,
+            rejections=all_rejections,
+            round_trips=round_trips,
+        )
+        if _include_baseline:
+            baseline, weights = self._portfolio_baseline(
+                normalized, trading_map, common_dates, initial_cash,
+            )
+        else:
+            baseline, weights = None, {}
+        completed = len(round_trips)
+        status = (
+            "OK"
+            if completed > 0 and (
+                not _include_baseline
+                or (baseline is not None and baseline.status == "OK")
+            )
+            else "INSUFFICIENT_SAMPLE"
+        )
+        reason = None if status == "OK" else (
+            "BASELINE_UNAVAILABLE"
+            if _include_baseline and (baseline is None or baseline.status != "OK")
+            else "NO_COMPLETED_ROUND_TRIP"
+        )
+        outperformance = None
+        if status == "OK" and baseline is not None and baseline.ending_equity is not None:
+            outperformance = (
+                metrics.cumulative_return
+                - (baseline.ending_equity / initial_cash - 1.0)
+            )
+        return PortfolioBacktestResult(
+            schema_version=1,
+            scope="portfolio",
+            strategy_version=self.config.strategy_version,
+            status=status,
+            reason=reason,
+            symbols=symbols,
+            initial_cash=initial_cash,
+            cash=max(0.0, cash),
+            ending_equity=ending_equity,
+            common_start_date=common_start,
+            common_end_date=common_end,
+            event_dates=tuple(event_dates),
+            trades=all_trades,
+            rejections=all_rejections,
+            round_trips=round_trips,
+            open_position_shares={
+                symbol: accounts[symbol].shares for symbol in symbols
+            },
+            uncompleted_leg_count=sum(
+                len(accounts[symbol]._lots) for symbol in symbols
+            ),
+            max_equity_weight=max_weight,
+            max_planned_risk=max_risk_rate,
+            metrics=metrics,
+            baseline=baseline,
+            baseline_weights=weights,
+            outperformance=outperformance,
+            strategy_parameters=self._strategy_parameters(),
+            execution_assumptions={
+                **self._execution_assumptions(),
+                "portfolio_cash_model": "ONE_SHARED_CASH_BALANCE",
+                "action_priority": "EXIT,REDUCE,ADD,TRIAL_ENTRY",
+                "common_range_policy": "INTERSECTION_AFTER_WARMUP",
+                "trading_metadata_by_symbol": {
+                    symbol: trading_map[symbol].to_dict()
+                    for symbol in symbols
+                },
+            },
+        )
+
+    def _portfolio_baseline(
+        self,
+        histories: Mapping[str, tuple[DailyBar, ...]],
+        trading_map: Mapping[str, TradingMetadata],
+        common_dates: tuple[date, ...],
+        initial_cash: float,
+    ) -> tuple[PortfolioBenchmarkResult | None, Mapping[str, float]]:
+        symbols = tuple(sorted(histories))
+        indices = {
+            symbol: {
+                bar.trading_date: index
+                for index, bar in enumerate(histories[symbol])
+            }
+            for symbol in symbols
+        }
+        cash = initial_cash
+        target = initial_cash / len(symbols)
+        shares_by_symbol: dict[str, int] = {}
+        trades: list[SwingFill] = []
+        allocated: dict[str, float] = {}
+        for symbol in symbols:
+            trading = trading_map[symbol]
+            checker = BacktestAccount(
+                initial_cash, trading, self.config, **self.costs,
+            )
+            filled = False
+            for trading_date in common_dates:
+                index = indices[symbol][trading_date]
+                bar = histories[symbol][index]
+                prior = histories[symbol][index - 1]
+                if (
+                    bar.volume <= 0.0 or prior.volume <= 0.0
+                    or checker._open_limit_blocked(bar, "BUY")
+                ):
+                    continue
+                price = _execution_price(
+                    bar.open,
+                    "BUY",
+                    tick=trading.price_tick,
+                    half_spread_ticks=self.costs["half_spread_ticks"],
+                    slippage_rate=self.costs["slippage_rate"],
+                )
+                price = min(price, _effective_limit_price(
+                    bar.previous_close, trading.price_limit_pct,
+                    trading.price_tick, "BUY",
+                ))
+                capacity = checker._shared_volume_capacity(
+                    prior.volume, bar.volume,
+                )
+                requested = _lot_floor(target / price, trading.lot_size)
+                shares = min(requested, capacity)
+                shares = _lot_floor(shares, trading.lot_size)
+                while shares > 0:
+                    fee = max(
+                        shares * price * self.costs["buy_fee_rate"],
+                        self.costs["minimum_fee"],
+                    )
+                    if shares * price + fee <= cash + 1e-9:
+                        break
+                    shares -= trading.lot_size
+                if shares <= 0:
+                    continue
+                fee = max(
+                    shares * price * self.costs["buy_fee_rate"],
+                    self.costs["minimum_fee"],
+                )
+                spread, slippage = _execution_cost_parts(
+                    bar.open, price, shares, "BUY",
+                    tick=trading.price_tick,
+                    half_spread_ticks=self.costs["half_spread_ticks"],
+                )
+                cash -= shares * price + fee
+                shares_by_symbol[symbol] = shares
+                allocated[symbol] = shares * price + fee
+                trades.append(SwingFill(
+                    symbol=symbol,
+                    side="BUY",
+                    requested_shares=requested,
+                    shares=shares,
+                    signal_date=prior.trading_date,
+                    execution_date=trading_date,
+                    raw_reference_price=bar.open,
+                    fill_price=price,
+                    fee=fee,
+                    spread_cost=spread,
+                    slippage=slippage,
+                    planned_stop=None,
+                    reason="EQUAL_WEIGHT_BASELINE",
+                ))
+                filled = True
+                break
+            if not filled:
+                return None, {}
+        ending = cash + sum(
+            shares_by_symbol[symbol] * histories[symbol][
+                indices[symbol][common_dates[-1]]
+            ].close
+            for symbol in symbols
+        )
+        total_allocated = sum(allocated.values())
+        weights = {
+            symbol: allocated[symbol] / total_allocated for symbol in symbols
+        }
+        return PortfolioBenchmarkResult(
+            status="OK",
+            reason=None,
+            initial_cash=initial_cash,
+            cash=max(0.0, cash),
+            ending_equity=ending,
+            trades=tuple(trades),
+            shares_by_symbol=shares_by_symbol,
+        ), weights
+
+    @staticmethod
+    def _portfolio_metrics(
+        *,
+        cash_start: float,
+        equity_curve: tuple[float, ...],
+        utilization: tuple[float, ...],
+        trades: tuple[SwingFill, ...],
+        rejections: tuple[SwingRejection, ...],
+        round_trips: tuple[PortfolioCompletedRoundTrip, ...],
+    ) -> SwingBacktestMetrics:
+        curve = (cash_start, *equity_curve)
+        ending = curve[-1]
+        cumulative = ending / cash_start - 1.0
+        sessions = len(equity_curve)
+        annualized = (
+            None if sessions <= 0 or ending <= 0.0
+            else (ending / cash_start) ** (252.0 / sessions) - 1.0
+        )
+        peak = curve[0]
+        drawdown = 0.0
+        for value in curve:
+            peak = max(peak, value)
+            if peak > 0.0:
+                drawdown = max(drawdown, (peak - value) / peak)
+        daily = [
+            curve[index] / curve[index - 1] - 1.0
+            for index in range(1, len(curve)) if curve[index - 1] > 0.0
+        ]
+        sharpe = None
+        if len(daily) >= 2:
+            mean = sum(daily) / len(daily)
+            variance = sum((value - mean) ** 2 for value in daily) / (len(daily) - 1)
+            if variance > 0.0:
+                sharpe = mean / math.sqrt(variance) * math.sqrt(252.0)
+        pnls = [item.net_pnl for item in round_trips]
+        profits = [value for value in pnls if value > 0.0]
+        losses = [value for value in pnls if value < 0.0]
+        average_profit = sum(profits) / len(profits) if profits else None
+        average_loss = sum(losses) / len(losses) if losses else None
+        counts: dict[str, int] = {}
+        for item in rejections:
+            counts[item.reason] = counts.get(item.reason, 0) + 1
+        longest = None
+        if pnls:
+            running = best = 0
+            for pnl in pnls:
+                running = running + 1 if pnl < 0.0 else 0
+                best = max(best, running)
+            longest = best
+        return SwingBacktestMetrics(
+            cumulative_return=cumulative,
+            annualized_return=annualized,
+            maximum_drawdown=drawdown,
+            calmar=(
+                annualized / drawdown
+                if annualized is not None and drawdown > 0.0 else None
+            ),
+            sharpe=sharpe,
+            win_rate=len(profits) / len(pnls) if pnls else None,
+            average_profit=average_profit,
+            average_loss=average_loss,
+            payoff_ratio=(
+                average_profit / abs(average_loss)
+                if average_profit is not None and average_loss is not None
+                else None
+            ),
+            average_holding_days=(
+                sum(item.holding_days for item in round_trips) / len(round_trips)
+                if round_trips else None
+            ),
+            utilization=sum(utilization) / len(utilization) if utilization else 0.0,
+            longest_losing_streak=longest,
+            fees=sum(item.fee for item in trades),
+            spread_cost=sum(item.spread_cost for item in trades),
+            slippage=sum(item.slippage for item in trades),
+            rejection_counts=counts,
+        )
+
+    @staticmethod
+    def _fold_summary(result: PortfolioBacktestResult) -> dict[str, object]:
+        metrics = result.metrics
+        return {
+            "status": result.status,
+            "reason": result.reason,
+            "metrics": None if metrics is None else metrics.to_dict(),
+            "cumulative_return": (
+                None if metrics is None else _clean(metrics.cumulative_return)
+            ),
+            "maximum_drawdown": (
+                None if metrics is None else _clean(metrics.maximum_drawdown)
+            ),
+            "completed_round_trips": (
+                0 if metrics is None else len(result.round_trips)
+            ),
+            "outperformance": result.outperformance,
+        }
+
+    def walk_forward(
+        self,
+        bars_by_symbol: Mapping[str, Sequence[DailyBar]],
+        initial_cash: float,
+        *,
+        trading_by_symbol: Mapping[str, TradingMetadata] | None = None,
+    ) -> WalkForwardReport:
+        """Report every fixed neighborhood variant on untouched rolling tests."""
+        cash = _finite(initial_cash, "initial_cash", positive=True)
+        if not isinstance(bars_by_symbol, Mapping) or not bars_by_symbol:
+            raise SwingBacktestError("bars_by_symbol must be a nonempty mapping")
+        symbols = tuple(sorted(bars_by_symbol))
+        trading_map = self._portfolio_trading(symbols, trading_by_symbol)
+        normalized: dict[str, tuple[DailyBar, ...]] = {}
+        try:
+            for symbol in symbols:
+                worker = SwingBacktester(
+                    self.config, trading_map[symbol], **self.costs,
+                )
+                normalized[symbol] = worker._validate_bars(bars_by_symbol[symbol])
+        except (_CorporateActionUnsupported, SwingBacktestError):
+            return WalkForwardReport(
+                "DATA_UNAVAILABLE", "INVALID_HISTORY",
+                self.config.walk_forward_train_days,
+                self.config.walk_forward_test_days,
+                self.config.walk_forward_step_days,
+                None, (),
+            )
+        overlap_start = max(normalized[symbol][0].trading_date for symbol in symbols)
+        overlap_end = min(normalized[symbol][-1].trading_date for symbol in symbols)
+        calendar_sets = tuple(
+            {
+                bar.trading_date for bar in normalized[symbol]
+                if overlap_start <= bar.trading_date <= overlap_end
+            }
+            for symbol in symbols
+        )
+        if not calendar_sets[0] or any(
+            values != calendar_sets[0] for values in calendar_sets[1:]
+        ):
+            return WalkForwardReport(
+                "DATA_UNAVAILABLE", "NON_CONTIGUOUS_COMMON_HISTORY",
+                self.config.walk_forward_train_days,
+                self.config.walk_forward_test_days,
+                self.config.walk_forward_step_days,
+                None, (),
+            )
+        common_calendar = tuple(sorted(calendar_sets[0]))
+        train_days = self.config.walk_forward_train_days
+        test_days = self.config.walk_forward_test_days
+        step_days = self.config.walk_forward_step_days
+        fold_windows: list[tuple[tuple[date, ...], tuple[date, ...]]] = []
+        offset = 0
+        while offset + train_days + test_days <= len(common_calendar):
+            train = common_calendar[offset:offset + train_days]
+            test = common_calendar[
+                offset + train_days:offset + train_days + test_days
+            ]
+            fold_windows.append((train, test))
+            offset += step_days
+        if not fold_windows:
+            return WalkForwardReport(
+                "INSUFFICIENT_SAMPLE", "NO_COMPLETE_WALK_FORWARD_FOLD",
+                train_days, test_days, step_days, None, (),
+            )
+        indices = {
+            symbol: {
+                bar.trading_date: index
+                for index, bar in enumerate(normalized[symbol])
+            }
+            for symbol in symbols
+        }
+        variants: list[WalkForwardVariantResult] = []
+        for short in (18, 20, 22):
+            for long in (55, 60, 65):
+                for initial in (1.75, 2.0, 2.25):
+                    for trailing in (2.75, 3.0, 3.25):
+                        config = replace(
+                            self.config,
+                            short_ma_days=short,
+                            long_ma_days=long,
+                            minimum_daily_bars=max(
+                                self.config.minimum_daily_bars,
+                                long + self.config.long_ma_slope_lookback,
+                            ),
+                            initial_stop_atr=initial,
+                            trailing_stop_atr=trailing,
+                        )
+                        worker = SwingBacktester(
+                            config, self.trading, **self.costs,
+                        )
+                        folds: list[WalkForwardFoldResult] = []
+                        test_returns: list[float] = []
+                        for fold_index, (train_dates, test_dates) in enumerate(fold_windows):
+                            train_set = set(train_dates)
+                            train_histories = {
+                                symbol: tuple(
+                                    bar for bar in normalized[symbol]
+                                    if bar.trading_date in train_set
+                                )
+                                for symbol in symbols
+                            }
+                            test_histories: dict[str, tuple[DailyBar, ...]] = {}
+                            for symbol in symbols:
+                                first_test_index = indices[symbol][test_dates[0]]
+                                warmup = max(0, first_test_index - config.minimum_daily_bars)
+                                last_test_index = indices[symbol][test_dates[-1]]
+                                test_histories[symbol] = normalized[symbol][
+                                    warmup:last_test_index + 1
+                                ]
+                            train_result = worker.run_portfolio(
+                                train_histories, cash,
+                                trading_by_symbol=trading_map,
+                                _assume_validated=True,
+                            )
+                            test_result = worker.run_portfolio(
+                                test_histories, cash,
+                                trading_by_symbol=trading_map,
+                                _assume_validated=True,
+                            )
+                            test_summary = self._fold_summary(test_result)
+                            value = test_summary["cumulative_return"]
+                            if type(value) in (int, float):
+                                test_returns.append(float(value))
+                            folds.append(WalkForwardFoldResult(
+                                fold_index=fold_index,
+                                train_start_date=train_dates[0],
+                                train_end_date=train_dates[-1],
+                                test_start_date=test_dates[0],
+                                test_end_date=test_dates[-1],
+                                train_bar_count=len(train_dates),
+                                test_bar_count=len(test_dates),
+                                train=self._fold_summary(train_result),
+                                test=test_summary,
+                            ))
+                        stability = {
+                            "fold_count": len(folds),
+                            "test_ok_count": sum(
+                                item.test.get("status") == "OK" for item in folds
+                            ),
+                            "mean_test_return": (
+                                None if not test_returns
+                                else _clean(sum(test_returns) / len(test_returns))
+                            ),
+                            "positive_test_fold_count": sum(
+                                value > 0.0 for value in test_returns
+                            ),
+                        }
+                        variants.append(WalkForwardVariantResult(
+                            parameters={
+                                "short_ma_days": short,
+                                "long_ma_days": long,
+                                "initial_stop_atr": initial,
+                                "trailing_stop_atr": trailing,
+                            },
+                            folds=tuple(folds),
+                            stability=stability,
+                        ))
+        return WalkForwardReport(
+            "OK", None, train_days, test_days, step_days, None,
+            tuple(variants),
+        )
+
 
 __all__ = [
     "BacktestAccount",
     "CompletedRoundTrip",
+    "PendingAction",
+    "PortfolioBacktestResult",
+    "PortfolioBenchmarkResult",
+    "PortfolioCompletedRoundTrip",
     "SwingBacktestError",
     "SwingBacktestMetrics",
     "SwingBacktestResult",
@@ -1932,5 +3161,8 @@ __all__ = [
     "SwingBenchmarkResult",
     "SwingFill",
     "SwingRejection",
+    "WalkForwardFoldResult",
+    "WalkForwardReport",
+    "WalkForwardVariantResult",
     "strategy_lookback",
 ]

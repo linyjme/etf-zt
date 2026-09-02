@@ -252,6 +252,7 @@ class SwingDecision:
     strategy_version: str
     as_of_trading_date: date | None
     state: SwingState
+    trend_score: float
     evidence: Mapping[str, EvidenceScalar]
     blocked_reasons: tuple[str, ...]
     planned_entry_low: float | None
@@ -303,6 +304,7 @@ class SwingDecision:
         planned_risk_rate = _finite_number(
             self.planned_risk_rate, "planned_risk_rate",
         )
+        trend_score = _finite_number(self.trend_score, "trend_score")
         blocked_reasons = _blocked_reason_tuple(self.blocked_reasons)
         action_states = (
             SwingState.TRIAL_ENTRY_CANDIDATE,
@@ -348,6 +350,7 @@ class SwingDecision:
         object.__setattr__(self, "planned_stop", planned_stop)
         object.__setattr__(self, "first_reduce_price", first_reduce_price)
         object.__setattr__(self, "planned_risk_rate", planned_risk_rate)
+        object.__setattr__(self, "trend_score", trend_score)
         object.__setattr__(self, "evidence", _immutable_evidence(self.evidence))
         object.__setattr__(
             self, "blocked_reasons", blocked_reasons,
@@ -363,6 +366,7 @@ class SwingDecision:
                 if self.as_of_trading_date is not None else None
             ),
             "state": self.state.value,
+            "trend_score": self.trend_score,
             "evidence": dict(self.evidence),
             "blocked_reasons": list(self.blocked_reasons),
             "planned_entry_low": self.planned_entry_low,
@@ -587,12 +591,14 @@ def _unavailable(
         "sample_ok": False,
         "bar_count": count,
         "input_error": detail,
+        "trend_score": 0.0,
     }
     return SwingDecision(
         symbol=symbol,
         strategy_version=config.strategy_version,
         as_of_trading_date=as_of,
         state=SwingState.DATA_UNAVAILABLE,
+        trend_score=0.0,
         evidence=evidence,
         blocked_reasons=(reason,),
         planned_entry_low=None,
@@ -779,6 +785,13 @@ def _base_evidence(
     trend_close = latest.adjusted_close > metrics.ma60
     trend_short = metrics.ma20 > metrics.ma60
     trend_rising = metrics.ma60 > metrics.ma60_prior
+    trend_score = max(
+        0.0, (metrics.ma60 / metrics.ma60_prior - 1.0) / 0.01,
+    ) + max(
+        0.0, (latest.adjusted_close / metrics.ma60 - 1.0) / 0.05,
+    )
+    if not math.isfinite(trend_score):
+        raise ArithmeticError("nonfinite trend score")
     low_touched = latest.adjusted_low <= metrics.ma20
     distance_ok = close_distance <= config.pullback_atr_distance * metrics.atr
     evidence: dict[str, EvidenceScalar] = {
@@ -787,6 +800,7 @@ def _base_evidence(
         "trend_close_above_ma60": trend_close,
         "trend_ma20_above_ma60": trend_short,
         "trend_ma60_rising": trend_rising,
+        "trend_score": trend_score,
         "pullback_low_touched": low_touched,
         "pullback_distance_ok": distance_ok,
         "reclaim_close_above_ma20": latest.adjusted_close > metrics.ma20,
@@ -946,6 +960,7 @@ def _position_decision(
         "strategy_version": config.strategy_version,
         "as_of_trading_date": latest.trading_date,
         "evidence": evidence,
+        "trend_score": float(evidence["trend_score"]),
         "planned_entry_low": None,
         "planned_entry_high": None,
         "planned_stop": protective_stop_raw,
@@ -1139,13 +1154,33 @@ def evaluate_swing(
     bars: Sequence[DailyBar | Mapping[str, object]],
     config: SwingStrategyConfig,
     portfolio: PortfolioContext,
+    *,
+    _trusted_completed_bars: bool = False,
 ) -> SwingDecision:
     """Evaluate completed bars without sorting, mutation, I/O, or broker actions."""
     if type(config) is not SwingStrategyConfig:
         raise SwingStrategyError("config must be SwingStrategyConfig")
     if type(portfolio) is not PortfolioContext:
         raise SwingStrategyError("portfolio must be PortfolioContext")
-    normalized, materialized, reason, detail = _normalize_bars(bars)
+    if _trusted_completed_bars:
+        materialized = tuple(bars)
+        if not materialized or any(type(bar) is not DailyBar for bar in materialized):
+            normalized, reason, detail = None, "invalid_daily_bar", (
+                "trusted bars must contain DailyBar"
+            )
+        elif any(
+            current.trading_date <= previous.trading_date
+            or current.symbol != materialized[0].symbol
+            for previous, current in zip(materialized, materialized[1:])
+        ):
+            normalized, reason, detail = None, "invalid_daily_bar", (
+                "trusted bars must be ordered and single-symbol"
+            )
+        else:
+            normalized = materialized
+            reason = detail = None
+    else:
+        normalized, materialized, reason, detail = _normalize_bars(bars)
     symbol = _candidate_symbol(materialized)
     if normalized is None:
         return _unavailable(
@@ -1247,6 +1282,7 @@ def evaluate_swing(
                 strategy_version=config.strategy_version,
                 as_of_trading_date=as_of,
                 state=SwingState.COOLDOWN,
+                trend_score=float(evidence["trend_score"]),
                 evidence=evidence,
                 blocked_reasons=("cooldown_active",),
                 planned_entry_low=metrics.entry_low_raw,
@@ -1274,6 +1310,7 @@ def evaluate_swing(
         "strategy_version": config.strategy_version,
         "as_of_trading_date": as_of,
         "evidence": evidence,
+        "trend_score": float(evidence["trend_score"]),
         "planned_entry_low": metrics.entry_low_raw,
         "planned_entry_high": metrics.entry_high_raw,
         "planned_stop": metrics.planned_stop,

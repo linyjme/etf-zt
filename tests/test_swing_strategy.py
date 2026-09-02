@@ -119,6 +119,22 @@ class SwingStrategyTests(unittest.TestCase):
         self.assertTrue(decision.evidence["sample_ok"])
         self.assertGreaterEqual(decision.planned_shares, 100)
 
+    def test_trend_score_is_exact_deterministic_ranking_evidence_only(self) -> None:
+        bars = swing_strategy_bars(70)
+        first = evaluate_swing(bars, self.config, self.portfolio())
+        second = evaluate_swing(bars, self.config, self.portfolio())
+        ma60 = sum(bar.adjusted_close for bar in bars[-60:]) / 60
+        prior = sum(bar.adjusted_close for bar in bars[-70:-10]) / 60
+        expected = max(0.0, (ma60 / prior - 1.0) / 0.01) + max(
+            0.0, (bars[-1].adjusted_close / ma60 - 1.0) / 0.05,
+        )
+        self.assertEqual(first.state, SwingState.TRIAL_ENTRY_CANDIDATE)
+        self.assertEqual(first.state, second.state)
+        self.assertAlmostEqual(first.trend_score, expected, places=12)
+        self.assertEqual(first.trend_score, second.trend_score)
+        self.assertEqual(first.evidence["trend_score"], first.trend_score)
+        self.assertTrue(math.isfinite(first.trend_score))
+
     def test_69_bars_is_data_unavailable(self) -> None:
         decision = evaluate_swing(swing_strategy_bars(69), self.config, self.portfolio())
         self.assertEqual(decision.state, SwingState.DATA_UNAVAILABLE)

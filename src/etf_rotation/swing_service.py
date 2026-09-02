@@ -13,6 +13,7 @@ import copy
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -26,6 +27,7 @@ from .constants import REALTIME_MAX_AGE_SECONDS
 from .etf_metadata import EtfMetadata, EtfMetadataStore
 from .market_data import load_closed_dates
 from .swing_alerts import AlertInput, SwingAlertStore
+from .swing_backtest import SwingBacktestError, SwingBacktester
 from .swing_config import (
     SwingStrategyConfig,
     SwingWatchItem,
@@ -199,6 +201,7 @@ class SwingService:
         self._published_portfolio_view: dict[str, object] = {}
         self._published_alerts_current: dict[str, object] = {}
         self._published_alerts_history: dict[str, object] = {}
+        self._backtest_lock = threading.Lock()
         self._install_published(self._bootstrap(), revision=0)
 
     # ---- Public read and lifecycle API ---------------------------------
@@ -368,6 +371,243 @@ class SwingService:
     def portfolio(self) -> dict[str, object]:
         with self.publish_condition:
             return copy.deepcopy(self._published_portfolio_view)
+
+    def backtest(
+        self, symbol: str | None, scope: str,
+    ) -> dict[str, object]:
+        """Return one content-addressed real backtest without publishing state."""
+        if scope not in {"symbol", "portfolio"}:
+            raise SwingServiceError("scope must be symbol or portfolio")
+        if scope == "symbol":
+            if symbol is None:
+                raise SwingServiceError("symbol is required for symbol scope")
+            normalized_symbol = self._validated_enabled_symbol(symbol)
+            selected_symbols = (normalized_symbol,)
+        else:
+            if symbol is not None:
+                raise SwingServiceError("portfolio scope does not accept symbol")
+            selected_symbols = tuple(sorted(
+                item.symbol for item in self._watchlist if item.enabled
+            ))
+            if not selected_symbols:
+                raise SwingServiceError("portfolio scope requires enabled symbols")
+            normalized_symbol = None
+
+        with self.publish_condition:
+            strategy = self._strategy
+            history = tuple(
+                bar for bar in self._history if bar.symbol in selected_symbols
+            )
+            metadata = {
+                item: self._metadata[item]
+                for item in selected_symbols if item in self._metadata
+            }
+        if strategy is None or len(metadata) != len(selected_symbols):
+            return self._backtest_unavailable(
+                scope, normalized_symbol, "DATA_UNAVAILABLE",
+                "CONFIGURATION_OR_METADATA_UNAVAILABLE",
+            )
+        histories = {
+            item: tuple(bar for bar in history if bar.symbol == item)
+            for item in selected_symbols
+        }
+        canonical_history = [
+            bar.to_dict()
+            for item in selected_symbols for bar in histories[item]
+        ]
+        history_digest = self._canonical_digest(canonical_history)
+        latest = max(
+            (bar.trading_date for bar in history), default=None,
+        )
+        assumptions_digest = self._canonical_digest({
+            "strategy": {
+                field: getattr(strategy, field)
+                for field in sorted(strategy.__dataclass_fields__)
+            },
+            "trading": {
+                item: metadata[item].trading.to_dict()
+                for item in selected_symbols
+            },
+            "initial_cash": 100_000.0,
+        })
+        cache_key = {
+            "scope": scope,
+            "symbol": normalized_symbol,
+            "strategy_version": strategy.strategy_version,
+            "latest_trading_date": (
+                None if latest is None else latest.isoformat()
+            ),
+            "history_digest": history_digest,
+            "execution_assumptions_digest": assumptions_digest,
+        }
+        cache_name = self._canonical_digest(cache_key) + ".json"
+        cache_path = self.paths.backtests / cache_name
+        self.paths.backtests.mkdir(parents=True, exist_ok=True)
+        with self._backtest_lock:
+            with _SiblingFileLock(cache_path, shared=False):
+                cached = self._read_backtest_cache(cache_path, cache_key)
+                if cached is not None:
+                    return cached
+                result = self._run_backtest(
+                    scope,
+                    normalized_symbol,
+                    selected_symbols,
+                    histories,
+                    metadata,
+                    strategy,
+                )
+                self._write_backtest_cache(cache_path, cache_key, result)
+                return copy.deepcopy(result)
+
+    @staticmethod
+    def _canonical_digest(value: object) -> str:
+        payload = json.dumps(
+            value, ensure_ascii=True, allow_nan=False,
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    @classmethod
+    def _read_backtest_cache(
+        cls, path: Path, cache_key: Mapping[str, object],
+    ) -> dict[str, object] | None:
+        try:
+            payload = json.loads(
+                path.read_text(encoding="utf-8"),
+                object_pairs_hook=cls._strict_json_object,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"nonfinite JSON value: {value}")
+                ),
+            )
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema_version") != 1
+                or payload.get("cache_key") != dict(cache_key)
+                or not isinstance(payload.get("result"), dict)
+            ):
+                return None
+            result = payload["result"]
+            if (
+                result.get("schema_version") != 1
+                or result.get("scope") != cache_key.get("scope")
+                or result.get("symbol") != cache_key.get("symbol")
+                or result.get("status") not in {
+                    "OK", "INSUFFICIENT_SAMPLE", "DATA_UNAVAILABLE",
+                }
+                or (
+                    result.get("status") != "OK"
+                    and result.get("outperformance") is not None
+                )
+            ):
+                return None
+            return copy.deepcopy(result)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _write_backtest_cache(
+        path: Path,
+        cache_key: Mapping[str, object],
+        result: Mapping[str, object],
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", newline="\n", dir=path.parent,
+                prefix=f".{path.name}.", suffix=".tmp", delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                json.dump({
+                    "schema_version": 1,
+                    "cache_key": dict(cache_key),
+                    "result": dict(result),
+                }, handle, ensure_ascii=True, allow_nan=False,
+                    sort_keys=True, separators=(",", ":"))
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _backtest_unavailable(
+        scope: str,
+        symbol: str | None,
+        status: str,
+        reason: str,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "scope": scope,
+            "symbol": symbol,
+            "status": status,
+            "reason": reason,
+            "outperformance": None,
+            "read_only": True,
+        }
+
+    def _run_backtest(
+        self,
+        scope: str,
+        symbol: str | None,
+        selected_symbols: tuple[str, ...],
+        histories: Mapping[str, tuple[DailyBar, ...]],
+        metadata: Mapping[str, EtfMetadata],
+        strategy: SwingStrategyConfig,
+    ) -> dict[str, object]:
+        initial_cash = 100_000.0
+        if scope == "symbol":
+            assert symbol is not None
+            bars = histories[symbol]
+            if len(bars) < strategy.minimum_daily_bars + 1:
+                return self._backtest_unavailable(
+                    scope, symbol, "INSUFFICIENT_SAMPLE",
+                    "INSUFFICIENT_COMPLETED_DAILY_BARS",
+                )
+            try:
+                result = SwingBacktester(
+                    strategy, metadata[symbol].trading,
+                ).run_symbol(bars, initial_cash).to_dict()
+            except SwingBacktestError as error:
+                return self._backtest_unavailable(
+                    scope, symbol, "DATA_UNAVAILABLE", str(error),
+                )
+            result["scope"] = "symbol"
+            result["read_only"] = True
+            return result
+
+        first = selected_symbols[0]
+        backtester = SwingBacktester(strategy, metadata[first].trading)
+        trading_map = {
+            item: metadata[item].trading for item in selected_symbols
+        }
+        result = backtester.run_portfolio(
+            histories,
+            initial_cash,
+            trading_by_symbol=trading_map,
+        ).to_dict()
+        stability = backtester.walk_forward(
+            histories,
+            initial_cash,
+            trading_by_symbol=trading_map,
+        ).to_dict()
+        result["walk_forward"] = stability
+        result["symbol"] = None
+        result["read_only"] = True
+        return result
 
     def alerts(
         self,

@@ -261,13 +261,14 @@ class SwingWebTests(unittest.TestCase):
         for path in (
             "/swing", "/api/swing/snapshot", "/api/swing/daily-quotes",
             "/api/swing/events", "/api/swing/portfolio", "/api/swing/alerts",
+            "/api/swing/backtest",
         ):
             with self.subTest(path=path):
                 status, error = self._post(path, {})
                 self.assertEqual(status, 405)
                 self.assertEqual(error["error"], "method_not_allowed")
         for path in (
-            "/api/swing/nope", "/api/swing/backtest",
+            "/api/swing/nope",
             "/api/swing/trades/00000000-0000-1000-8000-000000000000/reverse",
             f"/api/swing/alerts/{self.alert.alert_id.upper()}/acknowledge",
             "/api/swing/alerts/123/ignore",
@@ -278,7 +279,7 @@ class SwingWebTests(unittest.TestCase):
                 self.assertEqual(error["error"], "not_found")
         with self.assertRaises(HTTPError) as captured:
             urlopen(self.base + "/api/swing/backtest?symbol=510300", timeout=2)
-        self.assertEqual(captured.exception.code, 404)
+        self.assertEqual(captured.exception.code, 400)
         captured.exception.close()
 
     def test_json_body_rejects_media_type_utf8_shape_duplicates_and_nonfinite(self) -> None:
@@ -305,6 +306,33 @@ class SwingWebTests(unittest.TestCase):
             content_type="application/json; charset=utf-8; charset=utf-8",
         )
         self.assertEqual(status, 400)
+
+    def test_backtest_routes_are_real_strict_and_read_only(self) -> None:
+        status, symbol, _ = self._get(
+            "/api/swing/backtest?scope=symbol&symbol=510300",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(symbol["scope"], "symbol")
+        self.assertNotIn("demo", json.dumps(symbol).lower())
+        status, portfolio, _ = self._get("/api/swing/backtest?scope=portfolio")
+        self.assertEqual(status, 200)
+        self.assertEqual(portfolio["scope"], "portfolio")
+        for path in (
+            "/api/swing/backtest",
+            "/api/swing/backtest?symbol=510300",
+            "/api/swing/backtest?scope=symbol",
+            "/api/swing/backtest?scope=portfolio&symbol=510300",
+            "/api/swing/backtest?scope=symbol&symbol=510300&extra=1",
+            "/api/swing/backtest?scope=symbol&scope=symbol&symbol=510300",
+        ):
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(self.base + path, timeout=2)
+            self.assertEqual(caught.exception.code, 400)
+            caught.exception.close()
+        post_status, _ = self._post(
+            "/api/swing/backtest", {}, key="backtest-write-forbidden",
+        )
+        self.assertEqual(post_status, 405)
         status, _ = self._post(
             "/api/swing/watchlist", raw=b"{" + b'"pad":"' + b"x" * 16384 + b'"}',
         )

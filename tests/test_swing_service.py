@@ -148,6 +148,61 @@ class SwingServiceTests(unittest.TestCase):
             event_limit=event_limit,
         )
 
+    def test_backtest_is_strict_cached_content_addressed_and_revision_neutral(self) -> None:
+        service = self.make_service()
+        before = service.snapshot()["revision"]
+        first = service.backtest("510300", "symbol")
+        second = service.backtest("510300", "symbol")
+        self.assertEqual(first, second)
+        self.assertEqual(service.snapshot()["revision"], before)
+        self.assertEqual(first["scope"], "symbol")
+        self.assertIn(first["status"], {"OK", "INSUFFICIENT_SAMPLE", "DATA_UNAVAILABLE"})
+        cache_files = tuple(self.paths.backtests.glob("*.json"))
+        self.assertEqual(len(cache_files), 1)
+        cache_files[0].write_text("{broken", encoding="utf-8")
+        rebuilt = service.backtest("510300", "symbol")
+        self.assertEqual(rebuilt, first)
+        json.loads(cache_files[0].read_text(encoding="utf-8"))
+
+    def test_backtest_scope_and_symbol_validation_are_fail_closed(self) -> None:
+        service = self.make_service()
+        with self.assertRaises(ValueError):
+            service.backtest(None, "symbol")
+        with self.assertRaises(ValueError):
+            service.backtest("510500", "symbol")
+        with self.assertRaises(ValueError):
+            service.backtest("510300", "portfolio")
+        with self.assertRaises(ValueError):
+            service.backtest(None, "unknown")
+
+    def test_concurrent_backtests_single_flight_the_same_cache_key(self) -> None:
+        service = self.make_service()
+        barrier = threading.Barrier(4)
+
+        def read() -> dict[str, object]:
+            barrier.wait()
+            return service.backtest("510300", "symbol")
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = tuple(pool.map(lambda _: read(), range(4)))
+        self.assertTrue(all(item == results[0] for item in results))
+        self.assertEqual(len(tuple(self.paths.backtests.glob("*.json"))), 1)
+
+    def test_backtest_cache_uses_content_not_mtime_and_invalidates_config(self) -> None:
+        service = self.make_service()
+        service.backtest("510300", "symbol")
+        self.paths.daily_history.touch()
+        restarted = self.make_service()
+        restarted.backtest("510300", "symbol")
+        self.assertEqual(len(tuple(self.paths.backtests.glob("*.json"))), 1)
+
+        payload = json.loads(self.paths.strategy.read_text(encoding="utf-8"))
+        payload["anti_chase_atr_distance"] = 1.4
+        self.paths.strategy.write_text(json.dumps(payload), encoding="utf-8")
+        changed = self.make_service()
+        changed.backtest("510300", "symbol")
+        self.assertEqual(len(tuple(self.paths.backtests.glob("*.json"))), 2)
+
     def test_alert_limit_keeps_all_active_and_recent_history(self) -> None:
         service = self.make_service()
         items = [

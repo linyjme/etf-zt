@@ -1402,6 +1402,8 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             self._swing_read(lambda application: application.portfolio())
         elif path == "/api/swing/alerts":
             self._swing_alerts(parsed.query)
+        elif path == "/api/swing/backtest":
+            self._swing_backtest(parsed.query)
         elif path == "/api/snapshot":
             self._snapshot()
         elif path == "/api/quotes":
@@ -1461,6 +1463,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             "/api/swing/events",
             "/api/swing/portfolio",
             "/api/swing/alerts",
+            "/api/swing/backtest",
         }:
             self._json(HTTPStatus.METHOD_NOT_ALLOWED, {
                 "error": "method_not_allowed",
@@ -1677,6 +1680,38 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             payload = self._swing_application().daily_quotes(
                 symbol, since, int(limit_text),
             )
+        except (ValueError, SwingServiceError) as error:
+            self._json(HTTPStatus.BAD_REQUEST, {
+                "error": "invalid_query", "message": str(error),
+            })
+            return
+        except OSError as error:
+            self._propagate_disconnect(error)
+            self._swing_domain_error(error)
+            return
+        self._json(HTTPStatus.OK, payload)
+
+    def _swing_backtest(self, query_string: str) -> None:
+        try:
+            query = self._strict_query(query_string)
+            if "scope" not in query or len(query["scope"]) != 1:
+                raise ValueError("scope is required exactly once")
+            scope = query["scope"][0]
+            if scope == "symbol":
+                if set(query) != {"scope", "symbol"} or len(query["symbol"]) != 1:
+                    raise ValueError(
+                        "symbol scope requires exactly one symbol",
+                    )
+                symbol = query["symbol"][0]
+                if re.fullmatch(r"[0-9]{6}", symbol, flags=re.ASCII) is None:
+                    raise ValueError("symbol must be six ASCII digits")
+            elif scope == "portfolio":
+                if set(query) != {"scope"}:
+                    raise ValueError("portfolio scope accepts no symbol")
+                symbol = None
+            else:
+                raise ValueError("scope must be symbol or portfolio")
+            payload = self._swing_application().backtest(symbol, scope)
         except (ValueError, SwingServiceError) as error:
             self._json(HTTPStatus.BAD_REQUEST, {
                 "error": "invalid_query", "message": str(error),
