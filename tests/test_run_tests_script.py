@@ -37,10 +37,46 @@ class RunTestsScriptTests(unittest.TestCase):
         self.assertNotIn("git grep -I", guide)
         self.assertNotIn("git rev-list --objects --all | Select-String", guide)
         for name_pattern in (
-            "var/", "data/monitor/quotes", "data/monitor/alerts",
-            "data/monitor/history", "__pycache__", "\\.pyc$",
+            "^var/", "quotes\\.jsonl?", "alerts\\.jsonl",
+            "history(?:/.*)?", "__pycache__", "\\.pyc$",
         ):
             self.assertIn(name_pattern, guide)
+
+    def test_history_name_audit_parses_object_lines_and_matches_pure_paths(self) -> None:
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        self.assertIsNotNone(powershell, "PowerShell is required for history-audit test")
+        root = Path(__file__).resolve().parents[1]
+        guide = (root / "docs" / "git-history-cleanup.md").read_text(encoding="utf-8")
+        start = guide.index("function Test-RuntimeHistoryObjectLine")
+        end = guide.index("$objects = @(git rev-list --objects --all)", start)
+        function_source = guide[start:end]
+        oid = "a" * 40
+        cases = {
+            f"{oid} var/swing/trades.jsonl": True,
+            f"{oid} data/monitor/quotes.jsonl": True,
+            f"{oid} data/monitor/history/2026-08-28/quotes.jsonl": True,
+            f"{oid} nested/__pycache__/module.pyc": True,
+            f"{oid} nested/module.pyc": True,
+            f"{oid} docs/path with spaces.md": False,
+            oid: False,
+        }
+        with tempfile.TemporaryDirectory(prefix="history name audit ") as temporary:
+            harness = Path(temporary) / "audit.ps1"
+            assertions = "\n".join(
+                "if ((Test-RuntimeHistoryObjectLine '"
+                + line.replace("'", "''")
+                + f"') -ne ${str(expected).lower()}) {{ throw 'unexpected audit result' }}"
+                for line, expected in cases.items()
+            )
+            harness.write_text(function_source + "\n" + assertions + "\n", encoding="utf-8")
+            result = subprocess.run(
+                [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_private_path_scanner_rejects_raw_and_markdown_escaped_paths(self) -> None:
         raw = "C:" + "\\" + "Users" + "\\" + "somebody" + "\\" + "project"

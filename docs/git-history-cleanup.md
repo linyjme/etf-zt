@@ -22,10 +22,28 @@
 
 ```powershell
 git fsck --full
+function Test-RuntimeHistoryObjectLine {
+    param([Parameter(Mandatory)][string]$Line)
+
+    $separator = $Line.IndexOf(' ')
+    if ($separator -lt 0) { return $false }
+    $oid = $Line.Substring(0, $separator)
+    if ($oid -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') {
+        throw "历史对象行的OID无效: $Line"
+    }
+    $path = $Line.Substring($separator + 1).Replace('\', '/')
+    if ([string]::IsNullOrWhiteSpace($path)) { return $false }
+    return (
+        $path -match '^var/' -or
+        $path -match '^data/monitor/(?:quotes\.jsonl?|alerts\.jsonl|history(?:/.*)?)$' -or
+        $path -match '(^|/)__pycache__(/|$)' -or
+        $path -match '\.pyc$'
+    )
+}
+
 $objects = @(git rev-list --objects --all)
 if ($LASTEXITCODE -ne 0) { throw '无法枚举历史对象名称' }
-$runtimeNamePattern = '(^|/)(var/|data/monitor/(quotes(\.jsonl?)?|alerts\.jsonl|history/)|__pycache__/)|\.pyc$'
-$nameMatches = @($objects | Select-String -Pattern $runtimeNamePattern)
+$nameMatches = @($objects | Where-Object { Test-RuntimeHistoryObjectLine $_ })
 if ($nameMatches.Count -gt 0) {
     $nameMatches
     throw '历史对象名称中仍存在运行文件或字节码'
