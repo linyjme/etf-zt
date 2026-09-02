@@ -24,7 +24,7 @@ import time as monotonic_time
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
-from .constants import REALTIME_MAX_AGE_SECONDS
+from .constants import DEFAULT_SWING_HISTORY_COUNT, REALTIME_MAX_AGE_SECONDS
 from .etf_metadata import EtfMetadata, EtfMetadataStore
 from .market_data import load_closed_dates
 from .swing_alerts import AlertInput, SwingAlertStore
@@ -68,9 +68,9 @@ from .swing_strategy import (
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FINAL_DAILY_TIME = time(15, 10)
-_BACKTEST_CACHE_SCHEMA_VERSION = 3
-_BACKTEST_ENGINE_VERSION = "SWING_BACKTEST_ENGINE_V4"
-_DEFAULT_HISTORY_COUNT = 260
+_BACKTEST_CACHE_SCHEMA_VERSION = 4
+_BACKTEST_ENGINE_VERSION = "SWING_BACKTEST_ENGINE_V5"
+_DEFAULT_HISTORY_COUNT = DEFAULT_SWING_HISTORY_COUNT
 _MAX_DAILY_QUOTE_LIMIT = 10_000
 _MAX_ALERT_HISTORY_LIMIT = 500
 _REALTIME_FUTURE_SKEW_SECONDS = 5.0
@@ -938,8 +938,11 @@ class SwingService:
             or not cls._same_cache_number(metrics["slippage"], sum(
                 item["slippage"] for item in result["trades"]
             ))
-            or metrics["rejection_counts"] != cls._reason_counts(
-                result["rejections"],
+            or any(
+                metrics["rejection_counts"].get(reason, 0) < count
+                for reason, count in cls._reason_counts(
+                    result["rejections"],
+                ).items()
             )
         ):
             return False
@@ -1465,11 +1468,14 @@ class SwingService:
             or type(evidence) is not dict
             or set(evidence) != {
                 "session_count", "equity_curve", "utilization",
+                "blocked_counts", "order_rejection_counts",
             }
             or type(evidence.get("session_count")) is not int
             or evidence["session_count"] < 0
             or type(evidence.get("equity_curve")) is not list
             or type(evidence.get("utilization")) is not list
+            or type(evidence.get("blocked_counts")) is not dict
+            or type(evidence.get("order_rejection_counts")) is not dict
             or evidence["session_count"] != len(evidence["equity_curve"])
             or evidence["session_count"] != len(evidence["utilization"])
             or any(
@@ -1480,6 +1486,15 @@ class SwingService:
                 not cls._strict_number(value, nonnegative=True)
                 or value > 1.0
                 for value in evidence["utilization"]
+            )
+            or any(
+                type(reason) is not str or not reason
+                or type(count) is not int or count <= 0
+                for counts in (
+                    evidence["blocked_counts"],
+                    evidence["order_rejection_counts"],
+                )
+                for reason, count in counts.items()
             )
         ):
             return False
@@ -1499,6 +1514,13 @@ class SwingService:
                 actual, expected,
             ):
                 return False
+        combined_counts = dict(evidence["order_rejection_counts"])
+        for reason, count in evidence["blocked_counts"].items():
+            combined_counts[reason] = combined_counts.get(reason, 0) + count
+        if metrics.get("rejection_counts") != dict(
+            sorted(combined_counts.items())
+        ):
+            return False
         if ending_equity is not None:
             if not evidence["equity_curve"]:
                 return False
@@ -1533,9 +1555,13 @@ class SwingService:
             ending_equity=result.get("ending_equity"),
         ):
             return False
+        root_evidence = evidence["root"]
+        if root_evidence is not None and root_evidence[
+            "order_rejection_counts"
+        ] != cls._reason_counts(result["rejections"]):
+            return False
         if scope == "symbol":
             return True
-        root_evidence = evidence["root"]
         if root_evidence is not None and (
             root_evidence["session_count"] != len(result["event_dates"])
             or not cls._same_cache_number(
@@ -2835,8 +2861,14 @@ class SwingService:
             )
             return False
         try:
+            strategy_count = (
+                0 if self._strategy is None
+                else self._strategy.walk_forward_train_days
+                + self._strategy.walk_forward_test_days
+                + self._strategy.walk_forward_step_days
+            )
             raw_records = self.collector.collect(
-                enabled, target, _DEFAULT_HISTORY_COUNT,
+                enabled, target, max(_DEFAULT_HISTORY_COUNT, strategy_count),
             )
             records = self._materialize_collected(raw_records)
             self._validate_complete_batch(records, enabled, target)

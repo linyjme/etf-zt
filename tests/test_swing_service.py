@@ -38,6 +38,7 @@ class StaticDailyCollector:
         self.delay = delay
         self.calls = 0
         self.requested: list[date] = []
+        self.requested_counts: list[int] = []
 
     def collect(
         self,
@@ -47,6 +48,7 @@ class StaticDailyCollector:
     ) -> tuple[DailyBar, ...]:
         self.calls += 1
         self.requested.append(last_completed_date)
+        self.requested_counts.append(count)
         if self.delay:
             time.sleep(self.delay)
         return self.bars
@@ -376,7 +378,7 @@ class SwingServiceTests(unittest.TestCase):
                 "cumulative_return", metrics["cumulative_return"] + 0.5,
             ),
         )
-        for mutate in mutations:
+        for mutation_index, mutate in enumerate(mutations):
             forged = json.loads(json.dumps(valid))
             mutate(forged["result"]["metrics"])
             forged["payload_sha256"] = service._canonical_digest(
@@ -397,7 +399,8 @@ class SwingServiceTests(unittest.TestCase):
                 and service._valid_metric_evidence(
                     forged["result"], forged["metric_evidence"],
                     forged["cache_key"],
-                )
+                ),
+                msg=f"semantic metric mutation {mutation_index} was accepted",
             )
             cache_path.write_text(json.dumps(forged), encoding="utf-8")
             with patch.object(
@@ -553,12 +556,28 @@ class SwingServiceTests(unittest.TestCase):
             datetime(2026, 9, 1, 15, 10, tzinfo=SHANGHAI),
         ))
         self.assertEqual(collector.calls, 1)
+        self.assertGreaterEqual(collector.requested_counts[0], 756)
         self.assertEqual(service.snapshot()["revision"], 1)
         self.assertEqual(service.snapshot()["as_of_trading_date"], "2026-09-01")
         self.assertFalse(service.refresh_once(
             datetime(2026, 9, 1, 15, 11, tzinfo=SHANGHAI),
         ))
         self.assertEqual(collector.calls, 1)
+
+    def test_first_full_history_refresh_can_produce_walk_forward_folds(self) -> None:
+        bars = retime_daily_bars(
+            swing_strategy_bars(756), ending_on=date(2026, 9, 1),
+        )
+        collector = StaticDailyCollector(bars)
+        service = self.make_service(collector=collector)
+        self.assertTrue(service.refresh_once(
+            datetime(2026, 9, 1, 15, 10, tzinfo=SHANGHAI),
+        ))
+        self.assertGreaterEqual(collector.requested_counts[0], 756)
+        report = service.backtest(None, "portfolio")["walk_forward"]
+        self.assertEqual(report["status"], "OK")
+        self.assertEqual(len(report["variants"]), 81)
+        self.assertGreaterEqual(len(report["variants"][0]["folds"]), 1)
 
     def test_before_1510_never_collects_current_trading_day(self) -> None:
         collector = StaticDailyCollector(self.final_bars)

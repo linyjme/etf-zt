@@ -119,6 +119,8 @@ def _metric_cache_evidence(
     metrics: SwingBacktestMetrics | None,
     equity_curve: Sequence[float],
     utilization: Sequence[float],
+    blocked_counts: Mapping[str, int],
+    order_rejection_counts: Mapping[str, int],
 ) -> dict[str, object] | None:
     if metrics is None:
         return None
@@ -126,7 +128,26 @@ def _metric_cache_evidence(
         "session_count": len(equity_curve),
         "equity_curve": [_clean(value) for value in equity_curve],
         "utilization": [_clean(value) for value in utilization],
+        "blocked_counts": dict(sorted(blocked_counts.items())),
+        "order_rejection_counts": dict(sorted(order_rejection_counts.items())),
     }
+
+
+def _combined_rejection_counts(
+    order_rejection_counts: Mapping[str, int],
+    blocked_counts: Mapping[str, int],
+) -> dict[str, int]:
+    combined = dict(order_rejection_counts)
+    for reason, count in blocked_counts.items():
+        combined[reason] = combined.get(reason, 0) + count
+    return dict(sorted(combined.items()))
+
+
+def _reason_counts(rejections: Sequence[SwingRejection]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for rejection in rejections:
+        counts[rejection.reason] = counts.get(rejection.reason, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _freeze_audit_mapping(
@@ -466,6 +487,8 @@ class SwingBacktestResult:
     metrics: SwingBacktestMetrics | None
     _metric_equity_curve: tuple[float, ...] = ()
     _metric_utilization: tuple[float, ...] = ()
+    _metric_blocked_counts: tuple[tuple[str, int], ...] = ()
+    _metric_order_rejection_counts: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -537,6 +560,8 @@ class SwingBacktestResult:
             self.metrics,
             self._metric_equity_curve,
             self._metric_utilization,
+            dict(self._metric_blocked_counts),
+            dict(self._metric_order_rejection_counts),
         )
 
 
@@ -645,6 +670,8 @@ class PortfolioBacktestResult:
     execution_assumptions: Mapping[str, object]
     _metric_equity_curve: tuple[float, ...] = ()
     _metric_utilization: tuple[float, ...] = ()
+    _metric_blocked_counts: tuple[tuple[str, int], ...] = ()
+    _metric_order_rejection_counts: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rejections", PortfolioRejections(self.rejections))
@@ -701,6 +728,8 @@ class PortfolioBacktestResult:
             self.metrics,
             self._metric_equity_curve,
             self._metric_utilization,
+            dict(self._metric_blocked_counts),
+            dict(self._metric_order_rejection_counts),
         )
 
 
@@ -1370,6 +1399,8 @@ class BacktestAccount:
 
     def record_blocked_decision(self, decision: SwingDecision) -> None:
         """Count a technically actionable signal blocked before order creation."""
+        # Candidate states are handed to execution, whose rejection audit owns
+        # that intent. Counting them here as well would double count one order.
         if decision.state in _BUY_STATES | _SELL_STATES:
             return
         evidence = decision.evidence
@@ -2006,6 +2037,10 @@ class SwingBacktester:
             metrics=metrics,
             _metric_equity_curve=tuple(account._equity_curve),
             _metric_utilization=tuple(account._utilization),
+            _metric_blocked_counts=tuple(sorted(account._blocked_counts.items())),
+            _metric_order_rejection_counts=tuple(sorted(
+                _reason_counts(account.rejections).items()
+            )),
         )
 
     def _unavailable_result(
@@ -2292,9 +2327,10 @@ class SwingBacktester:
                 current = current + 1 if pnl < 0.0 else 0
                 longest = max(longest, current)
             streak = longest
-        counts: dict[str, int] = {}
-        for rejection in account.rejections:
-            counts[rejection.reason] = counts.get(rejection.reason, 0) + 1
+        order_counts = _reason_counts(account.rejections)
+        counts = _combined_rejection_counts(
+            order_counts, account._blocked_counts,
+        )
         return SwingBacktestMetrics(
             cumulative_return=float(derived["cumulative_return"]),
             annualized_return=derived["annualized_return"],
@@ -3013,6 +3049,11 @@ class SwingBacktester:
                 item.exit_date, item.entry_date, item.net_pnl, item.holding_days,
             ),
         ))
+        order_rejection_counts = _reason_counts(all_rejections)
+        blocked_counts: dict[str, int] = {}
+        for account in accounts.values():
+            for reason, count in account._blocked_counts.items():
+                blocked_counts[reason] = blocked_counts.get(reason, 0) + count
         metrics = self._portfolio_metrics(
             cash_start=initial_cash,
             equity_curve=tuple(equity_curve),
@@ -3020,6 +3061,7 @@ class SwingBacktester:
             trades=all_trades,
             rejections=all_rejections,
             round_trips=round_trips,
+            blocked_counts=blocked_counts,
         )
         if _include_baseline:
             baseline, weights = self._portfolio_baseline(
@@ -3088,6 +3130,10 @@ class SwingBacktester:
             },
             _metric_equity_curve=tuple(equity_curve),
             _metric_utilization=tuple(utilization),
+            _metric_blocked_counts=tuple(sorted(blocked_counts.items())),
+            _metric_order_rejection_counts=tuple(
+                sorted(order_rejection_counts.items())
+            ),
         )
 
     def _portfolio_baseline(
@@ -3212,6 +3258,7 @@ class SwingBacktester:
         trades: tuple[SwingFill, ...],
         rejections: tuple[SwingRejection, ...],
         round_trips: tuple[PortfolioCompletedRoundTrip, ...],
+        blocked_counts: Mapping[str, int],
     ) -> SwingBacktestMetrics:
         derived = _curve_metric_values(cash_start, equity_curve, utilization)
         pnls = [item.net_pnl for item in round_trips]
@@ -3219,9 +3266,9 @@ class SwingBacktester:
         losses = [value for value in pnls if value < 0.0]
         average_profit = sum(profits) / len(profits) if profits else None
         average_loss = sum(losses) / len(losses) if losses else None
-        counts: dict[str, int] = {}
-        for item in rejections:
-            counts[item.reason] = counts.get(item.reason, 0) + 1
+        counts = _combined_rejection_counts(
+            _reason_counts(rejections), blocked_counts,
+        )
         longest = None
         if pnls:
             running = best = 0

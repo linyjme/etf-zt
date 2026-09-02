@@ -1595,7 +1595,7 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         with patch("etf_rotation.swing_backtest.evaluate_swing", side_effect=evaluate):
             result = self.backtester.run_symbol(bars, 5_000.0)
         self.assertEqual(result.metrics.rejection_counts["CASH"], 1)
-        self.assertNotIn("RISK", result.metrics.rejection_counts)
+        self.assertEqual(result.metrics.rejection_counts["RISK"], 2)
 
     def test_open_position_is_marked_without_fabricating_round_trip(self) -> None:
         bars = swing_strategy_bars(72, pattern="rising")

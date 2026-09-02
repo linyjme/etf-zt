@@ -12,6 +12,7 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request
 from zoneinfo import ZoneInfo
 
+from .constants import DEFAULT_SWING_HISTORY_COUNT
 from .eastmoney_client import (
     Transport,
     _default_transport,
@@ -96,7 +97,7 @@ class EastmoneyDailyCollector:
         self,
         watchlist: Sequence[SwingWatchItem],
         last_completed_date: date,
-        count: int = 260,
+        count: int = DEFAULT_SWING_HISTORY_COUNT,
     ) -> tuple[DailyBar, ...]:
         enabled = self._enabled_watchlist(watchlist)
         if type(last_completed_date) is not date:

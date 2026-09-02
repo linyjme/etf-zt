@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request
 
 import etf_rotation.eastmoney_client as eastmoney_client
+from etf_rotation.constants import DEFAULT_SWING_HISTORY_COUNT
 from etf_rotation.eastmoney_client import EastmoneyMarketError
 from etf_rotation.swing_collector import (
     FIELDS1,
@@ -332,6 +333,13 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
         self.assertEqual({bar.source for bar in bars}, {
             "东方财富 kline (push2his.eastmoney.com)",
         })
+        self.assertEqual(
+            {
+                parse_qs(urlsplit(request.full_url).query)["lmt"][0]
+                for request, _ in transport.requests
+            },
+            {str(DEFAULT_SWING_HISTORY_COUNT)},
+        )
 
     def test_requests_exact_params_headers_and_raw_adjusted_pair_per_symbol(self) -> None:
         transport = FixtureTransport()
