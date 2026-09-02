@@ -343,6 +343,52 @@ class SwingServiceTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertEqual(len(signing_key.read_bytes()), 32)
 
+    def test_signed_cache_rejects_semantically_forged_metrics(self) -> None:
+        DailyHistoryStore(
+            self.paths.daily_history, self.metadata, frozenset(),
+        ).upsert(self.final_bars)
+        service = self.make_service()
+        expected = service.backtest("510300", "symbol")
+        cache_path = next(self.paths.backtests.glob("*.json"))
+        valid = json.loads(cache_path.read_text(encoding="utf-8"))
+        signing_key = self.paths.backtests.with_name(
+            ".backtests.signing-key",
+        ).read_bytes()
+
+        mutations = (
+            lambda metrics: metrics.__setitem__("win_rate", 99.0),
+            lambda metrics: metrics.__setitem__("fees", metrics["fees"] + 1.0),
+            lambda metrics: metrics.__setitem__("maximum_drawdown", 2.0),
+            lambda metrics: metrics.__setitem__(
+                "rejection_counts", {"FORGED": 1},
+            ),
+            lambda metrics: metrics.__setitem__(
+                "cumulative_return", metrics["cumulative_return"] + 0.5,
+            ),
+        )
+        for mutate in mutations:
+            forged = json.loads(json.dumps(valid))
+            mutate(forged["result"]["metrics"])
+            forged["payload_sha256"] = service._canonical_digest(
+                forged["result"],
+            )
+            signed = {
+                key: forged[key]
+                for key in (
+                    "schema_version", "cache_key", "payload_sha256", "result",
+                )
+            }
+            forged["hmac_sha256"] = service._cache_hmac(signing_key, signed)
+            self.assertFalse(service._valid_backtest_result(
+                forged["result"], forged["cache_key"],
+            ))
+            cache_path.write_text(json.dumps(forged), encoding="utf-8")
+            with patch.object(
+                service, "_run_backtest", wraps=service._run_backtest,
+            ) as run:
+                self.assertEqual(service.backtest("510300", "symbol"), expected)
+            self.assertEqual(run.call_count, 1)
+
     def test_backtest_cache_uses_content_not_mtime_and_invalidates_config(self) -> None:
         service = self.make_service()
         service.backtest("510300", "symbol")

@@ -910,18 +910,22 @@ class SwingService:
         if metrics is not None and not cls._valid_metrics(metrics):
             return False
         if metrics is not None and (
-            metrics["fees"] != cls._clean_cache_number(sum(
+            not cls._same_cache_number(metrics["fees"], sum(
                 item["fee"] for item in result["trades"]
             ))
-            or metrics["spread_cost"] != cls._clean_cache_number(sum(
+            or not cls._same_cache_number(metrics["spread_cost"], sum(
                 item["spread_cost"] for item in result["trades"]
             ))
-            or metrics["slippage"] != cls._clean_cache_number(sum(
+            or not cls._same_cache_number(metrics["slippage"], sum(
                 item["slippage"] for item in result["trades"]
             ))
             or metrics["rejection_counts"] != cls._reason_counts(
                 result["rejections"],
             )
+        ):
+            return False
+        if metrics is not None and not cls._valid_metric_aggregates(
+            metrics, result["round_trips"],
         ):
             return False
         status = result["status"]
@@ -946,6 +950,11 @@ class SwingService:
             cls._clean_cache_number(
                 result["ending_equity"] / result["initial_cash"] - 1.0,
             )
+        ):
+            return False
+        if metrics is not None and (
+            (result["ending_equity"] > 0.0)
+            != (metrics["annualized_return"] is not None)
         ):
             return False
         if cache_key.get("scope") == "symbol":
@@ -1085,6 +1094,15 @@ class SwingService:
             or (status == "OK" and baseline is None)
         ):
             return False
+        if metrics is not None and result["event_dates"]:
+            expected_annualized = (
+                (result["ending_equity"] / result["initial_cash"])
+                ** (252.0 / len(result["event_dates"])) - 1.0
+            )
+            if not cls._same_cache_number(
+                metrics["annualized_return"], expected_annualized,
+            ):
+                return False
         return cls._valid_walk_forward(result.get("walk_forward"), metrics_keys={
             "cumulative_return", "annualized_return", "maximum_drawdown",
             "calmar", "sharpe", "win_rate", "average_profit", "average_loss",
@@ -1105,6 +1123,16 @@ class SwingService:
     def _clean_cache_number(value: float) -> float:
         rounded = round(float(value), 12)
         return 0.0 if rounded == 0.0 else rounded
+
+    @staticmethod
+    def _same_cache_number(actual: object, expected: float) -> bool:
+        return (
+            type(actual) in (int, float)
+            and math.isfinite(float(actual))
+            and math.isclose(
+                float(actual), float(expected), rel_tol=1e-9, abs_tol=1e-9,
+            )
+        )
 
     @classmethod
     def _cash_after_fills(
@@ -1290,10 +1318,117 @@ class SwingService:
                     return False
             elif not cls._strict_number(value):
                 return False
-        return all(
+        if not all(
             type(key) is str and type(value) is int and value >= 0
             for key, value in metrics["rejection_counts"].items()
+        ):
+            return False
+        if not -1.0 <= metrics["cumulative_return"]:
+            return False
+        if not 0.0 <= metrics["maximum_drawdown"] <= 1.0:
+            return False
+        if not 0.0 <= metrics["utilization"] <= 1.0:
+            return False
+        if metrics["annualized_return"] is not None and metrics[
+            "annualized_return"
+        ] < -1.0:
+            return False
+        if metrics["win_rate"] is not None and not 0.0 <= metrics[
+            "win_rate"
+        ] <= 1.0:
+            return False
+        if metrics["average_profit"] is not None and metrics[
+            "average_profit"
+        ] <= 0.0:
+            return False
+        if metrics["average_loss"] is not None and metrics["average_loss"] >= 0.0:
+            return False
+        if metrics["average_holding_days"] is not None and metrics[
+            "average_holding_days"
+        ] < 0.0:
+            return False
+        if any(metrics[key] < 0.0 for key in (
+            "fees", "spread_cost", "slippage",
+        )):
+            return False
+        expected_calmar = (
+            None
+            if metrics["annualized_return"] is None
+            or metrics["maximum_drawdown"] <= 0.0
+            else cls._clean_cache_number(
+                metrics["annualized_return"] / metrics["maximum_drawdown"],
+            )
         )
+        if (
+            (metrics["calmar"] is None) != (expected_calmar is None)
+            or expected_calmar is not None
+            and not cls._same_cache_number(metrics["calmar"], expected_calmar)
+        ):
+            return False
+        expected_payoff = (
+            None
+            if metrics["average_profit"] is None
+            or metrics["average_loss"] is None
+            else cls._clean_cache_number(
+                metrics["average_profit"] / abs(metrics["average_loss"]),
+            )
+        )
+        return not (
+            (metrics["payoff_ratio"] is None) != (expected_payoff is None)
+            or expected_payoff is not None
+            and not cls._same_cache_number(
+                metrics["payoff_ratio"], expected_payoff,
+            )
+        )
+
+    @classmethod
+    def _valid_metric_aggregates(
+        cls,
+        metrics: Mapping[str, object],
+        round_trips: list[Mapping[str, object]],
+    ) -> bool:
+        pnls = [float(item["net_pnl"]) for item in round_trips]
+        profits = [value for value in pnls if value > 0.0]
+        losses = [value for value in pnls if value < 0.0]
+        expected_win_rate = (
+            None if not pnls
+            else cls._clean_cache_number(len(profits) / len(pnls))
+        )
+        expected_profit = (
+            None if not profits
+            else cls._clean_cache_number(sum(profits) / len(profits))
+        )
+        expected_loss = (
+            None if not losses
+            else cls._clean_cache_number(sum(losses) / len(losses))
+        )
+        expected_holding = (
+            None if not round_trips
+            else cls._clean_cache_number(
+                sum(item["holding_days"] for item in round_trips)
+                / len(round_trips),
+            )
+        )
+        expected_streak: int | None = None
+        if pnls:
+            current = longest = 0
+            for pnl in pnls:
+                current = current + 1 if pnl < 0.0 else 0
+                longest = max(longest, current)
+            expected_streak = longest
+        for key, expected in (
+            ("win_rate", expected_win_rate),
+            ("average_profit", expected_profit),
+            ("average_loss", expected_loss),
+            ("average_holding_days", expected_holding),
+        ):
+            if (metrics[key] is None) != (expected is None):
+                return False
+            if expected is not None and not cls._same_cache_number(
+                metrics[key], expected,
+            ):
+                return False
+        return metrics["longest_losing_streak"] == expected_streak
 
     @classmethod
     def _valid_symbol_benchmark(cls, value: Mapping[str, object]) -> bool:
@@ -1366,7 +1501,12 @@ class SwingService:
             type(value.get(key)) is not int or value[key] <= 0
             for key in ("train_days", "test_days", "step_days")
         ) or (
-            value["train_days"] != strategy.walk_forward_train_days
+            value.get("status") not in {
+                "OK", "INSUFFICIENT_SAMPLE", "DATA_UNAVAILABLE",
+            }
+            or type(value.get("reason")) not in (str, type(None))
+            or (value["status"] == "OK") != (value["reason"] is None)
+            or value["train_days"] != strategy.walk_forward_train_days
             or value["test_days"] != strategy.walk_forward_test_days
             or value["step_days"] != strategy.walk_forward_step_days
             or value.get("selected_variant") is not None
@@ -1425,7 +1565,9 @@ class SwingService:
                 )
             ):
                 return False
-            for fold in variant["folds"]:
+            test_returns: list[float] = []
+            test_ok_count = 0
+            for expected_fold_index, fold in enumerate(variant["folds"]):
                 if type(fold) is not dict or set(fold) != {
                     "fold_index", "train_start_date", "train_end_date",
                     "test_start_date", "test_end_date", "train_bar_count",
@@ -1436,6 +1578,7 @@ class SwingService:
                     any(type(fold.get(key)) is not int or fold[key] < 0 for key in (
                         "fold_index", "train_bar_count", "test_bar_count",
                     ))
+                    or fold["fold_index"] != expected_fold_index
                     or fold["train_bar_count"] != strategy.walk_forward_train_days
                     or fold["test_bar_count"] != strategy.walk_forward_test_days
                     or any(not cls._strict_date_text(fold.get(key)) for key in (
@@ -1458,6 +1601,70 @@ class SwingService:
                         or not cls._valid_metrics(nested_metrics)
                     ):
                         return False
+                    completed = phase.get("completed_round_trips")
+                    if (
+                        phase.get("status") not in {
+                            "OK", "INSUFFICIENT_SAMPLE", "DATA_UNAVAILABLE",
+                        }
+                        or type(completed) is not int or completed < 0
+                        or (phase["status"] == "OK")
+                        != (phase.get("reason") is None)
+                        or type(phase.get("outperformance"))
+                        not in (int, float, type(None))
+                        or (
+                            phase["status"] != "OK"
+                            and phase.get("outperformance") is not None
+                        )
+                    ):
+                        return False
+                    if nested_metrics is None:
+                        if (
+                            completed != 0
+                            or phase.get("cumulative_return") is not None
+                            or phase.get("maximum_drawdown") is not None
+                        ):
+                            return False
+                    elif (
+                        not cls._same_cache_number(
+                            phase.get("cumulative_return"),
+                            nested_metrics["cumulative_return"],
+                        )
+                        or not cls._same_cache_number(
+                            phase.get("maximum_drawdown"),
+                            nested_metrics["maximum_drawdown"],
+                        )
+                        or (completed == 0) != (
+                            nested_metrics["win_rate"] is None
+                        )
+                        or phase["status"] == "OK" and completed <= 0
+                    ):
+                        return False
+                test_phase = fold["test"]
+                if test_phase["status"] == "OK":
+                    test_ok_count += 1
+                test_return = test_phase["cumulative_return"]
+                if type(test_return) in (int, float):
+                    test_returns.append(float(test_return))
+            expected_mean = (
+                None if not test_returns
+                else cls._clean_cache_number(
+                    sum(test_returns) / len(test_returns),
+                )
+            )
+            stability = variant["stability"]
+            if (
+                stability["test_ok_count"] != test_ok_count
+                or stability["positive_test_fold_count"] != sum(
+                    item > 0.0 for item in test_returns
+                )
+                or (stability["mean_test_return"] is None)
+                != (expected_mean is None)
+                or expected_mean is not None
+                and not cls._same_cache_number(
+                    stability["mean_test_return"], expected_mean,
+                )
+            ):
+                return False
         return True
 
     @classmethod
@@ -2263,12 +2470,15 @@ class SwingService:
         cash = projection.cash if ledger_healthy else 0.0
         market_value = projection.etf_market_value if ledger_healthy else 0.0
         planned_risk = projection.planned_risk if ledger_healthy else 0.0
+        symbol_planned_risk = 0.0
         position = None
         last_stop_trading_date = (
             self._last_stop_trading_date(symbol, bars) if ledger_healthy else None
         )
         if ledger_healthy and projection is not None:
             projected = projection.positions.get(symbol)
+            if projected is not None:
+                symbol_planned_risk = projected.planned_risk
             if projected is not None and projected.shares > 0 and bars:
                 position = self._position_context(symbol, projected, bars)
         return PortfolioContext(
@@ -2276,6 +2486,7 @@ class SwingService:
             cash=cash,
             current_etf_market_value=market_value,
             current_planned_risk_amount=planned_risk,
+            current_symbol_planned_risk_amount=symbol_planned_risk,
             lot_size=lot_size,
             data_healthy=data_healthy,
             metadata_complete=metadata is not None,

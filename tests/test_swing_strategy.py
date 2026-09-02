@@ -107,6 +107,7 @@ class SwingStrategyTests(unittest.TestCase):
             "cash": 500_000.0,
             "current_etf_market_value": 200_000.0,
             "current_planned_risk_amount": 5_000.0,
+            "current_symbol_planned_risk_amount": 5_000.0,
             "lot_size": 100,
             "position": position or self.position(),
         }
@@ -484,6 +485,11 @@ class SwingStrategyTests(unittest.TestCase):
             lambda: PortfolioContext.empty(True),
             lambda: PortfolioContext.empty(float("nan")),
             lambda: PortfolioContext.empty(1_000.0, lot_size=True),
+            lambda: PortfolioContext.empty(
+                1_000.0,
+                current_planned_risk_amount=100.0,
+                current_symbol_planned_risk_amount=100.01,
+            ),
             lambda: self.position(shares=True),
             lambda: self.position(average_cost_adjusted=float("inf")),
             lambda: self.position(sellable_shares=10_001),
@@ -515,6 +521,7 @@ class SwingStrategyTests(unittest.TestCase):
             cash=500_000,
             current_etf_market_value=100_000,
             current_planned_risk_amount=5_000,
+            current_symbol_planned_risk_amount=4_000,
         )
         position = self.position(
             average_cost_adjusted=100,
@@ -527,6 +534,7 @@ class SwingStrategyTests(unittest.TestCase):
             portfolio.cash,
             portfolio.current_etf_market_value,
             portfolio.current_planned_risk_amount,
+            portfolio.current_symbol_planned_risk_amount,
             position.average_cost_adjusted,
             position.initial_risk_per_share_adjusted,
             position.highest_completed_adjusted_close,
@@ -550,7 +558,8 @@ class SwingStrategyTests(unittest.TestCase):
             tuple(field.name for field in fields(PortfolioContext)),
             (
                 "equity", "cash", "current_etf_market_value",
-                "current_planned_risk_amount", "lot_size", "data_healthy",
+                "current_planned_risk_amount",
+                "current_symbol_planned_risk_amount", "lot_size", "data_healthy",
                 "metadata_complete", "ledger_healthy", "tradable",
                 "next_trading_date", "last_stop_trading_date", "position",
             ),
@@ -618,6 +627,40 @@ class SwingStrategyTests(unittest.TestCase):
         self.assertIn("trade_risk_cap", result.blocked_reasons)
         self.assertFalse(result.evidence["trade_risk_cap_ok"])
 
+    def test_add_replaces_current_symbol_risk_at_effective_stop(self) -> None:
+        bars = swing_strategy_bars()
+        position = self.position(
+            shares=1_000,
+            sellable_shares=1_000,
+            average_cost_adjusted=100.0,
+            initial_risk_per_share_adjusted=5.0,
+            hard_stop_adjusted=100.0,
+            first_reduction_completed=True,
+        )
+        at_old_total_cap = self.with_position(
+            position,
+            current_planned_risk_amount=20_000.0,
+            current_symbol_planned_risk_amount=20_000.0,
+        )
+        tightened = evaluate_swing(bars, self.config, at_old_total_cap)
+        self.assertEqual(tightened.state, SwingState.ADD_CANDIDATE)
+        self.assertEqual(
+            tightened.evidence["current_symbol_planned_risk_amount"],
+            20_000.0,
+        )
+        self.assertEqual(tightened.evidence["other_portfolio_risk_amount"], 0.0)
+        self.assertLessEqual(
+            tightened.evidence["post_add_portfolio_risk_amount"], 20_000.0,
+        )
+
+        peer_risk = replace(
+            at_old_total_cap,
+            current_symbol_planned_risk_amount=1_000.0,
+        )
+        blocked = evaluate_swing(bars, self.config, peer_risk)
+        self.assertEqual(blocked.state, SwingState.HOLDING)
+        self.assertIn("portfolio_risk_cap", blocked.blocked_reasons)
+
     def test_zero_incremental_add_risk_still_requires_trade_budget_room(self) -> None:
         from etf_rotation.swing_strategy import _add_trade_risk_cap_shares
 
@@ -674,10 +717,14 @@ class SwingStrategyTests(unittest.TestCase):
                     risk_per_trade=(position_risk + per_share_risk * cap) / equity,
                 )
             elif name == "portfolio_risk_cap":
+                other_risk = (
+                    portfolio.current_planned_risk_amount
+                    - portfolio.current_symbol_planned_risk_amount
+                )
                 config = replace(
                     config,
                     max_portfolio_risk=(
-                        portfolio.current_planned_risk_amount
+                        other_risk + position_risk
                         + per_share_risk * cap
                     ) / equity,
                 )

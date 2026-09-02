@@ -792,6 +792,7 @@ class BacktestAccount:
             cash=self.cash,
             current_etf_market_value=market_value,
             current_planned_risk_amount=planned_risk,
+            current_symbol_planned_risk_amount=planned_risk,
             lot_size=self.trading.lot_size,
             data_healthy=True,
             metadata_complete=True,
@@ -2207,8 +2208,6 @@ class SwingBacktester:
         counts: dict[str, int] = {}
         for rejection in account.rejections:
             counts[rejection.reason] = counts.get(rejection.reason, 0) + 1
-        for reason, count in account._blocked_counts.items():
-            counts[reason] = counts.get(reason, 0) + count
         return SwingBacktestMetrics(
             cumulative_return=cumulative,
             annualized_return=annualized,
@@ -2373,10 +2372,42 @@ class SwingBacktester:
         execution_date: date,
         execution_index: int,
         mark_prices: Mapping[str, float] | None = None,
+        mark_bars: Mapping[str, DailyBar] | None = None,
     ) -> PortfolioContext:
+        if mark_bars is not None:
+            if mark_prices is not None:
+                raise SwingBacktestError(
+                    "portfolio context accepts mark prices or bars, not both",
+                )
+            mark_prices = {
+                symbol: bar.open for symbol, bar in mark_bars.items()
+            }
         equity, market_value, risk = self._portfolio_values(
             accounts, cash, mark_prices,
         )
+        account_symbol = next(
+            symbol for symbol, candidate in accounts.items()
+            if candidate is account
+        )
+        if mark_bars is not None:
+            risks = self._portfolio_risks_at_bars(accounts, mark_bars)
+            risk = sum(risks.values())
+            current_symbol_risk = risks[account_symbol]
+        else:
+            current_price = (
+                account._last_mark_price
+                if mark_prices is None else mark_prices[account_symbol]
+            )
+            scale = (
+                account._last_mark_price / account._last_adjusted_close
+                if account._last_adjusted_close > 0.0 else 1.0
+            )
+            current_symbol_risk = (
+                account.shares * max(
+                    0.0, current_price - account._hard_stop_adjusted * scale,
+                )
+                if account.shares > 0 else 0.0
+            )
         local = account.context(
             next_trading_date=execution_date,
             execution_index=execution_index,
@@ -2386,6 +2417,7 @@ class SwingBacktester:
             cash=cash,
             current_etf_market_value=market_value,
             current_planned_risk_amount=risk,
+            current_symbol_planned_risk_amount=current_symbol_risk,
             lot_size=account.trading.lot_size,
             data_healthy=True,
             metadata_complete=True,
@@ -2767,7 +2799,7 @@ class SwingBacktester:
                     signal_index, _, signal_bars = signal_inputs[symbol]
                     refreshed_context = self._portfolio_context(
                         account, accounts, cash, execution_date, index,
-                        open_prices,
+                        mark_bars=execution_bars,
                     )
                     refreshed = self._cached_portfolio_decision(
                         signal_bars,

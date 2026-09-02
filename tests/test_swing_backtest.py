@@ -441,10 +441,40 @@ class PortfolioSwingBacktestTests(unittest.TestCase):
             )
             account.shares = 10_000
             account._lots = [(0, 10_000)]
+            account._average_cost_adjusted = 2.0
+            account._initial_risk_adjusted = 0.1
+            account._entry_date = bars[0].trading_date
+            account._entry_index = 0
             account._hard_stop_adjusted = 1.9
+            account._highest_adjusted_close = 2.0
             account._last_mark_price = 4.0
             account._last_adjusted_close = 2.0
             return account
+
+        scale_changed = seeded()
+        scale_changed_bar = replace(
+            bar,
+            adjusted_open=4.0,
+            adjusted_high=4.1,
+            adjusted_low=3.7,
+            adjusted_close=4.0,
+        )
+        scale_context = backtester._portfolio_context(
+            scale_changed,
+            {"510300": scale_changed},
+            60_000.0,
+            scale_changed_bar.trading_date,
+            1,
+            mark_bars={"510300": scale_changed_bar},
+        )
+        self.assertAlmostEqual(
+            scale_context.current_symbol_planned_risk_amount,
+            21_000.0,
+        )
+        self.assertAlmostEqual(
+            scale_context.current_planned_risk_amount,
+            21_000.0,
+        )
 
         tightened = seeded()
         tightened_decision = _decision(
@@ -1553,7 +1583,7 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         with patch("etf_rotation.swing_backtest.evaluate_swing", side_effect=evaluate):
             result = self.backtester.run_symbol(bars, 5_000.0)
         self.assertEqual(result.metrics.rejection_counts["CASH"], 1)
-        self.assertEqual(result.metrics.rejection_counts["RISK"], 2)
+        self.assertNotIn("RISK", result.metrics.rejection_counts)
 
     def test_open_position_is_marked_without_fabricating_round_trip(self) -> None:
         bars = swing_strategy_bars(72, pattern="rising")

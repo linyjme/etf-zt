@@ -178,6 +178,7 @@ class PortfolioContext:
     cash: float
     current_etf_market_value: float = 0.0
     current_planned_risk_amount: float = 0.0
+    current_symbol_planned_risk_amount: float = 0.0
     lot_size: int = 100
     data_healthy: bool = True
     metadata_complete: bool = True
@@ -193,10 +194,36 @@ class PortfolioContext:
             ("cash", False),
             ("current_etf_market_value", False),
             ("current_planned_risk_amount", False),
+            ("current_symbol_planned_risk_amount", False),
         ):
             object.__setattr__(
                 self, field,
                 _finite_number(getattr(self, field), field, positive=positive),
+            )
+        risk_tolerance = max(
+            1e-9,
+            math.ulp(max(
+                1.0,
+                self.current_planned_risk_amount,
+                self.current_symbol_planned_risk_amount,
+            )) * _LOT_BOUNDARY_ULPS,
+        )
+        if (
+            self.current_symbol_planned_risk_amount
+            > self.current_planned_risk_amount + risk_tolerance
+        ):
+            raise SwingStrategyError(
+                "current_symbol_planned_risk_amount must not exceed "
+                "current_planned_risk_amount",
+            )
+        if (
+            self.current_symbol_planned_risk_amount
+            > self.current_planned_risk_amount
+        ):
+            object.__setattr__(
+                self,
+                "current_symbol_planned_risk_amount",
+                self.current_planned_risk_amount,
             )
         if type(self.lot_size) is not int or self.lot_size <= 0:
             raise SwingStrategyError("lot_size must be a positive integer")
@@ -227,6 +254,7 @@ class PortfolioContext:
         last_stop_trading_date: date | None = None,
         current_etf_market_value: float = 0.0,
         current_planned_risk_amount: float = 0.0,
+        current_symbol_planned_risk_amount: float = 0.0,
     ) -> PortfolioContext:
         """Build an explicitly positionless context with conservative defaults."""
         resolved_cash = equity if cash is None else cash
@@ -235,6 +263,9 @@ class PortfolioContext:
             cash=resolved_cash,
             current_etf_market_value=current_etf_market_value,
             current_planned_risk_amount=current_planned_risk_amount,
+            current_symbol_planned_risk_amount=(
+                current_symbol_planned_risk_amount
+            ),
             lot_size=lot_size,
             data_healthy=data_healthy,
             metadata_complete=metadata_complete,
@@ -830,6 +861,14 @@ def _base_evidence(
         "metadata_complete": portfolio.metadata_complete,
         "ledger_healthy": portfolio.ledger_healthy,
         "tradable": portfolio.tradable,
+        "current_planned_risk_amount": portfolio.current_planned_risk_amount,
+        "current_symbol_planned_risk_amount": (
+            portfolio.current_symbol_planned_risk_amount
+        ),
+        "other_portfolio_risk_amount": (
+            portfolio.current_planned_risk_amount
+            - portfolio.current_symbol_planned_risk_amount
+        ),
         "health_gates_ok": not _health_reasons(portfolio),
         "entry_sizing_gates_ok": False,
         "entry_hard_gates_ok": False,
@@ -1064,10 +1103,16 @@ def _position_decision(
             - portfolio.current_etf_market_value,
         ) / entry
         per_share_add_risk = max(0.0, entry - protective_stop_raw)
+        other_portfolio_risk = max(
+            0.0,
+            portfolio.current_planned_risk_amount
+            - portfolio.current_symbol_planned_risk_amount,
+        )
         remaining_risk = max(
             0.0,
             _product(portfolio.equity, config.max_portfolio_risk)
-            - portfolio.current_planned_risk_amount,
+            - other_portfolio_risk
+            - position_risk_amount,
         )
         trade_risk_room = max(
             0.0,
@@ -1098,6 +1143,11 @@ def _position_decision(
             raise ArithmeticError("unrepresentable add sizing cap")
         add_shares = _lot_floor(min(add_caps.values()), portfolio.lot_size)
         evidence.update(add_caps)
+        evidence["current_symbol_planned_risk_amount"] = (
+            portfolio.current_symbol_planned_risk_amount
+        )
+        evidence["other_portfolio_risk_amount"] = other_portfolio_risk
+        evidence["remaining_portfolio_risk_amount"] = remaining_risk
         evidence["remaining_trade_risk_amount"] = trade_risk_room
         evidence["selected_shares"] = add_shares
         evidence["minimum_lot_ok"] = add_shares >= portfolio.lot_size
@@ -1133,6 +1183,14 @@ def _position_decision(
                 position_risk_amount + add_shares * per_share_add_risk
             ) / portfolio.equity
             evidence["post_add_risk_rate"] = risk_rate
+            evidence["post_add_symbol_risk_amount"] = (
+                position_risk_amount + add_shares * per_share_add_risk
+            )
+            evidence["post_add_portfolio_risk_amount"] = (
+                other_portfolio_risk
+                + position_risk_amount
+                + add_shares * per_share_add_risk
+            )
             if risk_rate > 0.0:
                 common["planned_risk_rate"] = risk_rate
                 return SwingDecision(
