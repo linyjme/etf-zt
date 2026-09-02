@@ -10,6 +10,8 @@ from . import constants
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_ROOT = PROJECT_ROOT / "var" / "monitor"
+SWING_DATA_ROOT = PROJECT_ROOT / "data" / "swing"
+SWING_RUNTIME_ROOT = PROJECT_ROOT / "var" / "swing"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -23,6 +25,13 @@ def _parser() -> argparse.ArgumentParser:
     monitor.add_argument("--metadata", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "etf_metadata.json")
     monitor.add_argument("--valuation", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "valuation.json")
     monitor.add_argument("--calendar", type=Path, default=PROJECT_ROOT / "data" / "monitor" / "market_calendar.json")
+    monitor.add_argument("--swing-watchlist", type=Path, default=SWING_DATA_ROOT / "watchlist.json")
+    monitor.add_argument("--swing-strategy", type=Path, default=SWING_DATA_ROOT / "strategy.json")
+    monitor.add_argument("--swing-daily-history", type=Path, default=SWING_RUNTIME_ROOT / "daily_quotes.jsonl")
+    monitor.add_argument("--swing-portfolio", type=Path, default=SWING_RUNTIME_ROOT / "portfolio.json")
+    monitor.add_argument("--swing-trades", type=Path, default=SWING_RUNTIME_ROOT / "trades.jsonl")
+    monitor.add_argument("--swing-alerts", type=Path, default=SWING_RUNTIME_ROOT / "alerts.jsonl")
+    monitor.add_argument("--swing-backtests", type=Path, default=SWING_RUNTIME_ROOT / "backtests")
     monitor.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "localhost"))
     monitor.add_argument("--port", type=int, default=8765)
     monitor.add_argument(
@@ -51,9 +60,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.refresh_interval <= 0:
         raise ValueError("refresh interval must be positive")
     from .quote_collector import Trends2QuoteCollector
+    from .swing_collector import EastmoneyDailyCollector
+    from .swing_service import SwingPaths
     from .t_web import create_server
 
     collector = None if arguments.no_collect else Trends2QuoteCollector()
+    swing_collector = None if arguments.no_collect else EastmoneyDailyCollector()
+    swing_paths = SwingPaths(
+        watchlist=arguments.swing_watchlist,
+        strategy=arguments.swing_strategy,
+        daily_history=arguments.swing_daily_history,
+        portfolio_snapshot=arguments.swing_portfolio,
+        trades=arguments.swing_trades,
+        alerts=arguments.swing_alerts,
+        metadata=arguments.metadata,
+        calendar=arguments.calendar,
+        backtests=arguments.swing_backtests,
+    )
     server = create_server(
         host=arguments.host,
         port=arguments.port,
@@ -66,6 +89,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         metadata_path=arguments.metadata,
         valuation_path=arguments.valuation,
         calendar_path=arguments.calendar,
+        swing_paths=swing_paths,
+        swing_collector=swing_collector,
     )
     host, port = server.server_address
     print(f"monitor-only: http://{host}:{port}/")

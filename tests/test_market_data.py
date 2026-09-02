@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from urllib.request import Request
 
-from etf_rotation.cli import PROJECT_ROOT, RUNTIME_ROOT, _parser
+from etf_rotation.cli import PROJECT_ROOT, RUNTIME_ROOT, _parser, main
 from etf_rotation.etf_metadata import EtfMetadata, IndexMetadata, TradingMetadata
 from etf_rotation.history_migration import rebuild_history
 from etf_rotation.market_data import (
@@ -51,6 +51,94 @@ TRADING = TradingMetadata("SSE", "DOMESTIC_EQUITY_ETF", False, 1, 100, 0.001, 0.
 
 
 class CliPathTests(unittest.TestCase):
+    def test_monitor_cli_has_independent_swing_paths(self) -> None:
+        arguments = _parser().parse_args(["monitor"])
+        self.assertEqual(arguments.swing_watchlist.name, "watchlist.json")
+        self.assertEqual(arguments.swing_strategy.name, "strategy.json")
+        self.assertEqual(
+            arguments.swing_daily_history.parts[-2:],
+            ("swing", "daily_quotes.jsonl"),
+        )
+        self.assertEqual(
+            arguments.swing_portfolio.parts[-2:],
+            ("swing", "portfolio.json"),
+        )
+        self.assertEqual(
+            arguments.swing_trades.parts[-2:],
+            ("swing", "trades.jsonl"),
+        )
+        self.assertEqual(
+            arguments.swing_alerts.parts[-2:],
+            ("swing", "alerts.jsonl"),
+        )
+        self.assertEqual(arguments.swing_backtests.parts[-2:], ("swing", "backtests"))
+
+    def test_no_collect_disables_both_network_collectors(self) -> None:
+        class FakeServer:
+            server_address = ("127.0.0.1", 8765)
+
+            def serve_forever(self) -> None:
+                raise KeyboardInterrupt
+
+            def server_close(self) -> None:
+                pass
+
+        with (
+            patch("etf_rotation.t_web.create_server", return_value=FakeServer()) as create,
+            patch("etf_rotation.quote_collector.Trends2QuoteCollector") as t_collector,
+            patch("etf_rotation.swing_collector.EastmoneyDailyCollector") as swing_collector,
+        ):
+            self.assertEqual(main(["monitor", "--no-collect"]), 0)
+
+        t_collector.assert_not_called()
+        swing_collector.assert_not_called()
+        keywords = create.call_args.kwargs
+        self.assertIsNone(keywords["collector"])
+        self.assertIsNone(keywords["swing_collector"])
+        self.assertEqual(keywords["swing_paths"].watchlist.name, "watchlist.json")
+
+    def test_monitor_wires_daily_collector_and_all_explicit_swing_paths(self) -> None:
+        class FakeServer:
+            server_address = ("127.0.0.1", 8765)
+
+            def serve_forever(self) -> None:
+                raise KeyboardInterrupt
+
+            def server_close(self) -> None:
+                pass
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            values = [root / name for name in (
+                "watch.json", "strategy.json", "daily.jsonl", "portfolio.json",
+                "trades.jsonl", "alerts.jsonl", "backtests",
+            )]
+            with (
+                patch("etf_rotation.t_web.create_server", return_value=FakeServer()) as create,
+                patch("etf_rotation.quote_collector.Trends2QuoteCollector") as t_collector,
+                patch("etf_rotation.swing_collector.EastmoneyDailyCollector") as daily_collector,
+            ):
+                self.assertEqual(main([
+                    "monitor",
+                    "--swing-watchlist", str(values[0]),
+                    "--swing-strategy", str(values[1]),
+                    "--swing-daily-history", str(values[2]),
+                    "--swing-portfolio", str(values[3]),
+                    "--swing-trades", str(values[4]),
+                    "--swing-alerts", str(values[5]),
+                    "--swing-backtests", str(values[6]),
+                ]), 0)
+
+        keywords = create.call_args.kwargs
+        self.assertIs(keywords["collector"], t_collector.return_value)
+        self.assertIs(keywords["swing_collector"], daily_collector.return_value)
+        paths = keywords["swing_paths"]
+        self.assertEqual(
+            (paths.watchlist, paths.strategy, paths.daily_history,
+             paths.portfolio_snapshot, paths.trades, paths.alerts, paths.backtests),
+            tuple(values),
+        )
+
     def test_monitor_defaults_to_one_minute_refresh_interval(self) -> None:
         arguments = _parser().parse_args(["monitor", "--no-collect"])
         self.assertEqual(arguments.refresh_interval, 60.0)

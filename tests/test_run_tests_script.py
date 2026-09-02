@@ -9,6 +9,42 @@ import unittest
 
 
 class RunTestsScriptTests(unittest.TestCase):
+    def test_start_monitor_passes_all_swing_paths_to_same_process(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "scripts" / "start-monitor.ps1").read_text(encoding="utf-8")
+        for argument in (
+            "--swing-watchlist",
+            "--swing-strategy",
+            "--swing-daily-history",
+            "--swing-portfolio",
+            "--swing-trades",
+            "--swing-alerts",
+            "--swing-backtests",
+        ):
+            self.assertIn(argument, script)
+        self.assertIn("var\\swing", script)
+        self.assertEqual(script.count("Start-Process"), 1)
+
+    def test_all_swing_runtime_paths_are_git_ignored(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [
+                "git",
+                "check-ignore",
+                "var/swing/daily_quotes.jsonl",
+                "var/swing/portfolio.json",
+                "var/swing/trades.jsonl",
+                "var/swing/alerts.jsonl",
+                "var/swing/backtests/result.json",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 5)
+
     def test_start_monitor_quotes_each_argument_for_windows_process_launch(self) -> None:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         self.assertIsNotNone(powershell, "PowerShell is required to test argument quoting")

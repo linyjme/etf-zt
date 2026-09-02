@@ -39,7 +39,9 @@ function ConvertTo-WindowsCommandLineArgument {
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $runtimeRoot = Join-Path $projectRoot 'var\monitor'
+$swingRuntimeRoot = Join-Path $projectRoot 'var\swing'
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $swingRuntimeRoot 'backtests') -Force | Out-Null
 $pythonCommand = $null
 $pythonArguments = @()
 $probeMarker = "__ETF_ROTATION_MONITOR_PYTHON_312_$([guid]::NewGuid().ToString('N'))__"
@@ -85,6 +87,13 @@ $arguments = @($pythonArguments) + @(
     '--metadata', (Join-Path $projectRoot 'data\monitor\etf_metadata.json'),
     '--valuation', (Join-Path $projectRoot 'data\monitor\valuation.json'),
     '--calendar', (Join-Path $projectRoot 'data\monitor\market_calendar.json'),
+    '--swing-watchlist', (Join-Path $projectRoot 'data\swing\watchlist.json'),
+    '--swing-strategy', (Join-Path $projectRoot 'data\swing\strategy.json'),
+    '--swing-daily-history', (Join-Path $swingRuntimeRoot 'daily_quotes.jsonl'),
+    '--swing-portfolio', (Join-Path $swingRuntimeRoot 'portfolio.json'),
+    '--swing-trades', (Join-Path $swingRuntimeRoot 'trades.jsonl'),
+    '--swing-alerts', (Join-Path $swingRuntimeRoot 'alerts.jsonl'),
+    '--swing-backtests', (Join-Path $swingRuntimeRoot 'backtests'),
     '--refresh-interval', '60',
     '--host', '127.0.0.1',
     '--port', '8765'
