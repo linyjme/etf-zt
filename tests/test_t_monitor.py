@@ -953,6 +953,9 @@ class MonitorWebTests(unittest.TestCase):
         self.assertIn('href="/swing"', PAGE)
         self.assertIn("本地做T监控", PAGE)
         self.assertIn("候选观察 · 增量行情 · 只读交易", PAGE)
+        self.assertIn('nav[aria-label="监控模式"]{display:flex;gap:8px', PAGE)
+        self.assertIn('nav[aria-label="监控模式"] a[aria-current=page]', PAGE)
+        self.assertNotIn('</a> · <a href="/swing">', PAGE)
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
