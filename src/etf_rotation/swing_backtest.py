@@ -455,6 +455,8 @@ class _ExecutionDayLiquidity:
     execution_date: date
     capacity: int
     remaining: int
+    pending_gap_stop: bool = False
+    pending_gap_reference: float | None = None
 
     def consume(self, shares: int) -> None:
         if shares < 0 or shares > self.remaining:
@@ -589,6 +591,11 @@ class BacktestAccount:
             * self.config.max_volume_participation,
             self.trading.lot_size,
         )
+        physical_capacity = _lot_floor(
+            bar.volume * self.trading.volume_unit_shares,
+            self.trading.lot_size,
+        )
+        capacity = min(capacity, physical_capacity)
         return _ExecutionDayLiquidity(
             execution_date=bar.trading_date,
             capacity=capacity,
@@ -670,6 +677,11 @@ class BacktestAccount:
                 * self.config.max_volume_participation,
                 self.trading.lot_size,
             )
+            physical_capacity = _lot_floor(
+                bar.volume * self.trading.volume_unit_shares,
+                self.trading.lot_size,
+            )
+            capacity = min(capacity, physical_capacity)
         limit_blocked = (
             self._limit_locked(bar, side)
             if execution_phase == "INTRADAY_STOP"
@@ -847,6 +859,9 @@ class BacktestAccount:
         execution_stop = self._effective_protective_stop(decision, bar)
         if execution_stop is None or bar.open > execution_stop:
             return False
+        if liquidity is not None:
+            liquidity.pending_gap_stop = True
+            liquidity.pending_gap_reference = bar.open
         protective = self._protective_decision(decision, execution_stop)
         gap = bar.open < execution_stop
         self.execute(
@@ -873,6 +888,28 @@ class BacktestAccount:
         if self.shares <= 0:
             return False
         execution_stop = self._effective_protective_stop(decision, bar)
+        if liquidity is not None and liquidity.pending_gap_stop:
+            if self._limit_locked(bar, "SELL"):
+                return True
+            reference = liquidity.pending_gap_reference
+            if reference is None:
+                raise SwingBacktestError(
+                    "pending gap stop is missing its reference price",
+                )
+            protective = self._protective_decision(
+                decision,
+                execution_stop if execution_stop is not None else reference,
+            )
+            self.execute(
+                protective,
+                bar,
+                execution_index=execution_index,
+                raw_reference_price=reference,
+                forced_reason="GAP_THROUGH_STOP",
+                execution_phase="INTRADAY_STOP",
+                liquidity=liquidity,
+            )
+            return True
         if (
             execution_stop is None
             or bar.low > execution_stop
@@ -1347,8 +1384,10 @@ class SwingBacktester:
             "intraday_turnaround": self.trading.intraday_turnaround,
             "lot_size": self.trading.lot_size,
             "liquidity_budget_policy": (
-                "single_shared_A_B_C_budget_from_prior_completed_day_volume;"
-                "current_day_volume_magnitude_not_used_for_sizing"
+                "single_shared_A_B_C_budget_is_min_of_prior_completed_day_"
+                "participation_capacity_and_execution_day_total_physical_"
+                "shares_lot_floored;current_volume_only_reduces_fills_and_"
+                "never_changes_signal_or_price"
             ),
             "mark_to_market_policy": (
                 "final_raw_close_without_forced_liquidation"
@@ -1387,11 +1426,14 @@ class SwingBacktester:
             ),
             "stop_execution_policy": (
                 "preexisting_open_le_stop_first_and_suppress_stale_signal;"
-                "after_formal_open_order_intraday_low_le_current_stop_at_stop"
+                "rejected_or_partial_open_stop_remains_pending_and_on_unlock_"
+                "retries_at_adverse_open_with_GAP_THROUGH_STOP;otherwise_after_"
+                "formal_open_order_intraday_low_le_stop_le_high_at_stop"
             ),
             "volume_policy": (
                 "prior_completed_bar_volume_is_audited_liquidity_proxy;"
-                "metadata_units_participation_then_lot_floor"
+                "execution_day_volume_is_conservative_ex_post_physical_cap_"
+                "only;metadata_units_then_lot_floor"
             ),
             "volume_unit_shares": self.trading.volume_unit_shares,
         }
@@ -1757,6 +1799,11 @@ class SwingBacktester:
                 * self.config.max_volume_participation,
                 self.trading.lot_size,
             )
+            physical_capacity = _lot_floor(
+                bar.volume * self.trading.volume_unit_shares,
+                self.trading.lot_size,
+            )
+            capacity = min(capacity, physical_capacity)
             maximum = min(maximum, capacity)
             if maximum <= 0:
                 continue

@@ -379,21 +379,75 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
         self.assertEqual(result.open_position_shares, 200)
         self.assertEqual(result.rejections[-1].reason, "VOLUME_PARTICIPATION")
 
-    def test_open_limit_stop_retries_intraday_with_remaining_budget(self) -> None:
+    def test_pending_gap_stop_retries_unlock_at_adverse_open_price(self) -> None:
+        for high in (90.0, 100.0):
+            with self.subTest(high=high):
+                bars = list(swing_strategy_bars(72, pattern="rising"))
+                lower = round(
+                    bars[70].close
+                    * (1.0 - self.trading.price_limit_pct), 3,
+                )
+                bars[70] = replace(
+                    bars[70], volume=10.0,
+                    amount=(
+                        bars[70].close * 10.0
+                        * self.trading.volume_unit_shares
+                    ),
+                )
+                close = 89.0 if high < 99.0 else 95.0
+                bars[71] = replace(
+                    bars[71], open=lower, high=high, low=lower, close=close,
+                    previous_close=bars[70].close,
+                    amount=(
+                        close * bars[71].volume
+                        * self.trading.volume_unit_shares
+                    ),
+                    adjusted_open=lower, adjusted_high=high,
+                    adjusted_low=lower, adjusted_close=close,
+                )
+                calls = 0
+
+                def evaluate(signal_bars, config, context):
+                    nonlocal calls
+                    calls += 1
+                    return _decision(
+                        SwingState.TRIAL_ENTRY_CANDIDATE
+                        if calls == 1 else SwingState.ADD_CANDIDATE,
+                        signal_bars[-1].trading_date,
+                        bars[69 + calls].trading_date,
+                        shares=100,
+                        stop=100.0 if calls == 1 else 99.0,
+                    )
+
+                with patch(
+                    "etf_rotation.swing_backtest.evaluate_swing",
+                    side_effect=evaluate,
+                ):
+                    result = self.backtester.run_symbol(
+                        tuple(bars), 100_000.0,
+                    )
+
+                self.assertEqual(
+                    [trade.side for trade in result.trades], ["BUY", "SELL"],
+                )
+                self.assertEqual(result.trades[-1].reason, "GAP_THROUGH_STOP")
+                self.assertEqual(result.trades[-1].raw_reference_price, lower)
+                self.assertEqual(result.open_position_shares, 0)
+                self.assertEqual(result.rejections[-1].reason, "LIMIT_LOCKED")
+
+    def test_current_physical_volume_only_reduces_shared_capacity(self) -> None:
         bars = list(swing_strategy_bars(72, pattern="rising"))
-        lower = round(
-            bars[70].close * (1.0 - self.trading.price_limit_pct), 3,
-        )
-        bars[70] = replace(
-            bars[70], volume=10.0,
-            amount=bars[70].close * 10.0 * self.trading.volume_unit_shares,
-        )
         bars[71] = replace(
-            bars[71], open=lower, high=100.0, low=lower, close=95.0,
+            bars[71], open=105.0, high=106.0, low=98.0, close=104.0,
             previous_close=bars[70].close,
-            amount=95.0 * bars[71].volume * self.trading.volume_unit_shares,
-            adjusted_open=lower, adjusted_high=100.0,
-            adjusted_low=lower, adjusted_close=95.0,
+            volume=1.0,
+            amount=104.0 * self.trading.volume_unit_shares,
+            adjusted_open=105.0, adjusted_high=106.0,
+            adjusted_low=98.0, adjusted_close=104.0,
+        )
+        config = replace(
+            self.config, risk_per_trade=0.02, max_portfolio_risk=0.02,
+            max_symbol_weight=1.0, max_equity_weight=1.0,
         )
         calls = 0
 
@@ -406,16 +460,36 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
                 signal_bars[-1].trading_date,
                 bars[69 + calls].trading_date,
                 shares=100,
-                stop=100.0 if calls == 1 else 99.0,
+                stop=99.0,
             )
 
         with patch("etf_rotation.swing_backtest.evaluate_swing", side_effect=evaluate):
-            result = self.backtester.run_symbol(tuple(bars), 100_000.0)
+            result = SwingBacktester(config, self.trading).run_symbol(
+                tuple(bars), 100_000.0,
+            )
 
-        self.assertEqual([trade.side for trade in result.trades], ["BUY", "SELL"])
-        self.assertEqual(result.trades[-1].reason, "STOP_EXIT")
-        self.assertEqual(result.open_position_shares, 0)
-        self.assertEqual(result.rejections[-1].reason, "LIMIT_LOCKED")
+        execution_date = bars[71].trading_date
+        day_fills = tuple(
+            trade for trade in result.trades
+            if trade.execution_date == execution_date
+        )
+        self.assertEqual(sum(trade.shares for trade in day_fills), 100)
+        self.assertEqual(self.trading.volume_unit_shares * bars[71].volume, 100)
+        self.assertEqual(result.rejections[-1].reason, "VOLUME_PARTICIPATION")
+
+        benchmark_bars = list(swing_strategy_bars(72, pattern="falling_ma60"))
+        benchmark_bars[70] = replace(
+            benchmark_bars[70], volume=1.0,
+            amount=(
+                benchmark_bars[70].close
+                * self.trading.volume_unit_shares
+            ),
+        )
+        benchmark = self.backtester.run_symbol(
+            tuple(benchmark_bars), 100_000.0,
+        ).benchmark
+        self.assertEqual(benchmark.start_date, benchmark_bars[70].trading_date)
+        self.assertEqual(benchmark.shares, 100)
 
     def test_same_day_new_entry_stop_obeys_turnaround_metadata(self) -> None:
         bars = list(swing_strategy_bars(71, pattern="rising"))
@@ -1040,8 +1114,10 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
             "intraday_turnaround": False,
             "lot_size": 100,
             "liquidity_budget_policy": (
-                "single_shared_A_B_C_budget_from_prior_completed_day_volume;"
-                "current_day_volume_magnitude_not_used_for_sizing"
+                "single_shared_A_B_C_budget_is_min_of_prior_completed_day_"
+                "participation_capacity_and_execution_day_total_physical_"
+                "shares_lot_floored;current_volume_only_reduces_fills_and_"
+                "never_changes_signal_or_price"
             ),
             "mark_to_market_policy": (
                 "final_raw_close_without_forced_liquidation"
@@ -1080,11 +1156,14 @@ class SingleSymbolSwingBacktestTests(unittest.TestCase):
             ),
             "stop_execution_policy": (
                 "preexisting_open_le_stop_first_and_suppress_stale_signal;"
-                "after_formal_open_order_intraday_low_le_current_stop_at_stop"
+                "rejected_or_partial_open_stop_remains_pending_and_on_unlock_"
+                "retries_at_adverse_open_with_GAP_THROUGH_STOP;otherwise_after_"
+                "formal_open_order_intraday_low_le_stop_le_high_at_stop"
             ),
             "volume_policy": (
                 "prior_completed_bar_volume_is_audited_liquidity_proxy;"
-                "metadata_units_participation_then_lot_floor"
+                "execution_day_volume_is_conservative_ex_post_physical_cap_"
+                "only;metadata_units_then_lot_floor"
             ),
             "volume_unit_shares": 100,
         })
