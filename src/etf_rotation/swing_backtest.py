@@ -2410,18 +2410,12 @@ class SwingBacktester:
         operation: Any,
         mark_prices: Mapping[str, float] | None = None,
     ) -> tuple[float, object]:
-        other_market = sum(
-            item.shares * (
-                item._last_mark_price
-                if mark_prices is None else mark_prices[symbol]
-            )
-            for symbol, item in accounts.items() if item is not account
-        )
-        virtual_before = shared_cash + other_market
-        account.cash = virtual_before
+        del accounts, mark_prices
+        account.cash = shared_cash
         result = operation()
-        delta = account.cash - virtual_before
-        return shared_cash + delta, result
+        if account.cash < -1e-9:
+            raise SwingBacktestError("shared cash became negative")
+        return max(0.0, account.cash), result
 
     @staticmethod
     def _cached_portfolio_decision(

@@ -262,6 +262,64 @@ class PortfolioSwingBacktestTests(unittest.TestCase):
             config.max_equity_weight + 1e-12,
         )
 
+    def test_shared_cash_never_borrows_other_position_value_for_sell_fee(self) -> None:
+        bars = swing_strategy_bars(3, pattern="rising")
+
+        def seeded(cash: float) -> tuple[BacktestAccount, BacktestAccount]:
+            selling = BacktestAccount(
+                max(cash, 0.01), self.trading, self.config,
+                buy_fee_rate=0.0, sell_fee_rate=0.0,
+                minimum_fee=5.0, slippage_rate=0.0,
+                half_spread_ticks=0.0,
+            )
+            selling.cash = cash
+            selling.shares = 100
+            selling._lots = [(0, 100)]
+            selling._entry_date = bars[0].trading_date
+            selling._entry_index = 0
+            selling._last_mark_price = 0.008
+            selling._last_adjusted_close = 0.008
+            other = BacktestAccount(0.01, self.trading, self.config)
+            other.shares = 100_000
+            other._last_mark_price = 100.0
+            other._last_adjusted_close = 100.0
+            return selling, other
+
+        bar = replace(
+            bars[2], open=0.008, high=0.008, low=0.008, close=0.008,
+            previous_close=0.008, adjusted_open=0.008,
+            adjusted_high=0.008, adjusted_low=0.008, adjusted_close=0.008,
+        )
+        decision = _decision(
+            SwingState.EXIT_CANDIDATE,
+            bars[1].trading_date,
+            bars[2].trading_date,
+            shares=100,
+            stop=None,
+        )
+
+        blocked, other = seeded(0.0)
+        shared, fill = self.backtester._execute_with_shared_cash(
+            blocked, {"510300": blocked, "510500": other}, 0.0,
+            lambda: blocked.execute(decision, bar, execution_index=2),
+        )
+        self.assertIsNone(fill)
+        self.assertEqual(shared, 0.0)
+        self.assertEqual(blocked.shares, 100)
+        self.assertEqual(
+            blocked.rejections[-1].reason,
+            "INSUFFICIENT_CASH_FOR_SELL_FEE",
+        )
+
+        allowed, other = seeded(10.0)
+        shared, fill = self.backtester._execute_with_shared_cash(
+            allowed, {"510300": allowed, "510500": other}, 10.0,
+            lambda: allowed.execute(decision, bar, execution_index=2),
+        )
+        self.assertIsNotNone(fill)
+        self.assertAlmostEqual(shared, 5.8)
+        self.assertEqual(allowed.shares, 0)
+
     def test_common_range_and_equal_weight_baseline_use_actual_shared_cash(self) -> None:
         histories = self.histories(95)
         histories["510500"] = histories["510500"][5:]

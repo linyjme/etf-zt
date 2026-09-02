@@ -449,6 +449,28 @@ class SwingService:
             "initial_cash": 100_000.0,
         }
         assumptions_digest = self._canonical_digest(execution_contract)
+        strategy_parameters = {
+            field: getattr(strategy, field)
+            for field in sorted(strategy.__dataclass_fields__)
+        }
+        first_symbol = selected_symbols[0]
+        result_assumptions = dict(SwingBacktester(
+            strategy, metadata[first_symbol].trading,
+        )._execution_assumptions())
+        unavailable_result_assumptions = dict(result_assumptions)
+        if scope == "portfolio":
+            unavailable_result_assumptions["portfolio_cash_model"] = (
+                "ONE_SHARED_CASH_BALANCE"
+            )
+            result_assumptions.update({
+                "portfolio_cash_model": "ONE_SHARED_CASH_BALANCE",
+                "action_priority": "EXIT,REDUCE,ADD,TRIAL_ENTRY",
+                "common_range_policy": "INTERSECTION_AFTER_WARMUP",
+                "trading_metadata_by_symbol": {
+                    item: metadata[item].trading.to_dict()
+                    for item in selected_symbols
+                },
+            })
         cache_key = {
             "cache_schema_version": _BACKTEST_CACHE_SCHEMA_VERSION,
             "engine_version": _BACKTEST_ENGINE_VERSION,
@@ -460,6 +482,13 @@ class SwingService:
             ),
             "history_digest": history_digest,
             "execution_assumptions_digest": assumptions_digest,
+            "strategy_parameters_digest": self._canonical_digest(
+                strategy_parameters,
+            ),
+            "result_assumptions_digests": sorted({
+                self._canonical_digest(result_assumptions),
+                self._canonical_digest(unavailable_result_assumptions),
+            }),
         }
         cache_name = self._canonical_digest(cache_key) + ".json"
         cache_path = self.paths.backtests / cache_name
@@ -666,13 +695,55 @@ class SwingService:
         }
         if set(result["strategy_parameters"]) != strategy_keys:
             return False
+        try:
+            parsed_strategy = SwingStrategyConfig(
+                **dict(result["strategy_parameters"]),
+            )
+        except (TypeError, ValueError):
+            return False
+        canonical_strategy = {
+            field: getattr(parsed_strategy, field) for field in strategy_keys
+        }
+        if any(
+            type(result["strategy_parameters"][field])
+            is not type(canonical_strategy[field])
+            or result["strategy_parameters"][field] != canonical_strategy[field]
+            for field in strategy_keys
+        ):
+            return False
+        if (
+            cls._canonical_digest(result["strategy_parameters"])
+            != cache_key.get("strategy_parameters_digest")
+            or result.get("strategy_version") != cache_key.get("strategy_version")
+            or type(result.get("strategy_version")) is not str
+            or cls._canonical_digest(result["execution_assumptions"])
+            not in cache_key.get("result_assumptions_digests", ())
+        ):
+            return False
         expected_assumptions = set(assumption_keys)
         if cache_key.get("scope") == "portfolio":
-            expected_assumptions.update({
+            full_portfolio_assumptions = expected_assumptions | {
                 "portfolio_cash_model", "action_priority", "common_range_policy",
                 "trading_metadata_by_symbol",
-            })
-        if set(result["execution_assumptions"]) != expected_assumptions:
+            }
+            unavailable_portfolio_assumptions = expected_assumptions | {
+                "portfolio_cash_model",
+            }
+            if set(result["execution_assumptions"]) not in (
+                full_portfolio_assumptions,
+                unavailable_portfolio_assumptions,
+            ):
+                return False
+        elif set(result["execution_assumptions"]) != expected_assumptions:
+            return False
+        for key in ("initial_cash", "cash"):
+            if not cls._strict_number(result.get(key), nonnegative=True):
+                return False
+        if result.get("initial_cash") != 100_000.0:
+            return False
+        if not cls._strict_optional_number(
+            result.get("ending_equity"), nonnegative=True,
+        ) or not cls._strict_optional_number(result.get("outperformance")):
             return False
         if any(
             type(result.get(key)) is not int
@@ -699,6 +770,14 @@ class SwingService:
             return False
         if not cls._valid_record_list(result["round_trips"], round_trip_keys):
             return False
+        if not cls._valid_trade_records(result["trades"]):
+            return False
+        if not cls._valid_rejection_records(result["rejections"]):
+            return False
+        if not cls._valid_round_trip_records(result["round_trips"]):
+            return False
+        if result["completed_round_trips"] != len(result["round_trips"]):
+            return False
         metrics = result.get("metrics")
         if metrics is not None and (
             type(metrics) is not dict
@@ -712,6 +791,21 @@ class SwingService:
             or type(metrics.get("rejection_counts")) is not dict
         ):
             return False
+        if metrics is not None and not cls._valid_metrics(metrics):
+            return False
+        status = result["status"]
+        if status == "OK" and (
+            metrics is None
+            or result.get("ending_equity") is None
+            or result.get("outperformance") is None
+        ):
+            return False
+        if status == "DATA_UNAVAILABLE" and (
+            metrics is not None
+            or result.get("ending_equity") is not None
+            or result.get("outperformance") is not None
+        ):
+            return False
         if cache_key.get("scope") == "symbol":
             benchmark = result.get("benchmark")
             if benchmark is not None and (
@@ -723,11 +817,22 @@ class SwingService:
             ):
                 return False
             conventions = result.get("metric_conventions")
-            return type(conventions) is dict and set(conventions) == {
+            if not (
+                cls._strict_date_text(result.get("start_date"))
+                and cls._strict_date_text(result.get("end_date"))
+                and result["start_date"] <= result["end_date"]
+                and type(conventions) is dict and set(conventions) == {
                 "annualization_sessions", "sharpe_frequency",
                 "sharpe_risk_free_rate", "sharpe_zero_variance",
                 "drawdown_sign", "holding_days",
-            } and type(result.get("open_position_shares")) is int
+                }
+                and type(result.get("open_position_shares")) is int
+                and result["open_position_shares"] >= 0
+            ):
+                return False
+            if benchmark is not None and not cls._valid_symbol_benchmark(benchmark):
+                return False
+            return not (status == "OK" and benchmark is None)
         baseline = result.get("baseline")
         if baseline is not None and (
             type(baseline) is not dict
@@ -740,18 +845,224 @@ class SwingService:
             or type(baseline.get("shares_by_symbol")) is not dict
         ):
             return False
+        if baseline is not None and not cls._valid_portfolio_benchmark(baseline):
+            return False
         for key in (
             "rejection_counts", "open_position_shares", "baseline_weights",
         ):
             if type(result.get(key)) is not dict:
                 return False
+        symbols = result.get("symbols")
+        if (
+            type(symbols) is not list or not symbols
+            or symbols != sorted(symbols) or len(set(symbols)) != len(symbols)
+            or any(type(item) is not str or len(item) != 6 or not item.isascii()
+                   or not item.isdigit() for item in symbols)
+            or set(result["open_position_shares"]) != set(symbols)
+            or any(type(value) is not int or value < 0
+                   for value in result["open_position_shares"].values())
+            or any(not cls._strict_number(value, nonnegative=True)
+                   for value in result["baseline_weights"].values())
+            or any(type(value) is not int or value < 0
+                   for value in result["rejection_counts"].values())
+            or result["rejection_counts"] != cls._reason_counts(
+                result["rejections"],
+            )
+            or not cls._strict_optional_number(
+                result.get("max_equity_weight"), nonnegative=True,
+            )
+            or not cls._strict_optional_number(
+                result.get("max_planned_risk"), nonnegative=True,
+            )
+        ):
+            return False
+        for key in ("common_start_date", "common_end_date"):
+            if not cls._strict_date_text(result.get(key), optional=True):
+                return False
+        if (
+            (result["common_start_date"] is None)
+            != (result["common_end_date"] is None)
+            or (
+                result["common_start_date"] is not None
+                and result["common_start_date"] > result["common_end_date"]
+            )
+            or type(result.get("event_dates")) is not list
+            or any(not cls._strict_date_text(item) for item in result["event_dates"])
+            or result["event_dates"] != sorted(set(result["event_dates"]))
+            or (status == "OK" and baseline is None)
+        ):
+            return False
         return cls._valid_walk_forward(result.get("walk_forward"), metrics_keys={
             "cumulative_return", "annualized_return", "maximum_drawdown",
             "calmar", "sharpe", "win_rate", "average_profit", "average_loss",
             "payoff_ratio", "average_holding_days", "utilization",
             "longest_losing_streak", "fees", "spread_cost", "slippage",
             "rejection_counts",
-        })
+        }, strategy=parsed_strategy)
+
+    @staticmethod
+    def _strict_number(value: object, *, nonnegative: bool = False) -> bool:
+        return (
+            type(value) in (int, float)
+            and math.isfinite(float(value))
+            and (not nonnegative or float(value) >= 0.0)
+        )
+
+    @classmethod
+    def _strict_optional_number(
+        cls, value: object, *, nonnegative: bool = False,
+    ) -> bool:
+        return value is None or cls._strict_number(
+            value, nonnegative=nonnegative,
+        )
+
+    @staticmethod
+    def _strict_date_text(value: object, *, optional: bool = False) -> bool:
+        if value is None:
+            return optional
+        if type(value) is not str:
+            return False
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError:
+            return False
+        return parsed.isoformat() == value
+
+    @classmethod
+    def _valid_trade_records(cls, records: object) -> bool:
+        if type(records) is not list:
+            return False
+        for item in records:
+            if (
+                type(item.get("symbol")) is not str
+                or len(item["symbol"]) != 6 or not item["symbol"].isascii()
+                or not item["symbol"].isdigit()
+                or item.get("side") not in {"BUY", "SELL"}
+                or type(item.get("requested_shares")) is not int
+                or type(item.get("shares")) is not int
+                or item["requested_shares"] <= 0
+                or item["shares"] <= 0
+                or item["shares"] > item["requested_shares"]
+                or not cls._strict_date_text(item.get("signal_date"))
+                or not cls._strict_date_text(item.get("execution_date"))
+                or item["signal_date"] >= item["execution_date"]
+                or any(not cls._strict_number(item.get(key), nonnegative=True)
+                       for key in ("fee", "spread_cost", "slippage"))
+                or any(not cls._strict_number(item.get(key))
+                       or float(item[key]) <= 0.0
+                       for key in ("raw_reference_price", "fill_price"))
+                or not cls._strict_optional_number(
+                    item.get("planned_stop"), nonnegative=True,
+                )
+                or type(item.get("reason")) is not str or not item["reason"]
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _valid_rejection_records(cls, records: object) -> bool:
+        if type(records) is not list:
+            return False
+        for item in records:
+            if (
+                type(item.get("symbol")) is not str
+                or item.get("side") not in {"BUY", "SELL"}
+                or type(item.get("requested_shares")) is not int
+                or type(item.get("rejected_shares")) is not int
+                or item["requested_shares"] <= 0 or item["rejected_shares"] < 0
+                or not cls._strict_date_text(item.get("signal_date"))
+                or not cls._strict_date_text(item.get("execution_date"))
+                or item["signal_date"] >= item["execution_date"]
+                or type(item.get("reason")) is not str or not item["reason"]
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _valid_round_trip_records(cls, records: object) -> bool:
+        if type(records) is not list:
+            return False
+        for item in records:
+            if (
+                not cls._strict_date_text(item.get("entry_date"))
+                or not cls._strict_date_text(item.get("exit_date"))
+                or item["entry_date"] > item["exit_date"]
+                or not cls._strict_number(item.get("net_pnl"))
+                or type(item.get("holding_days")) is not int
+                or item["holding_days"] < 0
+            ):
+                return False
+            if "symbol" in item and (
+                type(item["symbol"]) is not str or len(item["symbol"]) != 6
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _valid_metrics(cls, metrics: Mapping[str, object]) -> bool:
+        optional = {
+            "annualized_return", "calmar", "sharpe", "win_rate",
+            "average_profit", "average_loss", "payoff_ratio",
+            "average_holding_days", "longest_losing_streak",
+        }
+        numeric = set(metrics) - {"rejection_counts"}
+        for key in numeric:
+            value = metrics[key]
+            if key == "longest_losing_streak":
+                if value is not None and (type(value) is not int or value < 0):
+                    return False
+            elif key in optional:
+                if not cls._strict_optional_number(value):
+                    return False
+            elif not cls._strict_number(value):
+                return False
+        return all(
+            type(key) is str and type(value) is int and value >= 0
+            for key, value in metrics["rejection_counts"].items()
+        )
+
+    @classmethod
+    def _valid_symbol_benchmark(cls, value: Mapping[str, object]) -> bool:
+        return (
+            cls._strict_date_text(value.get("start_date"))
+            and type(value.get("shares")) is int and value["shares"] > 0
+            and all(cls._strict_number(value.get(key)) for key in (
+                "cash", "ending_equity", "cumulative_return", "fee",
+                "spread_cost", "slippage",
+            ))
+            and value["cash"] >= 0 and value["ending_equity"] >= 0
+            and value["fee"] >= 0 and value["spread_cost"] >= 0
+            and value["slippage"] >= 0
+        )
+
+    @classmethod
+    def _valid_portfolio_benchmark(cls, value: Mapping[str, object]) -> bool:
+        return (
+            value.get("status") in {"OK", "INSUFFICIENT_SAMPLE"}
+            and type(value.get("reason")) in (str, type(None))
+            and cls._strict_number(value.get("initial_cash"), nonnegative=True)
+            and cls._strict_number(value.get("cash"), nonnegative=True)
+            and cls._strict_optional_number(
+                value.get("ending_equity"), nonnegative=True,
+            )
+            and cls._strict_optional_number(value.get("cumulative_return"))
+            and all(cls._strict_number(value.get(key), nonnegative=True) for key in (
+                "fees", "spread_cost", "slippage",
+            ))
+            and cls._valid_trade_records(value.get("trades"))
+            and type(value.get("shares_by_symbol")) is dict
+            and all(type(shares) is int and shares >= 0
+                    for shares in value["shares_by_symbol"].values())
+        )
+
+    @staticmethod
+    def _reason_counts(records: list[Mapping[str, object]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for item in records:
+            reason = item["reason"]
+            assert type(reason) is str
+            counts[reason] = counts.get(reason, 0) + 1
+        return dict(sorted(counts.items()))
 
     @classmethod
     def _valid_record_list(cls, value: object, keys: set[str]) -> bool:
@@ -762,7 +1073,11 @@ class SwingService:
 
     @classmethod
     def _valid_walk_forward(
-        cls, value: object, *, metrics_keys: set[str],
+        cls,
+        value: object,
+        *,
+        metrics_keys: set[str],
+        strategy: SwingStrategyConfig,
     ) -> bool:
         if type(value) is not dict or set(value) != {
             "status", "reason", "train_days", "test_days", "step_days",
@@ -773,7 +1088,34 @@ class SwingService:
             "status", "reason", "metrics", "cumulative_return",
             "maximum_drawdown", "completed_round_trips", "outperformance",
         }
-        for variant in value["variants"]:
+        if any(
+            type(value.get(key)) is not int or value[key] <= 0
+            for key in ("train_days", "test_days", "step_days")
+        ) or (
+            value["train_days"] != strategy.walk_forward_train_days
+            or value["test_days"] != strategy.walk_forward_test_days
+            or value["step_days"] != strategy.walk_forward_step_days
+            or value.get("selected_variant") is not None
+        ):
+            return False
+        expected_parameters = [
+            {
+                "short_ma_days": short,
+                "long_ma_days": long,
+                "initial_stop_atr": initial,
+                "trailing_stop_atr": trailing,
+            }
+            for short in (18, 20, 22)
+            for long in (55, 60, 65)
+            for initial in (1.75, 2.0, 2.25)
+            for trailing in (2.75, 3.0, 3.25)
+        ]
+        if value.get("status") == "OK":
+            if len(value["variants"]) != 81:
+                return False
+        elif value["variants"]:
+            return False
+        for variant_index, variant in enumerate(value["variants"]):
             if type(variant) is not dict or set(variant) != {
                 "parameters", "folds", "stability",
             }:
@@ -792,12 +1134,45 @@ class SwingService:
                 or type(variant.get("folds")) is not list
             ):
                 return False
+            if variant["parameters"] != expected_parameters[variant_index]:
+                return False
+            if (
+                type(variant["stability"].get("fold_count")) is not int
+                or variant["stability"]["fold_count"] != len(variant["folds"])
+                or any(
+                    type(variant["stability"].get(key)) is not int
+                    or variant["stability"][key] < 0
+                    for key in (
+                        "test_ok_count", "positive_test_fold_count",
+                    )
+                )
+                or not cls._strict_optional_number(
+                    variant["stability"].get("mean_test_return"),
+                )
+            ):
+                return False
             for fold in variant["folds"]:
                 if type(fold) is not dict or set(fold) != {
                     "fold_index", "train_start_date", "train_end_date",
                     "test_start_date", "test_end_date", "train_bar_count",
                     "test_bar_count", "train", "test",
                 }:
+                    return False
+                if (
+                    any(type(fold.get(key)) is not int or fold[key] < 0 for key in (
+                        "fold_index", "train_bar_count", "test_bar_count",
+                    ))
+                    or fold["train_bar_count"] != strategy.walk_forward_train_days
+                    or fold["test_bar_count"] != strategy.walk_forward_test_days
+                    or any(not cls._strict_date_text(fold.get(key)) for key in (
+                        "train_start_date", "train_end_date", "test_start_date",
+                        "test_end_date",
+                    ))
+                    or not (
+                        fold["train_start_date"] <= fold["train_end_date"]
+                        < fold["test_start_date"] <= fold["test_end_date"]
+                    )
+                ):
                     return False
                 for phase in (fold.get("train"), fold.get("test")):
                     if type(phase) is not dict or set(phase) != summary_keys:
@@ -806,6 +1181,7 @@ class SwingService:
                     if nested_metrics is not None and (
                         type(nested_metrics) is not dict
                         or set(nested_metrics) != metrics_keys
+                        or not cls._valid_metrics(nested_metrics)
                     ):
                         return False
         return True

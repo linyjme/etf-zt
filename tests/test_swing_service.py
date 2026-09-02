@@ -175,6 +175,16 @@ class SwingServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             service.backtest(None, "unknown")
 
+    def test_portfolio_backtest_cache_roundtrips_strict_result(self) -> None:
+        service = self.make_service()
+        expected = service.backtest(None, "portfolio")
+        with patch.object(
+            service, "_run_backtest", wraps=service._run_backtest,
+        ) as run:
+            cached = service.backtest(None, "portfolio")
+        self.assertEqual(cached, expected)
+        self.assertEqual(run.call_count, 0)
+
     def test_concurrent_backtests_single_flight_the_same_cache_key(self) -> None:
         service = self.make_service()
         barrier = threading.Barrier(4)
@@ -213,6 +223,11 @@ class SwingServiceTests(unittest.TestCase):
         ).upsert(self.final_bars)
         service = self.make_service()
         expected = service.backtest("510300", "symbol")
+        with patch.object(
+            service, "_run_backtest", wraps=service._run_backtest,
+        ) as cached_run:
+            self.assertEqual(service.backtest("510300", "symbol"), expected)
+        self.assertEqual(cached_run.call_count, 0)
         cache_path = next(self.paths.backtests.glob("*.json"))
         valid = json.loads(cache_path.read_text(encoding="utf-8"))
         nested_extra = json.loads(json.dumps(valid))
@@ -225,6 +240,27 @@ class SwingServiceTests(unittest.TestCase):
         wrong_type["payload_sha256"] = service._canonical_digest(
             wrong_type["result"],
         )
+        semantic_forgeries = []
+        for mutate in (
+            lambda result: result.__setitem__("initial_cash", "100000"),
+            lambda result: result.__setitem__("strategy_version", "FORGED"),
+            lambda result: result.__setitem__("start_date", "not-a-date"),
+            lambda result: result.__setitem__("status", "OK"),
+            lambda result: result.__setitem__("outperformance", 0.25),
+            lambda result: result["trades"].append({
+                "symbol": "510300", "side": "BUY", "requested_shares": True,
+                "shares": 100, "signal_date": "2026-08-29",
+                "execution_date": "2026-08-30", "raw_reference_price": 4.0,
+                "fill_price": 4.0, "fee": 0.0, "spread_cost": 0.0,
+                "slippage": 0.0, "planned_stop": 3.9, "reason": "FORGED",
+            }),
+        ):
+            forged = json.loads(json.dumps(valid))
+            mutate(forged["result"])
+            forged["payload_sha256"] = service._canonical_digest(
+                forged["result"],
+            )
+            semantic_forgeries.append(forged)
 
         for forged in (
             expected,
@@ -235,6 +271,7 @@ class SwingServiceTests(unittest.TestCase):
             },
             nested_extra,
             wrong_type,
+            *semantic_forgeries,
         ):
             cache_path.write_text(
                 json.dumps(forged, allow_nan=False), encoding="utf-8",
