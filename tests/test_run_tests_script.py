@@ -9,31 +9,88 @@ import tempfile
 import unittest
 
 
+def _contains_private_windows_path(text: str) -> bool:
+    normalized = text
+    while "\\\\" in normalized:
+        normalized = normalized.replace("\\\\", "\\")
+    normalized = normalized.replace("\\/", "/")
+    return re.search(
+        r"[A-Za-z]:[\\/](?:Users|plan|dev)[\\/]",
+        normalized,
+        re.IGNORECASE,
+    ) is not None
+
+
 class RunTestsScriptTests(unittest.TestCase):
+    def test_private_path_scanner_rejects_raw_and_markdown_escaped_paths(self) -> None:
+        raw = "C:" + "\\" + "Users" + "\\" + "somebody" + "\\" + "project"
+        escaped = "F:" + "\\\\" + "plan" + "\\\\" + "money"
+        forward = "D:" + "/" + "dev" + "/" + "checkout"
+        self.assertTrue(_contains_private_windows_path(raw))
+        self.assertTrue(_contains_private_windows_path(escaped))
+        self.assertTrue(_contains_private_windows_path(forward))
+        self.assertFalse(_contains_private_windows_path("<project-root>/src"))
+
     def test_tracked_text_does_not_expose_windows_user_or_workspace_paths(self) -> None:
         root = Path(__file__).resolve().parents[1]
         listed = subprocess.run(
-            ["git", "ls-files", "README.md", "scripts", "docs", "src", "tests"],
+            ["git", "ls-files", "-z"],
             cwd=root,
             capture_output=True,
-            text=True,
             check=True,
         )
-        private_path = re.compile(
-            r"[A-Za-z]:[\\/](?:Users|plan|dev)[\\/]",
-            re.IGNORECASE,
-        )
         hits: list[str] = []
-        for relative in listed.stdout.splitlines():
+        for encoded_relative in listed.stdout.split(b"\0"):
+            if not encoded_relative:
+                continue
+            relative = os.fsdecode(encoded_relative)
             path = root / relative
             try:
-                text = path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
+                payload = path.read_bytes()
+                if b"\0" in payload:
+                    continue
+                text = payload.decode("utf-8")
+            except (OSError, UnicodeDecodeError):
                 continue
             for number, line in enumerate(text.splitlines(), 1):
-                if private_path.search(line):
+                if _contains_private_windows_path(line):
                     hits.append(f"{relative}:{number}")
         self.assertEqual(hits, [], "tracked private paths: " + ", ".join(hits))
+
+    def test_pid_write_failure_stops_process_and_removes_partial_pid(self) -> None:
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        self.assertIsNotNone(powershell, "PowerShell is required for launcher cleanup test")
+        source = Path(__file__).resolve().parents[1] / "scripts" / "start-monitor.ps1"
+        with tempfile.TemporaryDirectory(prefix="monitor pid cleanup ") as temporary:
+            root = Path(temporary)
+            harness = root / "pid-cleanup.ps1"
+            harness.write_text(
+                "param($SourceScript, $PowerShellExecutable, $RuntimeRoot)\n"
+                "$tokens=$null; $errors=$null\n"
+                "$ast=[System.Management.Automation.Language.Parser]::ParseFile($SourceScript,[ref]$tokens,[ref]$errors)\n"
+                "$fn=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Write-MonitorPidSafely'},$true)\n"
+                "if ($null -eq $fn) { throw 'PID safety helper missing' }\n"
+                ". ([scriptblock]::Create($fn.Extent.Text))\n"
+                "$child=Start-Process -FilePath $PowerShellExecutable -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru\n"
+                "$pidPath=Join-Path $RuntimeRoot 'monitor.pid'\n"
+                "$writer={param($Path,$Value) Set-Content -LiteralPath $Path -Value 'partial'; throw 'simulated pid write failure'}\n"
+                "$message=''\n"
+                "try { Write-MonitorPidSafely -Process $child -PidPath $pidPath -RuntimeRoot $RuntimeRoot -Writer $writer } catch { $message=$_.Exception.Message }\n"
+                "$child.Refresh()\n"
+                "if (-not $child.HasExited) { Stop-Process -Id $child.Id -Force; throw 'orphan process remained' }\n"
+                "if (Test-Path -LiteralPath $pidPath) { throw 'partial PID remained' }\n"
+                "if ($message -notmatch 'simulated pid write failure') { throw \"original error lost: $message\" }\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness,
+                 source, powershell, root],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_start_monitor_passes_all_swing_paths_to_same_process(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -164,7 +221,7 @@ class RunTestsScriptTests(unittest.TestCase):
         self.assertIn("if ($process.HasExited)", script)
         self.assertLess(
             script.index("if ($process.HasExited)"),
-            script.index("Set-Content -LiteralPath"),
+            script.index("Write-MonitorPidSafely -Process $process"),
         )
 
     def test_rejects_noop_application_as_python_runtime(self) -> None:

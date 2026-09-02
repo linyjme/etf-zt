@@ -23,7 +23,7 @@
 ```powershell
 git fsck --full
 git log --all --name-only -- data/monitor/quotes.json data/monitor/quotes.jsonl data/monitor/alerts.jsonl
-git rev-list --objects --all | Select-String '__pycache__|\.pyc$|F:\\plan\\money\\zt'
+git rev-list --objects --all | Select-String '__pycache__|\.pyc$|<project-root>'
 ```
 
 确认扫描无残留、测试通过并经维护者复核后，才可以协调强制更新远端。所有旧克隆都应重新克隆，不能继续在旧历史上推送。本项目本次改造**不会自动执行历史重写**。

@@ -1439,7 +1439,7 @@ Run:
 ```powershell
 $records = Get-Content -LiteralPath 'var\monitor\quotes.jsonl' | ForEach-Object { $_ | ConvertFrom-Json }
 [pscustomobject]@{Records=$records.Count; Keys=(($records | Group-Object symbol,timestamp).Count); Schema3=($records | Where-Object schema_version -eq 3).Count} | Format-List
-rg -n "F:\\plan\\money\\zt|黄金窗口|回补提醒|减仓提醒" README.md scripts src tests
+rg -n "<project-root>|黄金窗口|回补提醒|减仓提醒" README.md scripts src tests
 git ls-files | rg "(__pycache__|\.pyc$|data/monitor/(quotes|alerts|history))"
 & '.\scripts\run-tests.ps1'
 ```

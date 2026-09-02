@@ -37,6 +37,60 @@ function ConvertTo-WindowsCommandLineArgument {
     return $quoted + '"'
 }
 
+function Write-MonitorPidSafely {
+    param(
+        [Parameter(Mandatory)]
+        [System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory)]
+        [string]$PidPath,
+        [Parameter(Mandatory)]
+        [string]$RuntimeRoot,
+        [scriptblock]$Writer = {
+            param($Destination, $ProcessId)
+            Set-Content -LiteralPath $Destination -Value $ProcessId -Encoding ascii
+        }
+    )
+
+    $writeError = $null
+    $safePidPath = $false
+    $pidFullPath = $null
+    try {
+        $rootFullPath = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\', '/')
+        $pidFullPath = [IO.Path]::GetFullPath($PidPath)
+        $pidParent = [IO.Path]::GetDirectoryName($pidFullPath).TrimEnd('\', '/')
+        if (-not [string]::Equals($pidParent, $rootFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to write PID outside runtime directory: $pidFullPath"
+        }
+        $safePidPath = $true
+        & $Writer $pidFullPath $Process.Id
+        return
+    } catch {
+        $writeError = $_
+    }
+
+    $cleanupErrors = [System.Collections.Generic.List[string]]::new()
+    try {
+        $Process.Refresh()
+        if (-not $Process.HasExited) {
+            Stop-Process -Id $Process.Id -Force -ErrorAction Stop
+            $Process.WaitForExit()
+        }
+    } catch {
+        $cleanupErrors.Add("process cleanup failed: $($_.Exception.Message)")
+    }
+    try {
+        if ($safePidPath -and (Test-Path -LiteralPath $pidFullPath -PathType Leaf)) {
+            Remove-Item -LiteralPath $pidFullPath -Force -ErrorAction Stop
+        }
+    } catch {
+        $cleanupErrors.Add("PID cleanup failed: $($_.Exception.Message)")
+    }
+    if ($cleanupErrors.Count -gt 0) {
+        $writeError.Exception.Data['MonitorPidCleanupErrors'] = ($cleanupErrors -join '; ')
+    }
+    throw $writeError
+}
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $runtimeRoot = Join-Path $projectRoot 'var\monitor'
 $swingRuntimeRoot = Join-Path $projectRoot 'var\swing'
@@ -111,7 +165,7 @@ try {
         $detail = if (Test-Path -LiteralPath $stderrPath) { (Get-Content -LiteralPath $stderrPath -Raw).Trim() } else { '' }
         throw ("Monitor service failed to start" + $(if ($detail) { ": $detail" } else { '' }))
     }
-    Set-Content -LiteralPath (Join-Path $runtimeRoot 'monitor.pid') -Value $process.Id -Encoding ascii
+    Write-MonitorPidSafely -Process $process -PidPath (Join-Path $runtimeRoot 'monitor.pid') -RuntimeRoot $runtimeRoot
     $process
 } finally {
     $env:PYTHONPATH = $previousPythonPath
