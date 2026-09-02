@@ -552,6 +552,9 @@ class SwingServiceTests(unittest.TestCase):
     def test_post_close_refresh_publishes_once_after_atomic_history_commit(self) -> None:
         collector = StaticDailyCollector(self.final_bars)
         service = self.make_service(collector=collector)
+        initial_snapshot = service.snapshot()
+        initial_digest = initial_snapshot["daily_history_digest"]
+        self.assertRegex(initial_digest, r"^[0-9a-f]{64}$")
         self.assertTrue(service.refresh_once(
             datetime(2026, 9, 1, 15, 10, tzinfo=SHANGHAI),
         ))
@@ -559,6 +562,9 @@ class SwingServiceTests(unittest.TestCase):
         self.assertGreaterEqual(collector.requested_counts[0], 756)
         self.assertEqual(service.snapshot()["revision"], 1)
         self.assertEqual(service.snapshot()["as_of_trading_date"], "2026-09-01")
+        self.assertNotEqual(
+            service.snapshot()["daily_history_digest"], initial_digest,
+        )
         self.assertFalse(service.refresh_once(
             datetime(2026, 9, 1, 15, 11, tzinfo=SHANGHAI),
         ))
@@ -722,9 +728,14 @@ class SwingServiceTests(unittest.TestCase):
 
     def test_intraday_refresh_never_changes_formal_decision(self) -> None:
         service = self.make_service()
-        before = service.snapshot()["items"][0]["formal_decision"]
+        before_snapshot = service.snapshot()
+        before = before_snapshot["items"][0]["formal_decision"]
         snapshot = service.refresh_intraday()
         self.assertEqual(snapshot["items"][0]["formal_decision"], before)
+        self.assertEqual(
+            snapshot["daily_history_digest"],
+            before_snapshot["daily_history_digest"],
+        )
         self.assertEqual(
             snapshot["items"][0]["intraday_overlay"],
             "APPROACHING_ENTRY_ZONE",

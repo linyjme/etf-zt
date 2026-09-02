@@ -3603,6 +3603,7 @@ class SwingService:
             "revision": self.revision,
             "generated_at": now.isoformat(),
             "as_of_trading_date": self._history_as_of(),
+            "daily_history_digest": self._enabled_history_digest(),
             "health": copy.deepcopy(self._health),
             "errors": copy.deepcopy(self._errors),
             "portfolio": (
@@ -3980,6 +3981,18 @@ class SwingService:
     def _history_as_of(self) -> str | None:
         value = self._history_as_of_date()
         return value.isoformat() if value is not None else None
+
+    def _enabled_history_digest(self) -> str:
+        """Fingerprint every enabled symbol's complete persisted daily history."""
+        enabled = {item.symbol for item in self._watchlist if item.enabled}
+        canonical_history = [
+            bar.to_dict()
+            for bar in sorted(
+                (bar for bar in self._history if bar.symbol in enabled),
+                key=lambda item: (item.symbol, item.trading_date),
+            )
+        ]
+        return self._canonical_digest(canonical_history)
 
     def _snapshot_as_of(self) -> str | None:
         with self.publish_condition:
