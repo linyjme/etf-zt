@@ -583,6 +583,18 @@ class PortfolioSwingBacktestTests(unittest.TestCase):
         histories = self.histories(650)
         report = self.backtester.walk_forward(histories, 100_000.0)
         self.assertEqual(len(report.variants), 81)
+        evidence = report.cache_evidence()
+        self.assertEqual(len(evidence["variants"]), 81)
+        first_evidence = evidence["variants"][0]["folds"][0]
+        self.assertEqual(
+            first_evidence["train"]["session_count"],
+            self.config.walk_forward_train_days - self.config.minimum_daily_bars,
+        )
+        self.assertEqual(
+            first_evidence["test"]["session_count"],
+            self.config.walk_forward_test_days,
+        )
+        self.assertNotIn("metric_evidence", report.to_dict())
         self.assertEqual(
             [
                 (

@@ -66,6 +66,69 @@ def _clean(value: float) -> float:
     return 0.0 if rounded == 0.0 else rounded
 
 
+def _curve_metric_values(
+    initial_cash: float,
+    equity_curve: Sequence[float],
+    utilization: Sequence[float],
+) -> dict[str, float | None]:
+    """Derive every path-dependent public metric from private cache evidence."""
+    curve = (float(initial_cash), *(float(value) for value in equity_curve))
+    ending = curve[-1]
+    sessions = len(equity_curve)
+    cumulative = ending / initial_cash - 1.0
+    annualized = (
+        None if sessions <= 0 or ending <= 0.0
+        else (ending / initial_cash) ** (252.0 / sessions) - 1.0
+    )
+    peak = curve[0]
+    drawdown = 0.0
+    for value in curve:
+        peak = max(peak, value)
+        if peak > 0.0:
+            drawdown = max(drawdown, (peak - value) / peak)
+    daily_returns = [
+        curve[index] / curve[index - 1] - 1.0
+        for index in range(1, len(curve)) if curve[index - 1] > 0.0
+    ]
+    sharpe = None
+    if len(daily_returns) >= 2:
+        mean = sum(daily_returns) / len(daily_returns)
+        variance = sum(
+            (value - mean) ** 2 for value in daily_returns
+        ) / (len(daily_returns) - 1)
+        if variance > 0.0:
+            sharpe = mean / math.sqrt(variance) * math.sqrt(252.0)
+    return {
+        "cumulative_return": _clean(cumulative),
+        "annualized_return": (
+            None if annualized is None else _clean(annualized)
+        ),
+        "maximum_drawdown": _clean(drawdown),
+        "calmar": (
+            None if annualized is None or drawdown <= 0.0
+            else _clean(annualized / drawdown)
+        ),
+        "sharpe": None if sharpe is None else _clean(sharpe),
+        "utilization": _clean(
+            sum(utilization) / len(utilization) if utilization else 0.0
+        ),
+    }
+
+
+def _metric_cache_evidence(
+    metrics: SwingBacktestMetrics | None,
+    equity_curve: Sequence[float],
+    utilization: Sequence[float],
+) -> dict[str, object] | None:
+    if metrics is None:
+        return None
+    return {
+        "session_count": len(equity_curve),
+        "equity_curve": [_clean(value) for value in equity_curve],
+        "utilization": [_clean(value) for value in utilization],
+    }
+
+
 def _freeze_audit_mapping(
     values: Mapping[str, object], field: str,
 ) -> Mapping[str, object]:
@@ -401,6 +464,8 @@ class SwingBacktestResult:
     benchmark: SwingBenchmarkResult | None
     outperformance: float | None
     metrics: SwingBacktestMetrics | None
+    _metric_equity_curve: tuple[float, ...] = ()
+    _metric_utilization: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -465,6 +530,13 @@ class SwingBacktestResult:
         return json.dumps(
             self.to_dict(), ensure_ascii=True, allow_nan=False,
             sort_keys=True, separators=(",", ":"),
+        )
+
+    def cache_evidence(self) -> dict[str, object] | None:
+        return _metric_cache_evidence(
+            self.metrics,
+            self._metric_equity_curve,
+            self._metric_utilization,
         )
 
 
@@ -571,6 +643,8 @@ class PortfolioBacktestResult:
     outperformance: float | None
     strategy_parameters: Mapping[str, object]
     execution_assumptions: Mapping[str, object]
+    _metric_equity_curve: tuple[float, ...] = ()
+    _metric_utilization: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rejections", PortfolioRejections(self.rejections))
@@ -622,6 +696,13 @@ class PortfolioBacktestResult:
             sort_keys=True, separators=(",", ":"),
         )
 
+    def cache_evidence(self) -> dict[str, object] | None:
+        return _metric_cache_evidence(
+            self.metrics,
+            self._metric_equity_curve,
+            self._metric_utilization,
+        )
+
 
 @dataclass(frozen=True)
 class WalkForwardFoldResult:
@@ -634,6 +715,8 @@ class WalkForwardFoldResult:
     test_bar_count: int
     train: Mapping[str, object]
     test: Mapping[str, object]
+    _train_metric_evidence: Mapping[str, object] | None
+    _test_metric_evidence: Mapping[str, object] | None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -648,6 +731,18 @@ class WalkForwardFoldResult:
             "test": dict(self.test),
         }
 
+    def cache_evidence(self) -> dict[str, object]:
+        return {
+            "train": (
+                None if self._train_metric_evidence is None
+                else dict(self._train_metric_evidence)
+            ),
+            "test": (
+                None if self._test_metric_evidence is None
+                else dict(self._test_metric_evidence)
+            ),
+        }
+
 
 @dataclass(frozen=True)
 class WalkForwardVariantResult:
@@ -660,6 +755,11 @@ class WalkForwardVariantResult:
             "parameters": dict(self.parameters),
             "folds": [item.to_dict() for item in self.folds],
             "stability": dict(self.stability),
+        }
+
+    def cache_evidence(self) -> dict[str, object]:
+        return {
+            "folds": [item.cache_evidence() for item in self.folds],
         }
 
 
@@ -682,6 +782,11 @@ class WalkForwardReport:
             "step_days": self.step_days,
             "selected_variant": None,
             "variants": [item.to_dict() for item in self.variants],
+        }
+
+    def cache_evidence(self) -> dict[str, object]:
+        return {
+            "variants": [item.cache_evidence() for item in self.variants],
         }
 
 
@@ -1899,6 +2004,8 @@ class SwingBacktester:
             benchmark=benchmark,
             outperformance=outperformance,
             metrics=metrics,
+            _metric_equity_curve=tuple(account._equity_curve),
+            _metric_utilization=tuple(account._utilization),
         )
 
     def _unavailable_result(
@@ -2153,36 +2260,16 @@ class SwingBacktester:
         initial_cash: float,
         ending_equity: float,
     ) -> SwingBacktestMetrics:
-        curve = [initial_cash, *account._equity_curve]
-        cumulative = ending_equity / initial_cash - 1.0
-        sessions = len(curve) - 1
-        annualized = (
-            None if sessions <= 0 or ending_equity <= 0.0
-            else (ending_equity / initial_cash) ** (252.0 / sessions) - 1.0
+        derived = _curve_metric_values(
+            initial_cash, account._equity_curve, account._utilization,
         )
-        peak = curve[0]
-        drawdown = 0.0
-        for equity in curve:
-            peak = max(peak, equity)
-            if peak > 0.0:
-                drawdown = max(drawdown, (peak - equity) / peak)
-        calmar = (
-            annualized / drawdown
-            if annualized is not None and drawdown > 0.0 else None
-        )
-        daily_returns = [
-            curve[index] / curve[index - 1] - 1.0
-            for index in range(1, len(curve))
-            if curve[index - 1] > 0.0
-        ]
-        sharpe = None
-        if len(daily_returns) >= 2:
-            mean = sum(daily_returns) / len(daily_returns)
-            variance = sum((item - mean) ** 2 for item in daily_returns) / (
-                len(daily_returns) - 1
-            )
-            if variance > 0.0:
-                sharpe = mean / math.sqrt(variance) * math.sqrt(252.0)
+        if not math.isclose(
+            float(derived["cumulative_return"]),
+            ending_equity / initial_cash - 1.0,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        ):
+            raise SwingBacktestError("metric equity curve ending is inconsistent")
         pnls = [trip.net_pnl for trip in account.round_trips]
         profits = [pnl for pnl in pnls if pnl > 0.0]
         losses = [pnl for pnl in pnls if pnl < 0.0]
@@ -2209,20 +2296,17 @@ class SwingBacktester:
         for rejection in account.rejections:
             counts[rejection.reason] = counts.get(rejection.reason, 0) + 1
         return SwingBacktestMetrics(
-            cumulative_return=cumulative,
-            annualized_return=annualized,
-            maximum_drawdown=drawdown,
-            calmar=calmar,
-            sharpe=sharpe,
+            cumulative_return=float(derived["cumulative_return"]),
+            annualized_return=derived["annualized_return"],
+            maximum_drawdown=float(derived["maximum_drawdown"]),
+            calmar=derived["calmar"],
+            sharpe=derived["sharpe"],
             win_rate=win_rate,
             average_profit=average_profit,
             average_loss=average_loss,
             payoff_ratio=payoff,
             average_holding_days=average_holding,
-            utilization=(
-                sum(account._utilization) / len(account._utilization)
-                if account._utilization else 0.0
-            ),
+            utilization=float(derived["utilization"]),
             longest_losing_streak=streak,
             fees=sum(item.fee for item in account.trades),
             spread_cost=sum(item.spread_cost for item in account.trades),
@@ -3002,6 +3086,8 @@ class SwingBacktester:
                     for symbol in symbols
                 },
             },
+            _metric_equity_curve=tuple(equity_curve),
+            _metric_utilization=tuple(utilization),
         )
 
     def _portfolio_baseline(
@@ -3127,30 +3213,7 @@ class SwingBacktester:
         rejections: tuple[SwingRejection, ...],
         round_trips: tuple[PortfolioCompletedRoundTrip, ...],
     ) -> SwingBacktestMetrics:
-        curve = (cash_start, *equity_curve)
-        ending = curve[-1]
-        cumulative = ending / cash_start - 1.0
-        sessions = len(equity_curve)
-        annualized = (
-            None if sessions <= 0 or ending <= 0.0
-            else (ending / cash_start) ** (252.0 / sessions) - 1.0
-        )
-        peak = curve[0]
-        drawdown = 0.0
-        for value in curve:
-            peak = max(peak, value)
-            if peak > 0.0:
-                drawdown = max(drawdown, (peak - value) / peak)
-        daily = [
-            curve[index] / curve[index - 1] - 1.0
-            for index in range(1, len(curve)) if curve[index - 1] > 0.0
-        ]
-        sharpe = None
-        if len(daily) >= 2:
-            mean = sum(daily) / len(daily)
-            variance = sum((value - mean) ** 2 for value in daily) / (len(daily) - 1)
-            if variance > 0.0:
-                sharpe = mean / math.sqrt(variance) * math.sqrt(252.0)
+        derived = _curve_metric_values(cash_start, equity_curve, utilization)
         pnls = [item.net_pnl for item in round_trips]
         profits = [value for value in pnls if value > 0.0]
         losses = [value for value in pnls if value < 0.0]
@@ -3167,14 +3230,11 @@ class SwingBacktester:
                 best = max(best, running)
             longest = best
         return SwingBacktestMetrics(
-            cumulative_return=cumulative,
-            annualized_return=annualized,
-            maximum_drawdown=drawdown,
-            calmar=(
-                annualized / drawdown
-                if annualized is not None and drawdown > 0.0 else None
-            ),
-            sharpe=sharpe,
+            cumulative_return=float(derived["cumulative_return"]),
+            annualized_return=derived["annualized_return"],
+            maximum_drawdown=float(derived["maximum_drawdown"]),
+            calmar=derived["calmar"],
+            sharpe=derived["sharpe"],
             win_rate=len(profits) / len(pnls) if pnls else None,
             average_profit=average_profit,
             average_loss=average_loss,
@@ -3187,7 +3247,7 @@ class SwingBacktester:
                 sum(item.holding_days for item in round_trips) / len(round_trips)
                 if round_trips else None
             ),
-            utilization=sum(utilization) / len(utilization) if utilization else 0.0,
+            utilization=float(derived["utilization"]),
             longest_losing_streak=longest,
             fees=sum(item.fee for item in trades),
             spread_cost=sum(item.spread_cost for item in trades),
@@ -3351,6 +3411,12 @@ class SwingBacktester:
                                 test_bar_count=len(test_dates),
                                 train=self._fold_summary(train_result),
                                 test=test_summary,
+                                _train_metric_evidence=(
+                                    train_result.cache_evidence()
+                                ),
+                                _test_metric_evidence=(
+                                    test_result.cache_evidence()
+                                ),
                             ))
                         stability = {
                             "fold_count": len(folds),

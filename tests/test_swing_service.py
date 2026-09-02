@@ -224,8 +224,11 @@ class SwingServiceTests(unittest.TestCase):
 
         def compute(*args, **_kwargs):
             barrier.wait(timeout=2)
-            return service._backtest_unavailable(
-                args[0], args[1], "INSUFFICIENT_SAMPLE", "TEST_RESULT",
+            return (
+                service._backtest_unavailable(
+                    args[0], args[1], "INSUFFICIENT_SAMPLE", "TEST_RESULT",
+                ),
+                None,
             )
 
         with patch.object(service, "_run_backtest", side_effect=compute):
@@ -313,8 +316,10 @@ class SwingServiceTests(unittest.TestCase):
         ).upsert(self.final_bars)
         service = self.make_service()
         expected = service.backtest("510300", "symbol")
+        self.assertNotIn("metric_evidence", expected)
         cache_path = next(self.paths.backtests.glob("*.json"))
         valid = json.loads(cache_path.read_text(encoding="utf-8"))
+        self.assertIn("metric_evidence", valid)
         self.assertEqual(len(valid["hmac_sha256"]), 64)
 
         restarted = self.make_service()
@@ -357,8 +362,13 @@ class SwingServiceTests(unittest.TestCase):
 
         mutations = (
             lambda metrics: metrics.__setitem__("win_rate", 99.0),
+            lambda metrics: metrics.__setitem__("sharpe", 99.0),
+            lambda metrics: metrics.__setitem__(
+                "annualized_return", metrics["annualized_return"] + 0.01,
+            ),
             lambda metrics: metrics.__setitem__("fees", metrics["fees"] + 1.0),
             lambda metrics: metrics.__setitem__("maximum_drawdown", 2.0),
+            lambda metrics: metrics.__setitem__("utilization", 0.123456789),
             lambda metrics: metrics.__setitem__(
                 "rejection_counts", {"FORGED": 1},
             ),
@@ -376,18 +386,69 @@ class SwingServiceTests(unittest.TestCase):
                 key: forged[key]
                 for key in (
                     "schema_version", "cache_key", "payload_sha256", "result",
+                    "metric_evidence",
                 )
             }
             forged["hmac_sha256"] = service._cache_hmac(signing_key, signed)
-            self.assertFalse(service._valid_backtest_result(
-                forged["result"], forged["cache_key"],
-            ))
+            self.assertFalse(
+                service._valid_backtest_result(
+                    forged["result"], forged["cache_key"],
+                )
+                and service._valid_metric_evidence(
+                    forged["result"], forged["metric_evidence"],
+                    forged["cache_key"],
+                )
+            )
             cache_path.write_text(json.dumps(forged), encoding="utf-8")
             with patch.object(
                 service, "_run_backtest", wraps=service._run_backtest,
             ) as run:
                 self.assertEqual(service.backtest("510300", "symbol"), expected)
             self.assertEqual(run.call_count, 1)
+
+    def test_portfolio_cache_validates_every_walk_forward_metric_node(self) -> None:
+        strategy = json.loads(self.paths.strategy.read_text(encoding="utf-8"))
+        strategy.update({
+            "walk_forward_train_days": 80,
+            "walk_forward_test_days": 3,
+            "walk_forward_step_days": 3,
+        })
+        self.paths.strategy.write_text(json.dumps(strategy), encoding="utf-8")
+        bars = retime_daily_bars(
+            swing_strategy_bars(83), ending_on=date(2026, 9, 1),
+        )
+        DailyHistoryStore(
+            self.paths.daily_history, self.metadata, frozenset(),
+        ).upsert(bars)
+        service = self.make_service()
+        expected = service.backtest(None, "portfolio")
+        self.assertNotIn("metric_evidence", expected)
+        cache_path = next(self.paths.backtests.glob("*.json"))
+        forged = json.loads(cache_path.read_text(encoding="utf-8"))
+        evidence = forged["metric_evidence"]["walk_forward"]["variants"]
+        self.assertEqual(len(evidence), 81)
+        self.assertEqual(len(evidence[0]["folds"]), 1)
+        forged["result"]["walk_forward"]["variants"][0]["folds"][0][
+            "test"
+        ]["metrics"]["sharpe"] = 99.0
+        forged["payload_sha256"] = service._canonical_digest(forged["result"])
+        signing_key = self.paths.backtests.with_name(
+            ".backtests.signing-key",
+        ).read_bytes()
+        signed = {
+            key: forged[key]
+            for key in (
+                "schema_version", "cache_key", "payload_sha256", "result",
+                "metric_evidence",
+            )
+        }
+        forged["hmac_sha256"] = service._cache_hmac(signing_key, signed)
+        cache_path.write_text(json.dumps(forged), encoding="utf-8")
+        with patch.object(
+            service, "_run_backtest", wraps=service._run_backtest,
+        ) as run:
+            self.assertEqual(service.backtest(None, "portfolio"), expected)
+        self.assertEqual(run.call_count, 1)
 
     def test_backtest_cache_uses_content_not_mtime_and_invalidates_config(self) -> None:
         service = self.make_service()

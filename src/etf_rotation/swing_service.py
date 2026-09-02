@@ -28,7 +28,11 @@ from .constants import REALTIME_MAX_AGE_SECONDS
 from .etf_metadata import EtfMetadata, EtfMetadataStore
 from .market_data import load_closed_dates
 from .swing_alerts import AlertInput, SwingAlertStore
-from .swing_backtest import SwingBacktestError, SwingBacktester
+from .swing_backtest import (
+    SwingBacktestError,
+    SwingBacktester,
+    _curve_metric_values,
+)
 from .swing_config import (
     SwingStrategyConfig,
     SwingWatchItem,
@@ -64,8 +68,8 @@ from .swing_strategy import (
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FINAL_DAILY_TIME = time(15, 10)
-_BACKTEST_CACHE_SCHEMA_VERSION = 2
-_BACKTEST_ENGINE_VERSION = "SWING_BACKTEST_ENGINE_V3"
+_BACKTEST_CACHE_SCHEMA_VERSION = 3
+_BACKTEST_ENGINE_VERSION = "SWING_BACKTEST_ENGINE_V4"
 _DEFAULT_HISTORY_COUNT = 260
 _MAX_DAILY_QUOTE_LIMIT = 10_000
 _MAX_ALERT_HISTORY_LIMIT = 500
@@ -509,7 +513,7 @@ class SwingService:
                 )
                 if cached is not None:
                     return cached
-                result = self._run_backtest(
+                result, metric_evidence = self._run_backtest(
                     scope,
                     normalized_symbol,
                     selected_symbols,
@@ -518,7 +522,7 @@ class SwingService:
                     strategy,
                 )
                 self._write_backtest_cache(
-                    cache_path, cache_key, result, signing_key,
+                    cache_path, cache_key, result, metric_evidence, signing_key,
                 )
                 return copy.deepcopy(result)
 
@@ -537,6 +541,9 @@ class SwingService:
     def _cache_hmac(
         cls, signing_key: bytes, envelope: Mapping[str, object],
     ) -> str:
+        # The persisted key is the authenticity boundary: compromise of both it
+        # and metric evidence permits cache forgery, as in the standard HMAC
+        # threat model. Ordinary cache-file edits cannot produce a valid tag.
         return hmac.new(
             signing_key, cls._canonical_bytes(envelope), hashlib.sha256,
         ).hexdigest()
@@ -607,7 +614,7 @@ class SwingService:
                 type(payload) is not dict
                 or set(payload) != {
                     "schema_version", "cache_key", "payload_sha256", "result",
-                    "hmac_sha256",
+                    "metric_evidence", "hmac_sha256",
                 }
                 or type(payload.get("schema_version")) is not int
                 or payload.get("schema_version") != _BACKTEST_CACHE_SCHEMA_VERSION
@@ -618,6 +625,9 @@ class SwingService:
                 or any(character not in "0123456789abcdef"
                        for character in payload["payload_sha256"])
                 or type(payload.get("result")) is not dict
+                or type(payload.get("metric_evidence")) not in (
+                    dict, type(None),
+                )
                 or type(payload.get("hmac_sha256")) is not str
                 or len(payload["hmac_sha256"]) != 64
                 or any(character not in "0123456789abcdef"
@@ -629,6 +639,7 @@ class SwingService:
                 key: payload[key]
                 for key in (
                     "schema_version", "cache_key", "payload_sha256", "result",
+                    "metric_evidence",
                 )
             }
             if (
@@ -637,6 +648,9 @@ class SwingService:
                     payload["hmac_sha256"], cls._cache_hmac(signing_key, signed),
                 )
                 or not cls._valid_backtest_result(result, cache_key)
+                or not cls._valid_metric_evidence(
+                    result, payload["metric_evidence"], cache_key,
+                )
             ):
                 return None
             return copy.deepcopy(result)
@@ -649,6 +663,7 @@ class SwingService:
         path: Path,
         cache_key: Mapping[str, object],
         result: Mapping[str, object],
+        metric_evidence: Mapping[str, object] | None,
         signing_key: bytes,
     ) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -665,6 +680,10 @@ class SwingService:
                     "cache_key": dict(cache_key),
                     "payload_sha256": cls._canonical_digest(canonical_result),
                     "result": canonical_result,
+                    "metric_evidence": (
+                        None if metric_evidence is None
+                        else copy.deepcopy(dict(metric_evidence))
+                    ),
                 }
                 envelope = {
                     **signed,
@@ -1431,6 +1450,159 @@ class SwingService:
         return metrics["longest_losing_streak"] == expected_streak
 
     @classmethod
+    def _valid_metric_evidence_node(
+        cls,
+        metrics: object,
+        evidence: object,
+        *,
+        initial_cash: float,
+        ending_equity: object = None,
+    ) -> bool:
+        if metrics is None:
+            return evidence is None
+        if (
+            type(metrics) is not dict
+            or type(evidence) is not dict
+            or set(evidence) != {
+                "session_count", "equity_curve", "utilization",
+            }
+            or type(evidence.get("session_count")) is not int
+            or evidence["session_count"] < 0
+            or type(evidence.get("equity_curve")) is not list
+            or type(evidence.get("utilization")) is not list
+            or evidence["session_count"] != len(evidence["equity_curve"])
+            or evidence["session_count"] != len(evidence["utilization"])
+            or any(
+                not cls._strict_number(value, nonnegative=True)
+                for value in evidence["equity_curve"]
+            )
+            or any(
+                not cls._strict_number(value, nonnegative=True)
+                or value > 1.0
+                for value in evidence["utilization"]
+            )
+        ):
+            return False
+        try:
+            derived = _curve_metric_values(
+                initial_cash,
+                evidence["equity_curve"],
+                evidence["utilization"],
+            )
+        except (ArithmeticError, OverflowError, ValueError, ZeroDivisionError):
+            return False
+        for key, expected in derived.items():
+            actual = metrics.get(key)
+            if (actual is None) != (expected is None):
+                return False
+            if expected is not None and not cls._same_cache_number(
+                actual, expected,
+            ):
+                return False
+        if ending_equity is not None:
+            if not evidence["equity_curve"]:
+                return False
+            if not cls._same_cache_number(
+                evidence["equity_curve"][-1], float(ending_equity),
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _valid_metric_evidence(
+        cls,
+        result: Mapping[str, object],
+        evidence: object,
+        cache_key: Mapping[str, object],
+    ) -> bool:
+        if set(result) == {
+            "schema_version", "scope", "symbol", "status", "reason",
+            "outperformance", "read_only",
+        }:
+            return evidence is None
+        scope = cache_key.get("scope")
+        expected_keys = {"root"} if scope == "symbol" else {
+            "root", "walk_forward",
+        }
+        if type(evidence) is not dict or set(evidence) != expected_keys:
+            return False
+        if not cls._valid_metric_evidence_node(
+            result.get("metrics"),
+            evidence["root"],
+            initial_cash=float(result["initial_cash"]),
+            ending_equity=result.get("ending_equity"),
+        ):
+            return False
+        if scope == "symbol":
+            return True
+        root_evidence = evidence["root"]
+        if root_evidence is not None and (
+            root_evidence["session_count"] != len(result["event_dates"])
+            or not cls._same_cache_number(
+                result["max_equity_weight"],
+                max(root_evidence["utilization"], default=0.0),
+            )
+        ):
+            return False
+        report = result.get("walk_forward")
+        report_evidence = evidence.get("walk_forward")
+        if (
+            type(report) is not dict
+            or type(report_evidence) is not dict
+            or set(report_evidence) != {"variants"}
+            or type(report_evidence.get("variants")) is not list
+            or len(report_evidence["variants"]) != len(report["variants"])
+        ):
+            return False
+        for variant, variant_evidence in zip(
+            report["variants"], report_evidence["variants"], strict=True,
+        ):
+            if (
+                type(variant_evidence) is not dict
+                or set(variant_evidence) != {"folds"}
+                or type(variant_evidence.get("folds")) is not list
+                or len(variant_evidence["folds"]) != len(variant["folds"])
+            ):
+                return False
+            for fold, fold_evidence in zip(
+                variant["folds"], variant_evidence["folds"], strict=True,
+            ):
+                if (
+                    type(fold_evidence) is not dict
+                    or set(fold_evidence) != {"train", "test"}
+                ):
+                    return False
+                for phase_name in ("train", "test"):
+                    if not cls._valid_metric_evidence_node(
+                        fold[phase_name].get("metrics"),
+                        fold_evidence[phase_name],
+                        initial_cash=float(result["initial_cash"]),
+                    ):
+                        return False
+                    phase_evidence = fold_evidence[phase_name]
+                    if phase_evidence is not None:
+                        expected_sessions = (
+                            fold["train_bar_count"]
+                            - max(
+                                result["strategy_parameters"][
+                                    "minimum_daily_bars"
+                                ],
+                                variant["parameters"]["long_ma_days"]
+                                + result["strategy_parameters"][
+                                    "long_ma_slope_lookback"
+                                ],
+                            )
+                            if phase_name == "train"
+                            else fold["test_bar_count"]
+                        )
+                        if (
+                            phase_evidence["session_count"]
+                            != expected_sessions
+                        ):
+                            return False
+        return True
+
+    @classmethod
     def _valid_symbol_benchmark(cls, value: Mapping[str, object]) -> bool:
         return (
             cls._strict_date_text(value.get("start_date"))
@@ -1707,47 +1879,58 @@ class SwingService:
         histories: Mapping[str, tuple[DailyBar, ...]],
         metadata: Mapping[str, EtfMetadata],
         strategy: SwingStrategyConfig,
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], dict[str, object] | None]:
         initial_cash = 100_000.0
         if scope == "symbol":
             assert symbol is not None
             bars = histories[symbol]
             if len(bars) < strategy.minimum_daily_bars + 1:
-                return self._backtest_unavailable(
-                    scope, symbol, "INSUFFICIENT_SAMPLE",
-                    "INSUFFICIENT_COMPLETED_DAILY_BARS",
+                return (
+                    self._backtest_unavailable(
+                        scope, symbol, "INSUFFICIENT_SAMPLE",
+                        "INSUFFICIENT_COMPLETED_DAILY_BARS",
+                    ),
+                    None,
                 )
             try:
-                result = SwingBacktester(
+                computed = SwingBacktester(
                     strategy, metadata[symbol].trading,
-                ).run_symbol(bars, initial_cash).to_dict()
+                ).run_symbol(bars, initial_cash)
             except SwingBacktestError as error:
-                return self._backtest_unavailable(
-                    scope, symbol, "DATA_UNAVAILABLE", str(error),
+                return (
+                    self._backtest_unavailable(
+                        scope, symbol, "DATA_UNAVAILABLE", str(error),
+                    ),
+                    None,
                 )
+            result = computed.to_dict()
             result["scope"] = "symbol"
             result["read_only"] = True
-            return result
+            return result, {"root": computed.cache_evidence()}
 
         first = selected_symbols[0]
         backtester = SwingBacktester(strategy, metadata[first].trading)
         trading_map = {
             item: metadata[item].trading for item in selected_symbols
         }
-        result = backtester.run_portfolio(
+        computed = backtester.run_portfolio(
             histories,
             initial_cash,
             trading_by_symbol=trading_map,
-        ).to_dict()
-        stability = backtester.walk_forward(
+        )
+        result = computed.to_dict()
+        stability_report = backtester.walk_forward(
             histories,
             initial_cash,
             trading_by_symbol=trading_map,
-        ).to_dict()
-        result["walk_forward"] = stability
+        )
+        result["walk_forward"] = stability_report.to_dict()
         result["symbol"] = None
         result["read_only"] = True
-        return result
+        return result, {
+            "root": computed.cache_evidence(),
+            "walk_forward": stability_report.cache_evidence(),
+        }
 
     def alerts(
         self,
