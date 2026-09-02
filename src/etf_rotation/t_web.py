@@ -1121,16 +1121,16 @@ class MonitorApplication:
             "grid_width_pct": constants.DEFAULT_GRID_WIDTH_PCT,
             "enabled": True,
         }
-        with self.watchlist_lock:
-            watchlist = load_watchlist(self.watchlist_path)
-            if any(current.symbol == normalized_symbol for current in watchlist):
-                raise FileExistsError(f"代码已在监控列表中: {normalized_symbol}")
-            if normalized_symbol not in self.metadata_store.load():
-                raise MissingWatchMetadataError(
-                    f"缺少交易元数据，无法添加: {normalized_symbol}",
-                )
-            self._atomic_write_watchlist([*watchlist, item])
-        if self.collector is None:
+        with self.producer_lock:
+            with self.watchlist_lock:
+                watchlist = load_watchlist(self.watchlist_path)
+                if any(current.symbol == normalized_symbol for current in watchlist):
+                    raise FileExistsError(f"代码已在监控列表中: {normalized_symbol}")
+                if normalized_symbol not in self.metadata_store.load():
+                    raise MissingWatchMetadataError(
+                        f"缺少交易元数据，无法添加: {normalized_symbol}",
+                    )
+                self._atomic_write_watchlist([*watchlist, item])
             self._bootstrap(increment_revision=True)
         return item
 

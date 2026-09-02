@@ -35,6 +35,12 @@
       "name": "科创50",
       "grid_width_pct": 0.002,
       "enabled": true
+    },
+    {
+      "symbol": "515180",
+      "name": "中证红利",
+      "grid_width_pct": 0.002,
+      "enabled": true
     }
   ]
 }

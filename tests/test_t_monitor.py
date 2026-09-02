@@ -303,7 +303,7 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
                 self.assertEqual(history_record["source"], quotes["510300"].source)
                 self.assertIn(expected_host, history_record["source"])
 
-    def test_collects_exactly_the_six_enabled_watchlist_etfs(self) -> None:
+    def test_collects_exactly_the_enabled_watchlist_etfs(self) -> None:
         watchlist_path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "watchlist.json"
         watchlist = load_watchlist(watchlist_path)
         requested = []
@@ -319,9 +319,9 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
             now=lambda: datetime.fromisoformat(NOW),
         ).collect(watchlist)
         self.assertEqual(requested, [
-            "510300", "510500", "563360", "512100", "159915", "588000",
+            "510300", "510500", "563360", "512100", "159915", "588000", "515180",
         ])
-        self.assertEqual(len(payload["quotes"]), 6)
+        self.assertEqual(len(payload["quotes"]), 7)
 
     def test_rejects_incomplete_response_and_preserves_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -828,12 +828,13 @@ class EtfMetadataTests(unittest.TestCase):
             path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             return EtfMetadataStore(path).load()
 
-    def test_initial_mapping_contains_six_etfs(self) -> None:
+    def test_initial_mapping_contains_enabled_etfs(self) -> None:
         path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "etf_metadata.json"
         metadata = EtfMetadataStore(path).load()
         self.assertEqual(metadata["510300"].index.code, "000300")
         self.assertEqual(metadata["159915"].index.code, "399006")
-        self.assertEqual(len(metadata), 6)
+        self.assertEqual(metadata["515180"].index.code, "000922")
+        self.assertEqual(len(metadata), 7)
 
     def test_initial_mapping_contains_exact_trading_attributes(self) -> None:
         path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "etf_metadata.json"
@@ -845,6 +846,7 @@ class EtfMetadataTests(unittest.TestCase):
             "512100": ("SSE", 0.10),
             "159915": ("SZSE", 0.20),
             "588000": ("SSE", 0.20),
+            "515180": ("SSE", 0.10),
         }
         self.assertEqual(set(items), set(expected))
         for symbol, (exchange, price_limit_pct) in expected.items():
@@ -958,6 +960,37 @@ class MonitorWebTests(unittest.TestCase):
         self.assertEqual(payload["index"]["code"], "000300")
         self.assertEqual(payload["status"], "MISSING_VALUATION")
         self.assertIsNone(payload["valuation"])
+
+    def test_add_watch_item_publishes_missing_quote_immediately(self) -> None:
+        metadata = json.loads(self.metadata.read_text(encoding="utf-8"))
+        metadata["items"].append({
+            "symbol": "515180",
+            "name": "中证红利ETF",
+            "index": {"code": "000922", "name": "中证红利", "provider": "中证指数"},
+            "trading": {
+                "exchange": "SSE",
+                "asset_type": "DOMESTIC_EQUITY_ETF",
+                "intraday_turnaround": False,
+                "sellable_delay_days": 1,
+                "lot_size": 100,
+                "price_tick": 0.001,
+                "price_limit_pct": 0.10,
+                "volume_unit_shares": 100,
+            },
+        })
+        self.metadata.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        request = Request(
+            self.base + "/api/watchlist",
+            data=json.dumps({"symbol": "515180", "name": "中证红利"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=2) as response:
+            self.assertEqual(response.status, 201)
+        with urlopen(self.base + "/api/snapshot", timeout=2) as response:
+            payload = json.loads(response.read())
+        added = next(item for item in payload["items"] if item["symbol"] == "515180")
+        self.assertEqual(added["status"], "MISSING_QUOTE")
 
     def test_page_has_lazy_valuation_card(self) -> None:
         self.assertIn("关联指数与指数估值", PAGE)
