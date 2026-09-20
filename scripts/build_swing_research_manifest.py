@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from etf_rotation.swing_data import DailyBar, DailyBarValidator, SwingDataError
 from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
+from etf_rotation.market_data import MarketDataError, load_closed_dates
 from etf_rotation.swing_research import ResearchStatus, assess_history
 
 
@@ -146,6 +147,7 @@ def build_manifest(
     *,
     output_path: Path | None = None,
     wind_root: Path | None = None,
+    calendar_path: Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Return and optionally persist a deterministic research manifest."""
@@ -163,11 +165,18 @@ def build_manifest(
         bars_by_symbol[bar.symbol].append(bar)
     symbols = _load_watchlist(watchlist_path)
     metadata: dict[str, Any] = {}
+    closed_dates = set()
     if metadata_path is not None:
         try:
             metadata = EtfMetadataStore(Path(metadata_path)).load()
         except (OSError, MetadataError) as error:
             raise ValueError("ETF metadata is invalid") from error
+        resolved_calendar = Path(calendar_path or "data/monitor/market_calendar.json")
+        if resolved_calendar.exists():
+            try:
+                closed_dates = load_closed_dates(resolved_calendar)
+            except (OSError, MarketDataError) as error:
+                raise ValueError("market calendar is invalid") from error
 
     items: list[dict[str, Any]] = []
     for symbol in symbols:
@@ -187,10 +196,12 @@ def build_manifest(
             warnings.append("MISSING_METADATA")
         metadata_validation_status = "NOT_RUN"
         if metadata_item is not None and bars:
-            validator = DailyBarValidator(())
+            validator = DailyBarValidator(closed_dates)
             try:
-                for bar in bars:
-                    validator.validate(bar, metadata_item)
+                validator.validate_sequence(
+                    tuple(sorted(bars, key=lambda bar: bar.trading_date)),
+                    {symbol: metadata_item},
+                )
             except SwingDataError:
                 warnings.append("METADATA_VALIDATION_FAILED")
                 metadata_validation_status = "FAILED"
@@ -270,6 +281,10 @@ def main() -> int:
         "--metadata", type=Path,
         default=Path("data/monitor/etf_metadata.json"),
     )
+    parser.add_argument(
+        "--calendar", type=Path,
+        default=Path("data/monitor/market_calendar.json"),
+    )
     parser.add_argument("--wind-root", type=Path)
     parser.add_argument("--generated-at")
     args = parser.parse_args()
@@ -279,6 +294,7 @@ def main() -> int:
         metadata_path=args.metadata,
         output_path=args.output,
         wind_root=args.wind_root,
+        calendar_path=args.calendar,
         generated_at=args.generated_at,
     )
     return 0

@@ -52,6 +52,7 @@ def _data_version(bars: Sequence[DailyBar]) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     return "sha256:" + sha256(canonical).hexdigest()
 
@@ -85,11 +86,21 @@ def assess_history(
             raise ResearchError(f"{value_name} must be a non-empty string")
 
     materialized = tuple(bars)
-    if any(type(bar) is not DailyBar for bar in materialized):
-        raise ResearchError("bars must contain only DailyBar instances")
+    valid_bars: list[DailyBar] = []
+    invalid_bar = False
+    for bar in materialized:
+        if type(bar) is not DailyBar:
+            invalid_bar = True
+            continue
+        try:
+            # Re-parse the serialized form so direct dataclass construction or
+            # mutation cannot bypass schema, OHLC, units, and is_final checks.
+            valid_bars.append(DailyBar.from_mapping(bar.to_dict()))
+        except Exception:
+            invalid_bar = True
 
-    dates = tuple(bar.trading_date for bar in materialized)
-    symbols = {bar.symbol for bar in materialized}
+    dates = tuple(bar.trading_date for bar in valid_bars)
+    symbols = {bar.symbol for bar in valid_bars}
     counts = Counter(dates)
     duplicate_dates = tuple(
         item.isoformat() for item, count in sorted(counts.items()) if count > 1
@@ -123,9 +134,12 @@ def assess_history(
         warnings.append("NON_INCREASING_TRADING_DATE")
     if not materialized:
         warnings.append("NO_COMPLETED_BARS")
+    if invalid_bar:
+        warnings.append("INVALID_DAILY_BAR")
 
     invalid_structure = (
         not materialized
+        or invalid_bar
         or bool(duplicate_dates)
         or len(symbols) > 1
         or (bool(dates) and tuple(sorted(set(dates))) != dates)
@@ -143,12 +157,11 @@ def assess_history(
 
     return ResearchAssessment(
         status=status,
-        bar_count=len(materialized),
+        bar_count=len(valid_bars),
         history_start=dates[0] if dates else None,
         history_end=dates[-1] if dates else None,
         duplicate_dates=duplicate_dates,
         warnings=tuple(warnings),
         walk_forward_eligible=status is ResearchStatus.VERIFIED,
-        data_version=_data_version(materialized),
+        data_version=_data_version(valid_bars),
     )
-
