@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "strategy_version": "SWING_V2_SHADOW",
+  "event_window_sessions": 5,
+  "rsi_lower": 45.0,
+  "rsi_upper": 65.0,
+  "kdj_j_max": 85.0,
+  "atr_distance_max": 1.0,
+  "macd_histogram_rising_days": 2,
+  "min_walk_forward_bars": 630,
+  "variants": ["V2_A", "V2_B", "V2_C"]
+}
