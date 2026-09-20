@@ -1,0 +1,605 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-20T14:18:09+08:00",
+  "history_path": "var\\swing\\daily_quotes.jsonl",
+  "watchlist_path": "data\\swing\\watchlist.json",
+  "runtime_history_unchanged": true,
+  "items": [
+    {
+      "symbol": "510300",
+      "bar_count": 768,
+      "history_start": "2023-07-24",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:6a5c7d782421d181e9c5900e33c657a39c2176336757418b7387a9cf7f746330",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "510500",
+      "bar_count": 768,
+      "history_start": "2023-07-24",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:d2f37d669a6b851462131ff227eb4151bcb238aba33200d3e4f7036d80a5778b",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "563360",
+      "bar_count": 472,
+      "history_start": "2024-10-16",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:c044773772d95641b2955226fd777c596206a5f26052f8bce6c31f89c46b8211",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "512100",
+      "bar_count": 768,
+      "history_start": "2023-07-24",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:d5317fd6b315d3b9dd97e69738ec0b1d347de98516ac81fbe56fc89cad1fdc98",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159915",
+      "bar_count": 768,
+      "history_start": "2023-07-24",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:ae0cf7ff9d502f6d90103ceea45fd5e8ea3774c960e990ee9c9a18cbb4f42613",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "588000",
+      "bar_count": 768,
+      "history_start": "2023-07-24",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:6dc86fc62a86e0ab1139c1600dd7340599f7ea05a810b9cda111a721a14ea691",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "515180",
+      "bar_count": 766,
+      "history_start": "2023-07-26",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:728a7fde065f5578f199f4f9057b728599e01743e85f6a2ccbcea1920f8d3283",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159307",
+      "bar_count": 584,
+      "history_start": "2024-04-26",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:deeb9f29cf9e667d7d123e10108d2374cf13d62fc95279052a208fa1b1555fc2",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159792",
+      "bar_count": 766,
+      "history_start": "2023-07-26",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:5f161133b166a11227f0e78bdf378f7229e0a1e2b9d73f799e044e1b99f343ca",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "513050",
+      "bar_count": 766,
+      "history_start": "2023-07-26",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:5ebb4799196c14a2682bae729942b053e270c6c40519040ee7cd892996ea9400",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159781",
+      "bar_count": 766,
+      "history_start": "2023-07-26",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:443fba48180e6805ecfde871f795a8c3a4155e4970a88986d9efb543c05c40e1",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159201",
+      "bar_count": 382,
+      "history_start": "2025-02-28",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:0ff87ac2acbe2e45615d79957549b9f9c532e4f1f581a32c43622db64eea62ca",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159263",
+      "bar_count": 294,
+      "history_start": "2025-07-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:e4e475c4e8f373bf24669c814a6158168137eb46ffe4151c8b971d3b21e902a8",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159259",
+      "bar_count": 257,
+      "history_start": "2025-08-29",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:3d2a87d014629a0179ba7f533ff0106d0beb192e9367730571726c208b0ba2bc",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159209",
+      "bar_count": 364,
+      "history_start": "2025-03-26",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:57ed977f3d29414d68c939eaf6b11092d002ab74e67ed60e7c48120d46fe95f5",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "512480",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:e3806894551cc1bb89647399bd7d1a2ce8390be21812285a4136324a63cea6c9",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "515880",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:4dcf693ec3e53016f6cec685d72667fa3bbfe6a9c86380b5c8883a52bffd239f",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159995",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:8747b5af24ffd89b3a0f01bf3c730514e3c6c39c7b1f63509ef6b64a86c9a1ef",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "562500",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:9fc92cc2dd4a2c8f77160c16da4d31e30b63e2d10a25dfe7e1c289b3c2cffd55",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "512880",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:d2a8cd2b7447e98c4b39b9b6d25a13cce82af0dca135c81689eea963b7590bee",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "516160",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:b6b67b56b78e03e6ed24dc730bdc4a9236b3645e4a1e595c9a2e4342d987de35",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "512170",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:f4f3d9dd05100b5996fcfaafbf3be07566c96ae1183ec603d52982e7144957db",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "515120",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:2344e93c8d0e9e3951993e73679071c75ee8dabe74db23f453d4d5bacc8f78a8",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159928",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:d7196b65c89b35a14a4a91abd6de59ed250d1a138b0adc37b8e5984a767865d6",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "512400",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:aab5ef88033baaa0182b680f2e075cb0d98b0241421f9f8b1167006e3c7984d0",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159819",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:f93937769b72c7a8a5900926e3f24507b80cbce824cde2cde6ff5025e673c49e",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159516",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:31b48a9b538d736a263a38b3b1e9033e678185487159b4c00d626b9f1a0b8d69",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159611",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:f24365d26c33e37f7f5092e8406879efeb930639c997c9d7d9c69a6c113583f7",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159206",
+      "bar_count": 371,
+      "history_start": "2025-03-17",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:6275f3ab47afc981cb78f7be25243a44d84d9ed6e2f77faf23d3da54fbb014bb",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "512070",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:b5921d1f6839d064ea41343ade02ea7f19169923ed3a25f43adaf625391c35b9",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159967",
+      "bar_count": 756,
+      "history_start": "2023-08-09",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:98ae65c8ee8453f66478149b321387f74f1f365f665788ecb5498bd00167891a",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "159326",
+      "bar_count": 491,
+      "history_start": "2024-09-10",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:e7d4e58343ce9ada020db93b40450c91a3e1db2357406f1b07f5907301cc8034",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    },
+    {
+      "symbol": "588020",
+      "bar_count": 739,
+      "history_start": "2023-09-01",
+      "history_end": "2026-09-18",
+      "research_status": "USABLE_WITH_WARNINGS",
+      "walk_forward_eligible": false,
+      "duplicate_dates": [],
+      "warnings": [
+        "CROSSCHECK_PENDING",
+        "ADJUSTMENT_UNVERIFIED",
+        "AMOUNT_ESTIMATED"
+      ],
+      "data_version": "sha256:9035b492fe6c9339af27b266cf93986353c097bfa2e03b9f5e24b47103b8c082",
+      "crosscheck_status": "PENDING",
+      "adjustment_status": "UNKNOWN",
+      "amount_quality": "ESTIMATED"
+    }
+  ],
+  "source_receipts": [],
+  "research_only": true
+}
