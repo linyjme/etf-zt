@@ -16,30 +16,38 @@ from tempfile import NamedTemporaryFile
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from etf_rotation.swing_data import DailyBar, SwingDataError
+from etf_rotation.swing_data import DailyBar, DailyBarValidator, SwingDataError
+from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
 from etf_rotation.swing_research import ResearchStatus, assess_history
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
-def _load_history(path: Path) -> tuple[DailyBar, ...]:
+def _load_history(path: Path) -> tuple[tuple[DailyBar, ...], dict[str, int]]:
     try:
         content = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return ()
+        return (), {}
     if not content:
-        return ()
+        return (), {}
     bars: list[DailyBar] = []
+    invalid_symbols: dict[str, int] = {}
     for line_number, line in enumerate(content.splitlines(), start=1):
-        if not line:
-            raise ValueError(f"history line {line_number} is empty")
+        value: object = None
         try:
+            if not line:
+                raise ValueError("empty line")
             value = json.loads(line)
             bars.append(DailyBar.from_mapping(value))
         except (ValueError, TypeError, RecursionError, SwingDataError) as error:
-            raise ValueError(f"invalid history line {line_number}") from error
-    return tuple(bars)
+            symbol = (
+                value.get("symbol")
+                if isinstance(value, dict) and isinstance(value.get("symbol"), str)
+                else "__UNKNOWN__"
+            )
+            invalid_symbols[symbol] = invalid_symbols.get(symbol, 0) + 1
+    return tuple(bars), invalid_symbols
 
 
 def _load_watchlist(path: Path) -> tuple[str, ...]:
@@ -134,6 +142,7 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 def build_manifest(
     history_path: Path,
     watchlist_path: Path,
+    metadata_path: Path | None = None,
     *,
     output_path: Path | None = None,
     wind_root: Path | None = None,
@@ -143,13 +152,22 @@ def build_manifest(
 
     history_path = Path(history_path)
     watchlist_path = Path(watchlist_path)
+    if output_path is not None and Path(output_path).resolve() == history_path.resolve():
+        raise ValueError("output_path must not overwrite runtime history")
     original_history = (
         history_path.read_bytes() if history_path.exists() else None
     )
     bars_by_symbol: dict[str, list[DailyBar]] = defaultdict(list)
-    for bar in _load_history(history_path):
+    history_bars, invalid_symbols = _load_history(history_path)
+    for bar in history_bars:
         bars_by_symbol[bar.symbol].append(bar)
     symbols = _load_watchlist(watchlist_path)
+    metadata: dict[str, Any] = {}
+    if metadata_path is not None:
+        try:
+            metadata = EtfMetadataStore(Path(metadata_path)).load()
+        except (OSError, MetadataError) as error:
+            raise ValueError("ETF metadata is invalid") from error
 
     items: list[dict[str, Any]] = []
     for symbol in symbols:
@@ -161,6 +179,34 @@ def build_manifest(
             adjustment_status=adjustment_status,
             amount_quality=amount_quality,
         )
+        warnings = list(assessment.warnings)
+        if invalid_symbols.get(symbol, 0):
+            warnings.append("INVALID_HISTORY_RECORD")
+        metadata_item = metadata.get(symbol) if metadata_path is not None else None
+        if metadata_path is not None and metadata_item is None:
+            warnings.append("MISSING_METADATA")
+        metadata_validation_status = "NOT_RUN"
+        if metadata_item is not None and bars:
+            validator = DailyBarValidator(())
+            try:
+                for bar in bars:
+                    validator.validate(bar, metadata_item)
+            except SwingDataError:
+                warnings.append("METADATA_VALIDATION_FAILED")
+                metadata_validation_status = "FAILED"
+            else:
+                metadata_validation_status = "PASSED"
+        status = assessment.status
+        if any(item in warnings for item in (
+            "INVALID_HISTORY_RECORD", "MISSING_METADATA", "METADATA_VALIDATION_FAILED",
+        )):
+            status = ResearchStatus.EXCLUDED
+        sample_class = (
+            "NO_SAMPLE" if assessment.bar_count == 0
+            else "FULL_SAMPLE" if assessment.bar_count >= 630
+            else "SHORT_SAMPLE"
+        )
+        sources = sorted({bar.source for bar in bars})
         items.append({
             "symbol": symbol,
             "bar_count": assessment.bar_count,
@@ -172,14 +218,26 @@ def build_manifest(
                 assessment.history_end.isoformat()
                 if assessment.history_end else None
             ),
-            "research_status": assessment.status.value,
+            "research_status": status.value,
+            "sample_class": sample_class,
             "walk_forward_eligible": assessment.walk_forward_eligible,
             "duplicate_dates": list(assessment.duplicate_dates),
-            "warnings": list(assessment.warnings),
+            "warnings": sorted(set(warnings)),
             "data_version": assessment.data_version,
             "crosscheck_status": crosscheck_status,
             "adjustment_status": adjustment_status,
             "amount_quality": amount_quality,
+            "source": sources,
+            "price_basis": "adjusted_ohlc",
+            "metadata_status": (
+                "VERIFIED" if metadata_path is not None and metadata_item is not None
+                else "NOT_SUPPLIED" if metadata_path is None else "MISSING"
+            ),
+            "metadata_validation_status": metadata_validation_status,
+            "trading_metadata": (
+                metadata_item.trading.to_dict()
+                if metadata_item is not None else None
+            ),
         })
 
     if generated_at is None:
@@ -194,6 +252,7 @@ def build_manifest(
             or history_path.read_bytes() == original_history
         ),
         "items": items,
+        "invalid_history_records": invalid_symbols,
         "source_receipts": _source_receipts(wind_root),
         "research_only": True,
     }
@@ -207,12 +266,17 @@ def main() -> int:
     parser.add_argument("--history", type=Path, required=True)
     parser.add_argument("--watchlist", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--metadata", type=Path,
+        default=Path("data/monitor/etf_metadata.json"),
+    )
     parser.add_argument("--wind-root", type=Path)
     parser.add_argument("--generated-at")
     args = parser.parse_args()
     build_manifest(
         args.history,
         args.watchlist,
+        metadata_path=args.metadata,
         output_path=args.output,
         wind_root=args.wind_root,
         generated_at=args.generated_at,
@@ -222,4 +286,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

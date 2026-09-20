@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import unittest
 import json
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from etf_rotation.swing_research import ResearchStatus, assess_history
 from scripts.build_swing_research_manifest import build_manifest
 from tests.swing_helpers import swing_strategy_bars
+from tests.swing_helpers import metadata_fixture
 
 
 class ResearchAssessmentTests(unittest.TestCase):
@@ -47,6 +49,67 @@ class ResearchAssessmentTests(unittest.TestCase):
         )
         self.assertIs(result.status, ResearchStatus.SHORT_SAMPLE)
         self.assertFalse(result.walk_forward_eligible)
+
+    def test_non_completed_bar_is_excluded(self):
+        bars = list(swing_strategy_bars(130))
+        result = assess_history(
+            (*bars[:-1], replace(bars[-1], is_final=False)),
+            crosscheck_status="PASSED",
+            adjustment_status="VERIFIED",
+            amount_quality="PROVIDER_REPORTED",
+        )
+        self.assertIs(result.status, ResearchStatus.EXCLUDED)
+        self.assertIn("INVALID_DAILY_BAR", result.warnings)
+
+    def test_manifest_refuses_to_overwrite_runtime_history(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = root / "daily_quotes.jsonl"
+            history.write_text("", encoding="utf-8")
+            watchlist = root / "watchlist.json"
+            watchlist.write_text(
+                json.dumps({"schema_version": 1, "items": []}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                build_manifest(history, watchlist, output_path=history)
+
+    def test_manifest_isolates_malformed_symbol_and_validates_metadata(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = root / "daily_quotes.jsonl"
+            valid = swing_strategy_bars(70, symbol="510300")
+            history.write_text(
+                "".join(
+                    json.dumps(bar.to_dict(), sort_keys=True, separators=(",", ":")) + "\n"
+                    for bar in valid
+                ) + json.dumps({"symbol": "159915", "close": -1}) + "\n",
+                encoding="utf-8",
+            )
+            watchlist = root / "watchlist.json"
+            watchlist.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "items": [
+                        {"symbol": "510300", "enabled": True},
+                        {"symbol": "159915", "enabled": True},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            metadata = root / "metadata.json"
+            metadata.write_text(json.dumps(metadata_fixture(("510300",))), encoding="utf-8")
+            manifest = build_manifest(
+                history,
+                watchlist,
+                metadata_path=metadata,
+            )
+            items = {item["symbol"]: item for item in manifest["items"]}
+            self.assertEqual(items["510300"]["metadata_status"], "VERIFIED")
+            self.assertEqual(items["510300"]["sample_class"], "SHORT_SAMPLE")
+            self.assertEqual(items["159915"]["research_status"], ResearchStatus.EXCLUDED.value)
+            self.assertIn("NO_COMPLETED_BARS", items["159915"]["warnings"])
+            self.assertEqual(manifest["invalid_history_records"], {"159915": 1})
 
     def test_manifest_covers_enabled_symbols_without_mutating_runtime_history(self):
         with TemporaryDirectory() as directory:
