@@ -321,7 +321,9 @@ def calculate_indicator_context(
         }
 
     points: list[dict[str, object]] = []
-    for index, bar in enumerate(materialized):
+    start_index = max(0, count - lookback)
+    for index in range(start_index, count):
+        bar = materialized[index]
         prefix_closes = closes[:index + 1]
         prefix_highs = highs[:index + 1]
         prefix_lows = lows[:index + 1]
@@ -342,7 +344,10 @@ def calculate_indicator_context(
         kdj_k = kdj["k"]
         kdj_d = kdj["d"]
         kdj_cross_age = _kdj_cross_age(prefix_highs, prefix_lows, prefix_closes)
-        rsi_values = [_rsi_wilder(prefix_closes[:candidate + 1]) for candidate in range(index + 1)]
+        rsi_values = [
+            _rsi_wilder(prefix_closes[:candidate + 1])
+            for candidate in range(max(0, index - 12), index + 1)
+        ]
         rsi_rising_days = 0
         for candidate in range(len(rsi_values) - 1, 0, -1):
             current_rsi = rsi_values[candidate]
@@ -404,7 +409,7 @@ def calculate_indicator_context(
         }
         points.append(point)
 
-    recent = points[-lookback:]
+    recent = points
     latest = points[-1]
     return {
         "status": status,
