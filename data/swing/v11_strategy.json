@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "strategy_version": "SWING_V11_SHADOW",
+  "target_order_cny": 2000.0,
+  "max_order_cny": 5000.0,
+  "shadow_risk_rate": 0.003,
+  "formal_risk_rate": 0.01,
+  "minimum_daily_bars": 250,
+  "weekly_confirmation_days": 2,
+  "pullback_window_min": 5,
+  "pullback_window_max": 15,
+  "box_days": 25,
+  "cooldown_sessions": 5,
+  "lot_size": 100
+}

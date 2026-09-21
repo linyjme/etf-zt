@@ -150,6 +150,22 @@ class SwingServiceTests(unittest.TestCase):
             event_limit=event_limit,
         )
 
+    def test_snapshot_contains_v11_shadow_without_replacing_formal_v1(self) -> None:
+        service = self.make_service()
+        snapshot = service.snapshot()
+        self.assertEqual(snapshot["strategy"], "SWING_V1")
+        item = snapshot["items"][0]
+        self.assertEqual(item["v11"]["strategy_version"], "SWING_V11_SHADOW")
+        self.assertFalse(item["v11"]["executable"])
+        self.assertEqual(snapshot["v11_summary"]["strategy_version"], "SWING_V11_SHADOW")
+        self.assertFalse(snapshot["v11_summary"]["executable"])
+
+    def test_v11_snapshot_exposes_data_as_of_kind_and_fail_closed_quality(self) -> None:
+        item = self.make_service().snapshot()["items"][0]
+        self.assertIn(item["v11"]["as_of_kind"], {"COMPLETED_DAILY", "QUASI_CLOSE_1445"})
+        self.assertIn(item["v11"]["status"], {"AVAILABLE", "DATA_UNAVAILABLE"})
+        self.assertNotEqual(item["v11"]["data_quality_status"], "VERIFIED")
+
     def test_backtest_is_strict_cached_content_addressed_and_revision_neutral(self) -> None:
         service = self.make_service()
         before = service.snapshot()["revision"]
