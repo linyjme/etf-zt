@@ -3679,22 +3679,29 @@ class SwingService:
         metadata: EtfMetadata | None,
         previous: Mapping[str, object],
     ) -> dict[str, object]:
+        quasi_close_available = False
+        raw_time = previous.get("current_price_time")
+        try:
+            observed_at = datetime.fromisoformat(str(raw_time))
+            now = self.clock()
+            quasi_close_available = bool(
+                previous.get("current_price") is not None
+                and self._health.get("intraday") == "REALTIME"
+                and observed_at.date() == now.date()
+                and time(14, 45) <= observed_at.timetz().replace(tzinfo=None) <= time(15, 0)
+            )
+        except Exception:
+            quasi_close_available = False
         base = {
             "strategy_version": "SWING_V11_SHADOW",
             "status": "DATA_UNAVAILABLE",
             "data_quality_status": "UNKNOWN",
             "executable": False,
-            "as_of_kind": (
-                "QUASI_CLOSE_1445"
-                if previous.get("current_price") is not None
-                and previous.get("current_price_time") is not None
-                and self._health.get("intraday") == "REALTIME"
-                else "COMPLETED_DAILY"
-            ),
+            "as_of_kind": "QUASI_CLOSE_1445" if quasi_close_available else "COMPLETED_DAILY",
             "as_of_trading_date": bars[-1].trading_date.isoformat() if bars else None,
             "blocked_reasons": ["V11_CONFIG_UNAVAILABLE"],
             "decision": None,
-            "quasi_close_available": bool(previous.get("current_price")),
+            "quasi_close_available": quasi_close_available,
         }
         config = self._v11_config
         if config is None:
@@ -3711,8 +3718,9 @@ class SwingService:
             closes = [bar.adjusted_close for bar in bars]
             ma20 = moving.get("ma20") if isinstance(moving, Mapping) else None
             ma60 = moving.get("ma60") if isinstance(moving, Mapping) else None
-            ma20_prior = (
-                sum(closes[-15:-5]) / 10.0 if len(closes) >= 15 else None
+            ma20_slope = (
+                moving.get("ma20_slope_pct_10d")
+                if isinstance(moving, Mapping) else None
             )
             indicator = {
                 "bar_count": len(bars),
@@ -3722,10 +3730,7 @@ class SwingService:
                 "ma60": ma60,
                 "ma250": moving.get("ma250") if isinstance(moving, Mapping) else None,
                 "atr14": indicators.get("atr14"),
-                "ma20_slope_pct_10d": (
-                    ((ma20 / ma20_prior) - 1.0) * 100.0
-                    if ma20 is not None and ma20_prior not in (None, 0.0) else None
-                ),
+                "ma20_slope_pct_10d": ma20_slope,
                 "weekly_close": weekly.get("close") if isinstance(weekly, Mapping) else None,
                 "weekly_ma10": weekly.get("ma10") if isinstance(weekly, Mapping) else None,
                 "weekly_ma20": weekly.get("ma20") if isinstance(weekly, Mapping) else None,

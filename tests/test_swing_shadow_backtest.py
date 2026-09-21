@@ -12,10 +12,19 @@ from etf_rotation.swing_shadow_backtest import (
     replay_variant,
 )
 from tests.swing_helpers import swing_strategy_bars
-from scripts.run_swing_shadow import run_shadow_report
+from scripts.run_swing_shadow import run_shadow_report, _v11_shadow_result
+from etf_rotation.swing_v11 import load_v11_config
 
 
 class SwingShadowBacktestTests(unittest.TestCase):
+    def test_v11_report_supplies_ma20_slope_evidence(self):
+        config = load_v11_config(Path(__file__).parents[1] / "data/swing/v11_strategy.json")
+        result = _v11_shadow_result("510300", swing_strategy_bars(260), {
+            "crosscheck_status": "PASSED", "amount_quality": "PROVIDER_REPORTED",
+            "adjustment_status": "VERIFIED",
+        }, config)
+        self.assertIsNotNone(result["decision"]["evidence"].get("ma20_slope_pct_10d"))
+
     def test_shadow_replay_uses_next_trading_day_execution(self):
         result = replay_variant(
             {"510300": swing_strategy_bars(700)},

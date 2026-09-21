@@ -311,12 +311,6 @@ def evaluate_v11(
         bool(indicator.get("volume_recovery_trigger")),
     )
     a_ok = trend_ok and a_week_ok and a_pullback_ok and bias_ok and any(momentum_triggers)
-    if not a_week_ok:
-        reasons.append("WEEKLY_TREND_NOT_CONFIRMED")
-    if not a_pullback_ok:
-        reasons.append("PULLBACK_NOT_CONFIRMED")
-    if not any(momentum_triggers):
-        reasons.append("MOMENTUM_NOT_CONFIRMED")
 
     b_ok = bool(
         trend_ok
@@ -332,10 +326,20 @@ def evaluate_v11(
         and weekly_close is not None and weekly_ma10 is not None
         and weekly_close > weekly_ma10
     )
-    if not a_ok and not bool(indicator.get("box_ok")):
-        reasons.append("BOX_NOT_CONFIRMED")
-    if not a_ok and not bool(indicator.get("box_breakout_ok")):
-        reasons.append("BREAKOUT_NOT_CONFIRMED")
+    # A and B are alternative entry setups. Do not let failed A evidence
+    # block a valid B breakout; report setup-specific blockers only when both
+    # alternatives fail.
+    if not a_ok and not b_ok:
+        if not a_week_ok:
+            reasons.append("WEEKLY_TREND_NOT_CONFIRMED")
+        if not a_pullback_ok:
+            reasons.append("PULLBACK_NOT_CONFIRMED")
+        if not any(momentum_triggers):
+            reasons.append("MOMENTUM_NOT_CONFIRMED")
+        if not bool(indicator.get("box_ok")):
+            reasons.append("BOX_NOT_CONFIRMED")
+        if not bool(indicator.get("box_breakout_ok")):
+            reasons.append("BREAKOUT_NOT_CONFIRMED")
     rs = context.relative_strength_20
     if rs is not None and rs < -3.0:
         reasons.append("RELATIVE_STRENGTH_TOO_WEAK")
@@ -400,7 +404,10 @@ def evaluate_v11(
         "sizing": sizing,
     }
     return _decision(
-        state, config, setup=setup, action="ENTRY_CANDIDATE" if setup is not V11Setup.NONE else "OBSERVE",
+        state, config, setup=setup,
+        action=("ENTRY_CANDIDATE" if state in {
+            V11State.TECHNICAL_CANDIDATE, V11State.ACTION_CANDIDATE,
+        } else "OBSERVE"),
         reasons=hard_reasons, evidence=evidence, context=context,
         planned_shares=planned_shares,
         planned_notional_cny=planned_notional,
@@ -464,11 +471,15 @@ def size_v11_order(
     risk_budget = equity * config.shadow_risk_rate
     risk_shares = risk_budget / distance if distance > 0.0 else 0.0
     cash_shares = cash / entry_price if entry_price > 0.0 else 0.0
+    target_notional = config.target_order_cny * (0.5 if force_half else 1.0)
+    target_notional_shares = target_notional / entry_price
     hard_notional_shares = config.max_order_cny / entry_price
     if force_half:
         risk_shares *= 0.5
         evidence["forced_half_size"] = True
-    selected = _lot_floor(min(risk_shares, cash_shares, hard_notional_shares), config.lot_size)
+    selected = _lot_floor(min(
+        risk_shares, cash_shares, target_notional_shares, hard_notional_shares,
+    ), config.lot_size)
     if selected < config.lot_size:
         reasons.append("MINIMUM_LOT")
         selected = 0
@@ -478,6 +489,7 @@ def size_v11_order(
         "risk_budget_cny": risk_budget,
         "risk_cap_shares": risk_shares,
         "cash_cap_shares": cash_shares,
+        "target_cap_shares": target_notional_shares,
         "max_order_cap_shares": hard_notional_shares,
         "selected_shares": selected,
         "selected_notional_cny": selected * entry_price,
@@ -589,6 +601,12 @@ def calculate_v11_indicators(bars: Sequence[DailyBar]) -> dict[str, object]:
     volumes = [float(bar.volume) for bar in materialized]
     moving = dict(snapshot["moving_averages"])
     moving["ma250"] = _average(closes, 250)
+    if len(closes) >= 30:
+        current_ma20 = sum(closes[-20:]) / 20.0
+        prior_ma20 = sum(closes[-30:-10]) / 20.0
+        moving["ma20_slope_pct_10d"] = (current_ma20 / prior_ma20 - 1.0) * 100.0
+    else:
+        moving["ma20_slope_pct_10d"] = None
     atr_values: list[float] = []
     for index in range(max(1, len(materialized) - 14), len(materialized)):
         previous = closes[index - 1]

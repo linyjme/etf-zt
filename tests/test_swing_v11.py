@@ -120,6 +120,43 @@ class SwingV11ContractTests(unittest.TestCase):
         decision = evaluate_v11(swing_strategy_bars(260), config=config, context=context)
         self.assertEqual(decision.state, V11State.UNCERTAIN)
         self.assertIn("ENVIRONMENT_UNKNOWN", decision.blocked_reasons)
+        self.assertEqual(decision.action, "OBSERVE")
+
+    def test_unverified_data_cannot_display_entry_action(self) -> None:
+        config = load_v11_config(PROJECT_ROOT / "data/swing/v11_strategy.json")
+        decision = evaluate_v11(swing_strategy_bars(260), config=config, context=V11Context(
+            indicator=self._indicator(), environment_state="ATTACK", data_quality="UNVERIFIED",
+        ))
+        self.assertEqual(decision.action, "OBSERVE")
+
+    def test_valid_breakout_does_not_require_pullback_confirmation(self) -> None:
+        config = load_v11_config(PROJECT_ROOT / "data/swing/v11_strategy.json")
+        decision = evaluate_v11(swing_strategy_bars(260), config=config, context=V11Context(
+            indicator=self._indicator(
+                pullback_window_ok=False, pullback_recovery_ok=False,
+                volume_contraction_ok=False, macd_trigger=False,
+                box_ok=True, box_breakout_ok=True, volume_ratio20=1.6,
+                weekly_ma20=102.0,
+            ), environment_state="ATTACK",
+        ))
+        self.assertEqual(decision.setup.value, "B_BREAKOUT")
+        self.assertEqual(decision.state, V11State.TECHNICAL_CANDIDATE)
+        self.assertEqual(decision.blocked_reasons, ())
+
+    def test_target_cap_and_half_size_apply_even_when_risk_cap_is_large(self) -> None:
+        config = load_v11_config(PROJECT_ROOT / "data/swing/v11_strategy.json")
+        context = V11Context(equity_cny=200_000.0, cash_cny=10_000.0)
+        normal, _ = size_v11_order(entry_price=2.0, stop_price=1.94, config=config, context=context)
+        half, _ = size_v11_order(entry_price=2.0, stop_price=1.94, config=config, context=context, force_half=True)
+        self.assertEqual(normal, 1000)
+        self.assertEqual(half, 500)
+
+    def test_ma20_slope_compares_twenty_day_windows_ten_sessions_apart(self) -> None:
+        bars = swing_strategy_bars(260)
+        indicator = calculate_v11_indicators(bars)
+        closes = [bar.adjusted_close for bar in bars]
+        expected = (sum(closes[-20:]) / sum(closes[-30:-10]) - 1.0) * 100.0
+        self.assertAlmostEqual(indicator["moving_averages"]["ma20_slope_pct_10d"], expected)
 
     def test_relative_strength_between_negative_three_and_zero_forces_half_size(self) -> None:
         context = V11Context(

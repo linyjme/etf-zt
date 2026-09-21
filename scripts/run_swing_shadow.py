@@ -69,6 +69,7 @@ def _v11_shadow_result(
             "ma20": indicators["moving_averages"].get("ma20"),
             "ma60": indicators["moving_averages"].get("ma60"),
             "ma250": indicators["moving_averages"].get("ma250"),
+            "ma20_slope_pct_10d": indicators["moving_averages"].get("ma20_slope_pct_10d"),
             "weekly_close": indicators["weekly"].get("close"),
             "weekly_ma10": indicators["weekly"].get("ma10"),
             "weekly_ma20": indicators["weekly"].get("ma20"),
