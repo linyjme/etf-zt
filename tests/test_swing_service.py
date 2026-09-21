@@ -150,6 +150,35 @@ class SwingServiceTests(unittest.TestCase):
             event_limit=event_limit,
         )
 
+    def test_snapshot_contains_v11_shadow_without_replacing_formal_v1(self) -> None:
+        service = self.make_service()
+        snapshot = service.snapshot()
+        self.assertEqual(snapshot["strategy"], "SWING_V1")
+        item = snapshot["items"][0]
+        self.assertEqual(item["v11"]["strategy_version"], "SWING_V11_SHADOW")
+        self.assertFalse(item["v11"]["executable"])
+        self.assertEqual(snapshot["v11_summary"]["strategy_version"], "SWING_V11_SHADOW")
+        self.assertFalse(snapshot["v11_summary"]["executable"])
+
+    def test_v11_snapshot_exposes_data_as_of_kind_and_fail_closed_quality(self) -> None:
+        item = self.make_service().snapshot()["items"][0]
+        self.assertIn(item["v11"]["as_of_kind"], {"COMPLETED_DAILY", "QUASI_CLOSE_1445"})
+        self.assertIn(item["v11"]["status"], {"AVAILABLE", "DATA_UNAVAILABLE"})
+        self.assertNotEqual(item["v11"]["data_quality_status"], "VERIFIED")
+
+    def test_v11_completed_daily_evidence_is_not_relabelled_as_intraday(self) -> None:
+        service = self.make_service()
+        service._health["intraday"] = "REALTIME"
+        bars = retime_daily_bars(swing_strategy_bars(260), ending_on=date(2026, 9, 18))
+        for hour in (9, 14):
+            with self.subTest(hour=hour):
+                result = service._v11_snapshot("510300", bars, self.metadata["510300"], {
+                    "current_price": 101.0,
+                    "current_price_time": f"2026-09-21T{hour:02d}:59:00+08:00",
+                })
+                self.assertEqual(result["as_of_kind"], "COMPLETED_DAILY")
+                self.assertFalse(result["quasi_close_available"])
+
     def test_backtest_is_strict_cached_content_addressed_and_revision_neutral(self) -> None:
         service = self.make_service()
         before = service.snapshot()["revision"]

@@ -64,6 +64,13 @@ from .swing_strategy import (
     evaluate_intraday_overlay,
     evaluate_swing,
 )
+from .swing_v11 import (
+    V11Context,
+    calculate_v11_indicators,
+    classify_v11_environment,
+    evaluate_v11,
+    load_v11_config,
+)
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -184,6 +191,7 @@ class SwingService:
         self.revision = 0
         self._watchlist: tuple[SwingWatchItem, ...] = ()
         self._strategy: SwingStrategyConfig | None = None
+        self._v11_config = None
         self._metadata: Mapping[str, EtfMetadata] = {}
         self._closed_dates: frozenset[date] | None = None
         self._history_store: DailyHistoryStore | None = None
@@ -2496,6 +2504,15 @@ class SwingService:
             self._errors["configuration"] = self._safe_error(error)
 
         try:
+            v11_path = self.paths.strategy.parent / "v11_strategy.json"
+            if not v11_path.exists():
+                v11_path = Path(__file__).resolve().parents[2] / "data" / "swing" / "v11_strategy.json"
+            self._v11_config = load_v11_config(v11_path)
+        except Exception as error:
+            self._v11_config = None
+            self._errors["v11"] = self._safe_error(error)
+
+        try:
             self._closed_dates = frozenset(load_closed_dates(self.paths.calendar))
             self._health["calendar"] = "OK"
         except Exception as error:
@@ -3535,11 +3552,18 @@ class SwingService:
                 continue
             previous = current_items.get(watch.symbol, {})
             metadata = self._metadata.get(watch.symbol)
+            v11 = self._v11_snapshot(
+                watch.symbol,
+                tuple(bar for bar in self._history if bar.symbol == watch.symbol),
+                metadata,
+                previous,
+            )
             items.append({
                 "symbol": watch.symbol,
                 "name": metadata.name if metadata is not None else watch.symbol,
                 "formal_state": formal.state.value,
                 "formal_decision": formal.to_dict(),
+                "v11": v11,
                 "signal_data_date": (
                     formal.as_of_trading_date.isoformat()
                     if formal.as_of_trading_date is not None else None
@@ -3563,6 +3587,25 @@ class SwingService:
             copy.deepcopy(item) for item in alert_history
             if not item.get("retracted")
         ]
+        v11_state_counts: dict[str, int] = {}
+        v11_candidate_count = 0
+        v11_data_unavailable = 0
+        for item in items:
+            decision = item.get("v11", {}).get("decision") or {}
+            state = str(decision.get("state") or item.get("v11", {}).get("status") or "UNKNOWN")
+            v11_state_counts[state] = v11_state_counts.get(state, 0) + 1
+            if state in {"TECHNICAL_CANDIDATE", "ACTION_CANDIDATE", "POSITION_ACTION"}:
+                v11_candidate_count += 1
+            if state == "DATA_UNAVAILABLE":
+                v11_data_unavailable += 1
+        v11_summary = {
+            "strategy_version": "SWING_V11_SHADOW",
+            "enabled_count": len(items),
+            "state_counts": v11_state_counts,
+            "candidate_count": v11_candidate_count,
+            "data_unavailable_count": v11_data_unavailable,
+            "executable": False,
+        }
         watchlist_view = {
             "items": [
                 {"symbol": item.symbol, "enabled": item.enabled}
@@ -3613,6 +3656,7 @@ class SwingService:
             "items": items,
             "alerts": copy.deepcopy(active_alerts),
             "active_alerts": active_alerts,
+            "v11_summary": v11_summary,
             "alert_counts": {
                 "active": len(active_alerts),
                 "current": len(alert_items),
@@ -3627,6 +3671,138 @@ class SwingService:
                 "alerts_history": alert_history_view,
             },
         }
+
+    def _v11_snapshot(
+        self,
+        symbol: str,
+        bars: Sequence[DailyBar],
+        metadata: EtfMetadata | None,
+        previous: Mapping[str, object],
+    ) -> dict[str, object]:
+        quasi_close_available = False
+        raw_time = previous.get("current_price_time")
+        try:
+            observed_at = datetime.fromisoformat(str(raw_time))
+            now = self.clock()
+            quasi_close_available = bool(
+                previous.get("current_price") is not None
+                and self._health.get("intraday") == "REALTIME"
+                and observed_at.date() == now.date()
+                and time(14, 45) <= observed_at.timetz().replace(tzinfo=None) <= time(15, 0)
+            )
+        except Exception:
+            quasi_close_available = False
+        base = {
+            "strategy_version": "SWING_V11_SHADOW",
+            "status": "DATA_UNAVAILABLE",
+            "data_quality_status": "UNKNOWN",
+            "executable": False,
+            "as_of_kind": "QUASI_CLOSE_1445" if quasi_close_available else "COMPLETED_DAILY",
+            "as_of_trading_date": bars[-1].trading_date.isoformat() if bars else None,
+            "blocked_reasons": ["V11_CONFIG_UNAVAILABLE"],
+            "decision": None,
+            "quasi_close_available": quasi_close_available,
+        }
+        config = self._v11_config
+        if config is None:
+            return base
+        if not bars:
+            base["blocked_reasons"] = ["NO_COMPLETED_BARS"]
+            return base
+        try:
+            indicators = calculate_v11_indicators(bars)
+            moving = indicators.get("moving_averages", {})
+            weekly = indicators.get("weekly", {})
+            setups = indicators.get("setups", {})
+            latest = bars[-1]
+            closes = [bar.adjusted_close for bar in bars]
+            ma20 = moving.get("ma20") if isinstance(moving, Mapping) else None
+            ma60 = moving.get("ma60") if isinstance(moving, Mapping) else None
+            ma20_slope = (
+                moving.get("ma20_slope_pct_10d")
+                if isinstance(moving, Mapping) else None
+            )
+            indicator = {
+                "bar_count": len(bars),
+                "price": latest.adjusted_close,
+                "ma10": moving.get("ma10") if isinstance(moving, Mapping) else None,
+                "ma20": ma20,
+                "ma60": ma60,
+                "ma250": moving.get("ma250") if isinstance(moving, Mapping) else None,
+                "atr14": indicators.get("atr14"),
+                "ma20_slope_pct_10d": ma20_slope,
+                "weekly_close": weekly.get("close") if isinstance(weekly, Mapping) else None,
+                "weekly_ma10": weekly.get("ma10") if isinstance(weekly, Mapping) else None,
+                "weekly_ma20": weekly.get("ma20") if isinstance(weekly, Mapping) else None,
+                "bias20_pct": (
+                    indicators.get("bias20", {}).get("value")
+                    if isinstance(indicators.get("bias20"), Mapping) else None
+                ),
+                "volume_ratio20": (
+                    indicators.get("volume", {}).get("ratio20")
+                    if isinstance(indicators.get("volume"), Mapping) else None
+                ),
+                "pullback_window_ok": bool(setups.get("pullback_window_ok")),
+                "pullback_recovery_ok": bool(setups.get("pullback_recovery_ok")),
+                "volume_contraction_ok": bool(setups.get("volume_contraction_ok")),
+                "macd_trigger": bool(setups.get("macd_trigger")),
+                "rsi_trigger": bool(setups.get("rsi_trigger")),
+                "volume_recovery_trigger": bool(setups.get("volume_recovery_trigger")),
+                "box_ok": bool(setups.get("box_ok")),
+                "box_breakout_ok": bool(setups.get("box_breakout_ok")),
+                "macd_dif": (
+                    indicators.get("macd", {}).get("dif")
+                    if isinstance(indicators.get("macd"), Mapping) else None
+                ),
+                "macd_dea": (
+                    indicators.get("macd", {}).get("dea")
+                    if isinstance(indicators.get("macd"), Mapping) else None
+                ),
+                "macd_dif_nonnegative": bool(setups.get("macd_dif_nonnegative")),
+                "weekly_above_ma10": bool(setups.get("weekly_above_ma10")),
+            }
+            context = V11Context(
+                data_quality="UNVERIFIED",
+                environment_state=classify_v11_environment(indicator),
+                category=(
+                    metadata.category if metadata is not None else None
+                ),
+                correlation_group=(
+                    metadata.correlation_group if metadata is not None else None
+                ),
+                account_known=self._health.get("portfolio") == "OK",
+                equity_cny=(
+                    float(self._portfolio_projection.equity)
+                    if self._portfolio_projection is not None else 0.0
+                ),
+                cash_cny=(
+                    float(self._portfolio_projection.cash)
+                    if self._portfolio_projection is not None else 0.0
+                ),
+                indicator=indicator,
+                as_of_kind=str(base["as_of_kind"]),
+                as_of_trading_date=latest.trading_date.isoformat(),
+                quasi_close={
+                    "price": previous.get("current_price"),
+                    "observed_at": previous.get("current_price_time"),
+                    "health": self._health.get("intraday"),
+                },
+                metadata=(metadata.to_dict() if metadata is not None else {}),
+            )
+            decision = evaluate_v11(bars, config=config, context=context)
+            base.update({
+                "status": "AVAILABLE",
+                "data_quality_status": context.data_quality,
+                "as_of_trading_date": latest.trading_date.isoformat(),
+                "decision": decision.to_dict(),
+                "blocked_reasons": list(decision.blocked_reasons),
+                "evidence": dict(decision.evidence),
+            })
+            return base
+        except Exception as error:
+            base["blocked_reasons"] = ["V11_DATA_ERROR"]
+            base["error"] = self._safe_error(error)
+            return base
 
     def _publish(
         self,

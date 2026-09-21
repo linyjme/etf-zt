@@ -47,6 +47,15 @@ class SwingPageContractTests(unittest.TestCase):
         self.assertNotIn("4.700", SWING_PAGE)
         self.assertIn("仅监控，不自动交易", SWING_PAGE)
 
+    def test_page_exposes_v11_shadow_action_workbench_without_auto_execution(self) -> None:
+        for fragment in (
+            "SWING_V11_SHADOW", "今日行动", "数据时点", "阻断原因",
+            "可执行候选", "不支持自动下单", "人工确认",
+        ):
+            self.assertIn(fragment, SWING_PAGE)
+        self.assertIn('id="v11-action-summary"', SWING_PAGE)
+        self.assertIn("renderV11Summary", SWING_PAGE)
+
     def test_chart_accessibility_responsiveness_and_empty_states_are_explicit(self) -> None:
         for fragment in (
             "最近120个完成交易日", "原始收盘", "MA20", "MA60", "计划买入区",

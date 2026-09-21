@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import unittest
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from etf_rotation.swing_shadow import ShadowVariant
 from etf_rotation.swing_shadow_backtest import (
@@ -9,9 +12,19 @@ from etf_rotation.swing_shadow_backtest import (
     replay_variant,
 )
 from tests.swing_helpers import swing_strategy_bars
+from scripts.run_swing_shadow import run_shadow_report, _v11_shadow_result
+from etf_rotation.swing_v11 import load_v11_config
 
 
 class SwingShadowBacktestTests(unittest.TestCase):
+    def test_v11_report_supplies_ma20_slope_evidence(self):
+        config = load_v11_config(Path(__file__).parents[1] / "data/swing/v11_strategy.json")
+        result = _v11_shadow_result("510300", swing_strategy_bars(260), {
+            "crosscheck_status": "PASSED", "amount_quality": "PROVIDER_REPORTED",
+            "adjustment_status": "VERIFIED",
+        }, config)
+        self.assertIsNotNone(result["decision"]["evidence"].get("ma20_slope_pct_10d"))
+
     def test_shadow_replay_uses_next_trading_day_execution(self):
         result = replay_variant(
             {"510300": swing_strategy_bars(700)},
@@ -48,6 +61,43 @@ class SwingShadowBacktestTests(unittest.TestCase):
                 variant=ShadowVariant.V2_A,
                 costs=ExecutionCosts(),
             )
+
+    def test_shadow_report_keeps_v11_shadow_only_when_data_quality_gate_is_missing(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = root / "daily_quotes.jsonl"
+            history.write_text(
+                "".join(
+                    json.dumps(bar.to_dict(), ensure_ascii=False) + "\n"
+                    for bar in swing_strategy_bars(260)
+                ),
+                encoding="utf-8",
+            )
+            manifest = root / "research_manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1,
+                "generated_at": "2026-09-21T09:00:00+08:00",
+                "history_path": str(history),
+                "items": [{
+                    "symbol": "510300",
+                    "research_status": "USABLE_WITH_WARNINGS",
+                    "sample_class": "FULL_SAMPLE",
+                    "walk_forward_eligible": False,
+                    "data_version": "sha256:test",
+                    "crosscheck_status": "PENDING",
+                    "adjustment_status": "REVIEW",
+                    "amount_quality": "ESTIMATED",
+                }],
+            }), encoding="utf-8")
+            _, report = run_shadow_report(
+                manifest, output_root=root / "reports",
+                strategy_versions=("SWING_V1", "SWING_V2_SHADOW", "SWING_V11_SHADOW"),
+            )
+            self.assertFalse(report["performance_claim_allowed"])
+            self.assertIn("DATA_QUALITY", report["blocking_reasons"])
+            variants = report["items"][0]["variants"]
+            self.assertIn("SWING_V11_SHADOW", variants)
+            self.assertFalse(variants["SWING_V11_SHADOW"]["performance_claim_allowed"])
 
 
 if __name__ == "__main__":

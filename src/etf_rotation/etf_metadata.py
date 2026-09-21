@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import date
 import json
 import math
 from pathlib import Path
@@ -42,14 +43,30 @@ class EtfMetadata:
     name: str
     index: IndexMetadata
     trading: TradingMetadata
+    category: str | None = None
+    environment_index: str | None = None
+    correlation_group: str | None = None
+    fund_size_cny: float | None = None
+    avg_amount20_cny: float | None = None
+    dividend_dates: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "symbol": self.symbol,
             "name": self.name,
             "index": self.index.to_dict(),
             "trading": self.trading.to_dict(),
         }
+        optional = {
+            "category": self.category,
+            "environment_index": self.environment_index,
+            "correlation_group": self.correlation_group,
+            "fund_size_cny": self.fund_size_cny,
+            "avg_amount20_cny": self.avg_amount20_cny,
+            "dividend_dates": list(self.dividend_dates),
+        }
+        payload.update({key: value for key, value in optional.items() if value not in (None, [])})
+        return payload
 
 
 class EtfMetadataStore:
@@ -116,6 +133,12 @@ class EtfMetadataStore:
                 self._positive_number(trading.get("price_limit_pct"), "涨跌幅限制"),
                 self._positive_int(trading.get("volume_unit_shares"), "成交量单位股数"),
             ),
+            self._optional_text(record.get("category"), "标的类别"),
+            self._optional_text(record.get("environment_index"), "环境指数"),
+            self._optional_text(record.get("correlation_group"), "相关性分组"),
+            self._optional_number(record.get("fund_size_cny"), "基金规模"),
+            self._optional_number(record.get("avg_amount20_cny"), "20日平均成交额"),
+            self._dates(record.get("dividend_dates"), "分红日期"),
         )
 
     @staticmethod
@@ -157,3 +180,44 @@ class EtfMetadataStore:
         ):
             raise MetadataError(f"{label}必须是正数")
         return float(value)
+
+    @staticmethod
+    def _optional_text(value: object, label: str) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise MetadataError(f"{label}必须是非空文本")
+        return value.strip()
+
+    @staticmethod
+    def _optional_number(value: object, label: str) -> float | None:
+        if value is None:
+            return None
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise MetadataError(f"{label}必须是非负有限数")
+        return float(value)
+
+    @staticmethod
+    def _dates(value: object, label: str) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, list):
+            raise MetadataError(f"{label}必须是数组")
+        result: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise MetadataError(f"{label}必须使用ISO日期")
+            try:
+                parsed = date.fromisoformat(item)
+            except ValueError as error:
+                raise MetadataError(f"{label}必须使用ISO日期") from error
+            normalized = parsed.isoformat()
+            if normalized in result:
+                raise MetadataError(f"{label}不能重复")
+            result.append(normalized)
+        return tuple(result)
