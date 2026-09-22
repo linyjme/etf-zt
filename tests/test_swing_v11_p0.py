@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+import json
+from pathlib import Path
 import unittest
 
 from etf_rotation.etf_metadata import EtfMetadata, IndexMetadata, TradingMetadata
@@ -19,6 +21,18 @@ from tests.swing_helpers import retime_daily_bars, swing_strategy_bars
 
 
 class SwingV11P0Tests(unittest.TestCase):
+    def test_metadata_environment_index_matches_handbook_side(self) -> None:
+        payload = json.loads(
+            (Path(__file__).parents[1] / "data" / "monitor" / "etf_metadata.json").read_text(encoding="utf-8")
+        )
+        by_symbol = {item["symbol"]: item for item in payload["items"]}
+        for symbol in ("510500", "512100", "159915", "588000", "159781", "512480", "515880", "159995"):
+            self.assertEqual(by_symbol[symbol]["environment_index"], "000852")
+        for symbol in ("510300", "563360", "515180", "512170", "512010", "159928"):
+            self.assertEqual(by_symbol[symbol]["environment_index"], "000300")
+        for symbol in ("159792", "513050"):
+            self.assertIsNone(by_symbol[symbol]["environment_index"])
+
     def test_trailing_holiday_week_is_completed_with_calendar(self) -> None:
         bars = retime_daily_bars(
             swing_strategy_bars(140), ending_on=date(2026, 9, 24),

@@ -42,7 +42,7 @@
         "volume_unit_shares": 100
       },
       "category": "BROAD",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "BROAD_CN"
     },
     {
@@ -108,7 +108,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "GROWTH_CN"
     },
     {
@@ -130,7 +130,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "GROWTH_CN"
     },
     {
@@ -196,7 +196,7 @@
         "volume_unit_shares": 100
       },
       "category": "CROSS_BORDER",
-      "environment_index": "NONE",
+      "environment_index": null,
       "correlation_group": "CROSS_BORDER"
     },
     {
@@ -218,7 +218,7 @@
         "volume_unit_shares": 100
       },
       "category": "CROSS_BORDER",
-      "environment_index": "NONE",
+      "environment_index": null,
       "correlation_group": "CROSS_BORDER"
     },
     {
@@ -240,7 +240,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "GROWTH_CN"
     },
     {
@@ -306,7 +306,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "GROWTH_CN"
     },
     {
@@ -372,7 +372,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "TECH_CN"
     },
     {
@@ -394,7 +394,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "TECH_CN"
     },
     {
@@ -416,7 +416,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "TECH_CN"
     },
     {
@@ -438,7 +438,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "INDUSTRIAL_CN"
     },
     {
@@ -482,7 +482,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "NEW_ENERGY_CN"
     },
     {
@@ -570,7 +570,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "RESOURCE_CN"
     },
     {
@@ -592,7 +592,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "TECH_CN"
     },
     {
@@ -614,7 +614,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "TECH_CN"
     },
     {
@@ -658,7 +658,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "TECH_CN"
     },
     {
@@ -702,7 +702,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "GROWTH_CN"
     },
     {
@@ -724,7 +724,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "GROWTH_CN"
     },
     {
@@ -746,7 +746,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "000852",
       "correlation_group": "INDUSTRIAL_CN"
     },
     {

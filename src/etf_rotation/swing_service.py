@@ -3923,9 +3923,11 @@ class SwingService:
     ) -> dict[str, object]:
         quasi_close_available = False
         raw_time = previous.get("current_price_time")
+        quasi_close_date: str | None = None
         try:
             observed_at = datetime.fromisoformat(str(raw_time))
             now = self.clock()
+            quasi_close_date = observed_at.date().isoformat()
             quasi_close_available = bool(
                 previous.get("current_price") is not None
                 and self._health.get("intraday") == "REALTIME"
@@ -3940,7 +3942,10 @@ class SwingService:
             "data_quality_status": "UNKNOWN",
             "executable": False,
             "as_of_kind": "QUASI_CLOSE_1445" if quasi_close_available else "COMPLETED_DAILY",
-            "as_of_trading_date": bars[-1].trading_date.isoformat() if bars else None,
+            "as_of_trading_date": (
+                quasi_close_date if quasi_close_available and quasi_close_date else
+                bars[-1].trading_date.isoformat() if bars else None
+            ),
             "blocked_reasons": ["V11_CONFIG_UNAVAILABLE"],
             "decision": None,
             "quasi_close_available": quasi_close_available,
@@ -3957,6 +3962,17 @@ class SwingService:
             )
             indicator = normalize_v11_indicators(indicators)
             latest = bars[-1]
+            if quasi_close_available and previous.get("current_price") is not None:
+                # Moving averages/weekly evidence remain based on completed
+                # daily bars, while the entry price gate uses the verified
+                # 14:45 observation.  This prevents a stale prior close from
+                # producing a live candidate.
+                indicator = {
+                    **indicator,
+                    "price": float(previous["current_price"]),
+                    "quasi_close_price": float(previous["current_price"]),
+                    "price_source": "QUASI_CLOSE_1445",
+                }
             environment, environment_bars = self._v11_environment_context()
             rs = None
             if metadata is not None and metadata.environment_index:
@@ -3990,7 +4006,10 @@ class SwingService:
                 ),
                 indicator=indicator,
                 as_of_kind=str(base["as_of_kind"]),
-                as_of_trading_date=latest.trading_date.isoformat(),
+                as_of_trading_date=(
+                    quasi_close_date if quasi_close_available and quasi_close_date
+                    else latest.trading_date.isoformat()
+                ),
                 quasi_close={
                     "price": previous.get("current_price"),
                     "observed_at": previous.get("current_price_time"),
@@ -4008,7 +4027,10 @@ class SwingService:
             base.update({
                 "status": "AVAILABLE",
                 "data_quality_status": context.data_quality,
-                "as_of_trading_date": latest.trading_date.isoformat(),
+                "as_of_trading_date": (
+                    quasi_close_date if quasi_close_available and quasi_close_date
+                    else latest.trading_date.isoformat()
+                ),
                 "decision": decision.to_dict(),
                 "blocked_reasons": list(decision.blocked_reasons),
                 "evidence": dict(decision.evidence),
