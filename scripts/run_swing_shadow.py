@@ -18,6 +18,7 @@ from etf_rotation.swing_v11 import (
     classify_v11_environment,
     evaluate_v11,
     load_v11_config,
+    normalize_v11_indicators,
 )
 from etf_rotation.swing_shadow_backtest import ExecutionCosts, replay_all_variants
 
@@ -101,28 +102,10 @@ def _v11_shadow_result(
     ) else "UNVERIFIED"
     try:
         indicators = calculate_v11_indicators(bars)
-        indicator = {
-            "bar_count": indicators["bar_count"],
-            "price": bars[-1].adjusted_close,
-            "ma10": indicators["moving_averages"].get("ma10"),
-            "ma20": indicators["moving_averages"].get("ma20"),
-            "ma60": indicators["moving_averages"].get("ma60"),
-            "ma250": indicators["moving_averages"].get("ma250"),
-            "ma20_slope_pct_10d": indicators["moving_averages"].get("ma20_slope_pct_10d"),
-            "weekly_close": indicators["weekly"].get("close"),
-            "weekly_ma10": indicators["weekly"].get("ma10"),
-            "weekly_ma20": indicators["weekly"].get("ma20"),
-            "bias20_pct": indicators["bias20"].get("value"),
-            "volume_ratio20": indicators["volume"].get("ratio20"),
-            "atr14": indicators.get("atr14"),
-            **(indicators.get("setups") or {}),
-            "macd_dif": indicators["macd"].get("dif"),
-            "macd_dea": indicators["macd"].get("dea"),
-            "macd_dif_nonnegative": bool(
-                indicators["macd"].get("dif") is not None
-                and indicators["macd"].get("dif") >= 0
-            ),
-        }
+        indicator = normalize_v11_indicators(indicators)
+        # Keep the shadow price explicit while retaining every P1 evidence
+        # field from the canonical nested indicator contract.
+        indicator["price"] = bars[-1].adjusted_close
         decision = evaluate_v11(
             bars,
             config=config,

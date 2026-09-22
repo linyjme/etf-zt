@@ -67,6 +67,38 @@ class SwingV11P2CoreTests(unittest.TestCase):
         self.assertEqual(reduce_decision.evidence["tracking_price"], 106.0)
         self.assertEqual(reduce_decision.stop_price, 106.0)
 
+    def test_bad_data_blocks_non_exit_position_actions(self):
+        decision = self.evaluate(
+            self.position(current_price=110.0, profit_r=1.5),
+            data_quality="UNVERIFIED",
+            environment_state="UNKNOWN",
+            indicator={"bias20_pct": 9.0, "ma20": 106.0},
+        )
+        self.assertEqual(decision.action, "HOLD")
+        self.assertIn("DATA_QUALITY_UNVERIFIED", decision.blocked_reasons)
+        self.assertIn("ENVIRONMENT_UNKNOWN", decision.blocked_reasons)
+
+    def test_stop_relation_is_rejected_when_reference_is_above_entry(self):
+        from tests.test_swing_v11_p1 import SwingV11P1Tests
+
+        helper = SwingV11P1Tests.evidence(
+            pullback_low=102.0,
+            atr14=1.0,
+            stop_distance_pct=None,
+        )
+        from etf_rotation.swing_v11 import evaluate_v11
+        decision = evaluate_v11(
+            __import__("tests.swing_helpers", fromlist=["swing_strategy_bars"]).swing_strategy_bars(300),
+            config=self.config(),
+            context=V11Context(
+                indicator=helper,
+                environment_state="ATTACK",
+                category="BROAD",
+                account_known=False,
+            ),
+        )
+        self.assertIn("INVALID_ENTRY_STOP", decision.blocked_reasons)
+
     def test_one_r_moves_stop_to_entry_without_reducing(self):
         decision = self.evaluate(self.position(current_price=105.0, profit_r=1.0))
         self.assertEqual(decision.action, "MOVE_STOP")

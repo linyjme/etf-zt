@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 import json
 import math
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .swing_data import DailyBar
 from .swing_indicators import (
@@ -23,6 +24,9 @@ from .swing_indicators import (
     calculate_indicator_context,
     calculate_indicator_snapshot,
 )
+
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class V11State(StrEnum):
@@ -316,14 +320,14 @@ def evaluate_v11(
         observed_at = quasi.get("observed_at") if isinstance(quasi, Mapping) else None
         observed_time = None
         observed_date = None
-        try:
-            from datetime import datetime, time as clock_time
-            parsed = datetime.fromisoformat(str(observed_at))
-            observed_time = parsed.timetz().replace(tzinfo=None)
-            observed_date = parsed.date().isoformat()
-            valid_time = clock_time(14, 45) <= observed_time <= clock_time(15, 0)
-        except (TypeError, ValueError, OverflowError):
-            valid_time = False
+        parsed_observed_at = parse_v11_observed_at(observed_at)
+        if parsed_observed_at is not None:
+            observed_time = parsed_observed_at.timetz().replace(tzinfo=None)
+            observed_date = parsed_observed_at.date().isoformat()
+        valid_time = (
+            observed_time is not None
+            and time(14, 45) <= observed_time <= time(15, 0)
+        )
         valid_price = _number_or_none(quasi.get("price")) if isinstance(quasi, Mapping) else None
         valid_health = isinstance(quasi, Mapping) and quasi.get("health") == "REALTIME"
         if not (
@@ -369,19 +373,18 @@ def evaluate_v11(
     if not trend_ok:
         reasons.append("TREND_NOT_CONFIRMED")
     weekly_ma10_down_3w = indicator.get("weekly_ma10_down_3w")
-    if weekly_ma10_down_3w is None and indicator.get("weekly_ma10_not_down_3w") is not None:
-        weekly_ma10_down_3w = not bool(indicator.get("weekly_ma10_not_down_3w"))
     t3_week_ok = bool(
         weekly_close is not None and weekly_ma20 is not None
         and weekly_close > weekly_ma20
-        and weekly_ma10_down_3w is not True
+        and type(weekly_ma10_down_3w) is bool
+        and weekly_ma10_down_3w is False
     )
     a_week_ok = t3_week_ok
     category = (context.category or "UNVERIFIED").upper()
-    # T5 is intentionally explicit and category-aware.  Legacy callers that
-    # have no category evidence retain the previous ATTACK behavior; once a
-    # category is supplied, neutral only permits broad/gold and defense only
-    # permits defensive categories.
+    # T5 is intentionally explicit and category-aware.  Missing environment
+    # evidence is handled as UNKNOWN above; once a category is supplied,
+    # neutral only permits broad/gold and defense only permits defensive
+    # categories.
     explicit_t5 = indicator.get("environment_category_allowed")
     if explicit_t5 is None:
         if environment == "ATTACK":
@@ -402,29 +405,28 @@ def evaluate_v11(
     pullback_depth = _number_or_none(indicator.get("pullback_depth_pct"))
     pullback_low = _number_or_none(indicator.get("pullback_low"))
     depth_threshold = 3.0 if category in {"UNVERIFIED", "BROAD", "GOLD"} else 5.0
+    pullback_depth_evidence = (
+        pullback_sessions is not None and pullback_depth is not None
+    )
+    pullback_touch_evidence = pullback_low is not None and ma10 is not None
+    pullback_evidence_available = pullback_depth_evidence or pullback_touch_evidence
     pullback_shape_ok = bool(
-        pullback_sessions is not None and 5.0 <= pullback_sessions <= 15.0
-        and pullback_depth is not None and pullback_depth >= depth_threshold
+        pullback_depth_evidence and 5.0 <= pullback_sessions <= 15.0
+        and pullback_depth >= depth_threshold
     ) or bool(
-        pullback_low is not None and ma10 is not None
-        and pullback_low <= ma10 * 1.01
+        pullback_touch_evidence and pullback_low <= ma10 * 1.01
     )
-    if "pullback_window_sessions" not in indicator and "pullback_depth_pct" not in indicator:
-        pullback_shape_ok = bool(indicator.get("pullback_window_ok"))
     pullback_recovery_within_3d = (
-        bool(indicator.get("pullback_recovery_within_3d"))
-        if "pullback_recovery_within_3d" in indicator
-        else bool(indicator.get("pullback_recovery_ok"))
+        type(indicator.get("pullback_recovery_within_3d")) is bool
+        and bool(indicator.get("pullback_recovery_within_3d"))
     )
-    recovery_shadow_ok = (
-        indicator.get("recovery_long_upper_shadow") is False
-        if "recovery_long_upper_shadow" in indicator
-        else False
+    recovery_shadow_evidence = type(indicator.get("recovery_long_upper_shadow")) is bool
+    recovery_shadow_ok = recovery_shadow_evidence and not bool(
+        indicator.get("recovery_long_upper_shadow")
     )
-    volume_contraction_majority = (
-        bool(indicator.get("volume_contraction_majority"))
-        if "volume_contraction_majority" in indicator
-        else bool(indicator.get("volume_contraction_ok"))
+    volume_contraction_evidence = type(indicator.get("volume_contraction_majority")) is bool
+    volume_contraction_majority = volume_contraction_evidence and bool(
+        indicator.get("volume_contraction_majority")
     )
     a_pullback_ok = bool(
         pullback_shape_ok and pullback_recovery_within_3d
@@ -438,36 +440,40 @@ def evaluate_v11(
         reasons.append("BIAS_OUT_OF_RANGE")
     macd_dif = _number_or_none(indicator.get("macd_dif"))
     macd_dea = _number_or_none(indicator.get("macd_dea"))
-    macd_exact = bool(
-        indicator.get("macd_histogram_improving_2d")
+    macd_evidence_available = (
+        type(indicator.get("macd_histogram_improving_2d")) is bool
         and macd_dif is not None and macd_dea is not None
+    )
+    macd_exact = bool(
+        macd_evidence_available
+        and indicator.get("macd_histogram_improving_2d")
         and macd_dif > macd_dea
     )
-    if "macd_histogram_improving_2d" not in indicator:
-        macd_exact = bool(indicator.get("macd_trigger"))
     rsi_min = _number_or_none(indicator.get("rsi_pullback_min"))
     rsi_current = _number_or_none(indicator.get("rsi_current"))
+    rsi_evidence_available = rsi_min is not None and rsi_current is not None
     rsi_exact = bool(
-        rsi_min is not None and rsi_min >= 40.0
+        rsi_evidence_available
+        and rsi_min >= 40.0
         and rsi_current is not None and rsi_current > 50.0
     )
-    if "rsi_pullback_min" not in indicator and "rsi_current" not in indicator:
-        rsi_exact = bool(indicator.get("rsi_trigger"))
-    volume_exact = bool(
-        indicator.get("volume_recovery_trigger")
+    volume_evidence_available = (
+        type(indicator.get("volume_recovery_trigger")) is bool
         and _number_or_none(indicator.get("volume_ratio20")) is not None
+    )
+    volume_exact = bool(
+        volume_evidence_available and indicator.get("volume_recovery_trigger")
         and float(indicator["volume_ratio20"]) >= 1.2
     )
     momentum_triggers = (macd_exact, rsi_exact, volume_exact)
     a_ok = bool(
         trend_ok and t3_week_ok and t5_allowed
         and a_pullback_ok and bias_ok
-        and (
-            _number_or_none(indicator.get("return_60d_pct")) is None
-            or float(indicator["return_60d_pct"]) > 0.0
-        )
+        and _number_or_none(indicator.get("return_60d_pct")) is not None
+        and float(indicator["return_60d_pct"]) > 0.0
         and any(momentum_triggers)
     )
+    return_60d = _number_or_none(indicator.get("return_60d_pct"))
     ma250_slope = _number_or_none(indicator.get("ma250_slope_pct_20d"))
     return_250 = _number_or_none(indicator.get("return_250d_pct"))
     ma250 = _number_or_none(indicator.get("ma250"))
@@ -508,22 +514,31 @@ def evaluate_v11(
     # block a valid B breakout; report setup-specific blockers only when both
     # alternatives fail.
     if not a_ok and not b_ok:
-        if not t3_week_ok:
+        if type(weekly_ma10_down_3w) is not bool:
+            reasons.append("T3_EVIDENCE_UNAVAILABLE")
+        elif not t3_week_ok:
             reasons.append("T3_WEEKLY_TREND")
-        if (
-            _number_or_none(indicator.get("return_60d_pct")) is not None
-            and float(indicator["return_60d_pct"]) <= 0.0
-        ):
+        if return_60d is None:
+            reasons.append("T4_EVIDENCE_UNAVAILABLE")
+        elif return_60d <= 0.0:
             reasons.append("T4_RETURN_60D")
         if not a_pullback_ok:
             reasons.append("PULLBACK_NOT_CONFIRMED")
-        if not pullback_shape_ok:
+        if not pullback_evidence_available:
+            reasons.append("A1_A2_EVIDENCE_UNAVAILABLE")
+        elif not pullback_shape_ok:
             reasons.append("A1_A2_PULLBACK")
-        if not volume_contraction_majority:
+        if not volume_contraction_evidence:
+            reasons.append("A3_EVIDENCE_UNAVAILABLE")
+        elif not volume_contraction_majority:
             reasons.append("A3_VOLUME_CONTRACTION")
-        if not pullback_recovery_within_3d or not recovery_shadow_ok:
+        if not type(indicator.get("pullback_recovery_within_3d")) is bool or not recovery_shadow_evidence:
+            reasons.append("A4_EVIDENCE_UNAVAILABLE")
+        elif not pullback_recovery_within_3d or not recovery_shadow_ok:
             reasons.append("A4_RECOVERY")
-        if not any(momentum_triggers):
+        if not (macd_evidence_available or rsi_evidence_available or volume_evidence_available):
+            reasons.append("A6_EVIDENCE_UNAVAILABLE")
+        elif not any(momentum_triggers):
             reasons.append("A6_MOMENTUM")
         if not b1_ok:
             reasons.append("B1_LONG_TREND")
@@ -578,6 +593,8 @@ def evaluate_v11(
     stop_cap = 0.04 if category in {"BROAD", "GOLD"} else 0.07
     if setup is not V11Setup.NONE and stop_price is None:
         hard_reasons_list = list(dict.fromkeys((*reasons, "STOP_CONTEXT_UNAVAILABLE")))
+    elif setup is not V11Setup.NONE and entry_price is not None and stop_price >= entry_price:
+        hard_reasons_list = list(dict.fromkeys((*reasons, "INVALID_ENTRY_STOP")))
     elif setup is not V11Setup.NONE and stop_width_pct is not None and stop_width_pct > stop_cap:
         hard_reasons_list = list(dict.fromkeys((*reasons, "STOP_WIDTH_OVER_CAP")))
     else:
@@ -671,6 +688,24 @@ def _number_or_none(value: object) -> float | None:
         return None
     number = float(value)
     return number if math.isfinite(number) else None
+
+
+def parse_v11_observed_at(value: object) -> datetime | None:
+    """Parse an observed timestamp only when it is timezone-aware.
+
+    The quasi-close gate is defined in Asia/Shanghai wall time.  A naive
+    timestamp has no safe interpretation and therefore fails closed instead
+    of being silently treated as local time by the host process.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(SHANGHAI)
 
 
 def classify_v11_environment(indicator: Mapping[str, object]) -> str:
@@ -777,6 +812,7 @@ def evaluate_v11_position(
         "tracking_started": position.tracking_started or position.tracking_price is not None,
         "cooldown_sessions": position.cooldown_sessions,
         "standard_shares": position.standard_shares,
+        "market_gate_reasons": (),
     }
     indicator: Mapping[str, object] = context.indicator
 
@@ -798,6 +834,30 @@ def evaluate_v11_position(
     category = (context.category or "UNVERIFIED").upper()
     environment = context.environment_state.upper()
     defense_exempt = category in {"CROSS_BORDER", "GOLD"}
+    market_gate_reasons: list[str] = []
+    if context.data_quality != "VERIFIED":
+        market_gate_reasons.append("DATA_QUALITY_UNVERIFIED")
+    if environment not in {"ATTACK", "NEUTRAL", "DEFENSE"}:
+        market_gate_reasons.append("ENVIRONMENT_UNKNOWN")
+    if context.as_of_kind == "QUASI_CLOSE_1445":
+        quasi = context.quasi_close
+        observed = parse_v11_observed_at(
+            quasi.get("observed_at") if isinstance(quasi, Mapping) else None,
+        )
+        valid_quasi = bool(
+            observed is not None
+            and time(14, 45) <= observed.timetz().replace(tzinfo=None) <= time(15, 0)
+            and context.as_of_trading_date == observed.date().isoformat()
+            and isinstance(quasi, Mapping)
+            and quasi.get("health") == "REALTIME"
+            and _number_or_none(quasi.get("price")) is not None
+            and _number_or_none(quasi.get("price")) > 0.0
+        )
+        if not valid_quasi:
+            market_gate_reasons.append("QUASI_CLOSE_NOT_VERIFIED")
+    elif context.as_of_kind != "COMPLETED_DAILY":
+        market_gate_reasons.append("AS_OF_KIND_UNSUPPORTED")
+    evidence["market_gate_reasons"] = tuple(dict.fromkeys(market_gate_reasons))
     half = _lot_floor(position.sellable_shares / 2.0, config.lot_size)
     close = number("close", "effective_close", "price")
     close = close if close is not None else position.current_price
@@ -894,10 +954,16 @@ def evaluate_v11_position(
     if position.holding_session >= 25 and position.profit_r < 1.0:
         exit_reasons.append("T25_NO_1R")
 
-    if exit_reasons and position.sellable_shares > 0:
+    safe_exit_reasons = [
+        reason for reason in exit_reasons
+        if reason in {"STOP_TRIGGERED", "TRACKING_LINE_BROKEN"}
+    ]
+    if exit_reasons and position.sellable_shares > 0 and (
+        not market_gate_reasons or safe_exit_reasons
+    ):
         action = "EXIT"
         planned = position.sellable_shares
-        selected_exit = exit_reasons[0]
+        selected_exit = safe_exit_reasons[0] if market_gate_reasons else exit_reasons[0]
         reasons.append(selected_exit)
         base_exit = selected_exit.split("_", 1)[0]
         if selected_exit == "STOP_TRIGGERED":
@@ -910,6 +976,8 @@ def evaluate_v11_position(
         reasons.append("NO_SELLABLE_SHARES")
         if exit_reasons:
             reasons.append(exit_reasons[0])
+    elif market_gate_reasons:
+        reasons.extend(market_gate_reasons)
     elif environment == "DEFENSE" and not defense_exempt and position.profit_r < 0.0:
         action = "EXIT"
         planned = position.sellable_shares
@@ -1481,13 +1549,13 @@ def normalize_v11_indicators(indicators: Mapping[str, object]) -> dict[str, obje
         "box_days": raw.get("box_days", setups.get("box_days")),
     })
     normalized = {key: value for key, value in flat.items() if value is not None}
-    # Preserve absence for optional P1 evidence so the evaluator can retain
-    # the legacy flat contract while applying strict predicates when the new
-    # evidence is actually supplied.
+    # Preserve absence for required P1 evidence.  The evaluator uses absence
+    # to distinguish an unverified contract from an explicit false result.
     for key in (
         "weekly_ma10_down_3w", "weekly_ma10_not_down_3w",
         "pullback_recovery_within_3d", "volume_contraction_majority",
-        "rsi_pullback_never_below_40", "macd_histogram_improving_2d",
+        "recovery_long_upper_shadow", "rsi_pullback_never_below_40",
+        "macd_histogram_improving_2d",
     ):
         if key not in raw and key not in setups:
             normalized.pop(key, None)

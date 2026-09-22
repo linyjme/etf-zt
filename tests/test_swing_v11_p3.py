@@ -8,7 +8,7 @@ from pathlib import Path
 
 from etf_rotation.swing_v11 import V11Context, evaluate_v11, load_v11_config
 from etf_rotation.swing_page import SWING_PAGE
-from scripts.run_swing_shadow import _v11_outcome_bucket
+from scripts.run_swing_shadow import _v11_outcome_bucket, _v11_shadow_result
 from tests.swing_helpers import swing_strategy_bars
 
 
@@ -37,6 +37,88 @@ class SwingV11P3Tests(unittest.TestCase):
         )
         self.assertIn("QUASI_CLOSE_NOT_VERIFIED", decision.blocked_reasons)
         self.assertFalse(decision.executable)
+
+    def test_quasi_close_normalizes_utc_and_rejects_naive_timestamp(self) -> None:
+        bars = swing_strategy_bars(300)
+        config = load_v11_config(ROOT / "data" / "swing" / "v11_strategy.json")
+        common = dict(
+            environment_state="ATTACK",
+            category="BROAD",
+            data_quality="VERIFIED",
+            as_of_kind="QUASI_CLOSE_1445",
+            as_of_trading_date=bars[-1].trading_date.isoformat(),
+        )
+        utc_decision = evaluate_v11(
+            bars,
+            config=config,
+            context=V11Context(
+                **common,
+                quasi_close={
+                    "price": 100.0,
+                    "observed_at": f"{bars[-1].trading_date.isoformat()}T06:50:00+00:00",
+                    "health": "REALTIME",
+                },
+            ),
+        )
+        self.assertNotIn("QUASI_CLOSE_NOT_VERIFIED", utc_decision.blocked_reasons)
+        naive_decision = evaluate_v11(
+            bars,
+            config=config,
+            context=V11Context(
+                **common,
+                quasi_close={
+                    "price": 100.0,
+                    "observed_at": f"{bars[-1].trading_date.isoformat()}T14:50:00",
+                    "health": "REALTIME",
+                },
+            ),
+        )
+        self.assertIn("QUASI_CLOSE_NOT_VERIFIED", naive_decision.blocked_reasons)
+
+    def test_missing_v11_evidence_is_fail_closed(self) -> None:
+        bars = swing_strategy_bars(300)
+        config = load_v11_config(ROOT / "data" / "swing" / "v11_strategy.json")
+        decision = evaluate_v11(
+            bars,
+            config=config,
+            context=V11Context(
+                environment_state="ATTACK",
+                category="BROAD",
+                data_quality="VERIFIED",
+                indicator={
+                    "bar_count": 300,
+                    "price": 100.0,
+                    "ma20": 98.0,
+                    "ma60": 95.0,
+                    "weekly_close": 101.0,
+                    "weekly_ma20": 96.0,
+                },
+            ),
+        )
+        self.assertEqual(decision.state.value, "OBSERVE")
+        for marker in (
+            "T3_EVIDENCE_UNAVAILABLE", "T4_EVIDENCE_UNAVAILABLE",
+            "A1_A2_EVIDENCE_UNAVAILABLE", "A3_EVIDENCE_UNAVAILABLE",
+            "A4_EVIDENCE_UNAVAILABLE", "A6_EVIDENCE_UNAVAILABLE",
+        ):
+            self.assertIn(marker, decision.blocked_reasons)
+
+    def test_shadow_replay_keeps_full_v11_evidence(self) -> None:
+        bars = swing_strategy_bars(300)
+        item = {
+            "symbol": "510300",
+            "category": "BROAD",
+            "crosscheck_status": "PASSED",
+            "amount_quality": "PROVIDER_REPORTED",
+            "adjustment_status": "VERIFIED",
+        }
+        result = _v11_shadow_result("510300", bars, item, load_v11_config(
+            ROOT / "data" / "swing" / "v11_strategy.json",
+        ))
+        evidence = (result["decision"] or {}).get("evidence", {})
+        self.assertIn("return_60d_pct", evidence)
+        self.assertIn("pullback_recovery_within_3d", evidence)
+        self.assertIn("macd_histogram_improving_2d", evidence)
 
     def test_shadow_outcome_buckets_separate_data_rule_and_signal(self) -> None:
         self.assertEqual(_v11_outcome_bucket("TECHNICAL_CANDIDATE", [], "AVAILABLE"), "CANDIDATE")

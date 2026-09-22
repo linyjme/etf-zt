@@ -99,6 +99,7 @@ from .swing_v11 import (
     evaluate_v11,
     load_v11_config,
     normalize_v11_indicators,
+    parse_v11_observed_at,
     validate_v11_metadata,
 )
 
@@ -3925,13 +3926,15 @@ class SwingService:
         raw_time = previous.get("current_price_time")
         quasi_close_date: str | None = None
         try:
-            observed_at = datetime.fromisoformat(str(raw_time))
+            observed_at = parse_v11_observed_at(raw_time)
+            if observed_at is None:
+                raise ValueError("quasi-close timestamp must be timezone-aware")
             now = self.clock()
             quasi_close_date = observed_at.date().isoformat()
             quasi_close_available = bool(
                 previous.get("current_price") is not None
                 and self._health.get("intraday") == "REALTIME"
-                and observed_at.date() == now.date()
+                and observed_at.date() == now.astimezone(SHANGHAI).date()
                 and time(14, 45) <= observed_at.timetz().replace(tzinfo=None) <= time(15, 0)
             )
         except Exception:
