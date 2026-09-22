@@ -190,6 +190,8 @@ class SwingShadowBacktestTests(unittest.TestCase):
             variants = report["items"][0]["variants"]
             self.assertIn("SWING_V11_SHADOW", variants)
             self.assertFalse(variants["SWING_V11_SHADOW"]["performance_claim_allowed"])
+            self.assertIn("outcome", variants["SWING_V11_SHADOW"])
+            self.assertIn("shadow_outcome_counts", report)
 
 
 if __name__ == "__main__":

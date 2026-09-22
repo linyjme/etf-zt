@@ -181,6 +181,21 @@ class SwingServiceTests(unittest.TestCase):
                 self.assertEqual(result["as_of_kind"], "COMPLETED_DAILY")
                 self.assertFalse(result["quasi_close_available"])
 
+    def test_v11_quasi_close_uses_current_day_price_and_date(self) -> None:
+        service = self.make_service(
+            clock=lambda: datetime(2026, 9, 21, 14, 50, tzinfo=SHANGHAI),
+        )
+        service._health["intraday"] = "REALTIME"
+        bars = retime_daily_bars(swing_strategy_bars(260), ending_on=date(2026, 9, 18))
+        result = service._v11_snapshot("510300", bars, self.metadata["510300"], {
+            "current_price": 123.45,
+            "current_price_time": "2026-09-21T14:50:00+08:00",
+        })
+        self.assertEqual(result["as_of_kind"], "QUASI_CLOSE_1445")
+        self.assertEqual(result["as_of_trading_date"], "2026-09-21")
+        self.assertEqual(result["evidence"]["price"], 123.45)
+        self.assertEqual(result["evidence"]["price_source"], "QUASI_CLOSE_1445")
+
     def test_snapshot_publishes_indicator_snapshot_for_each_enabled_etf(self) -> None:
         snapshot = self.make_service().snapshot()
 

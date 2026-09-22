@@ -29,7 +29,7 @@ class SwingV11ContractTests(unittest.TestCase):
             PROJECT_ROOT / "data" / "monitor" / "etf_metadata.json",
         ).load()
         self.assertEqual(metadata["510300"].category, "BROAD")
-        self.assertEqual(metadata["159915"].category, "GROWTH")
+        self.assertEqual(metadata["159915"].category, "SECTOR")
         self.assertIsNone(metadata["510300"].fund_size_cny)
         self.assertEqual(metadata["510300"].dividend_dates, ())
 
@@ -73,6 +73,9 @@ class SwingV11ContractTests(unittest.TestCase):
             "ma20": 98.0,
             "ma60": 95.0,
             "ma250": 90.0,
+            "ma250_slope_pct_20d": 1.0,
+            "return_60d_pct": 5.0,
+            "return_250d_pct": 12.0,
             "ma20_slope_pct_10d": 0.5,
             "weekly_close": 101.0,
             "weekly_ma10": 98.0,
@@ -80,12 +83,18 @@ class SwingV11ContractTests(unittest.TestCase):
             "pullback_window_ok": True,
             "pullback_recovery_ok": True,
             "volume_contraction_ok": True,
+            "recovery_long_upper_shadow": False,
             "bias20_pct": 2.0,
             "macd_trigger": True,
             "rsi_trigger": False,
             "volume_recovery_trigger": False,
             "box_ok": False,
             "box_breakout_ok": False,
+            "box_days": 25,
+            "box_first_half_low": 90.0,
+            "box_latter_half_low": 91.0,
+            "box_high": 99.0,
+            "bollinger_upper": 110.0,
             "volume_ratio20": 1.0,
             "macd_dif": 0.2,
             "macd_dea": 0.1,

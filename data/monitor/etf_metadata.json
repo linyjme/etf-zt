@@ -20,6 +20,7 @@
         "volume_unit_shares": 100
       },
       "category": "BROAD",
+      "environment_index": "000300",
       "correlation_group": "BROAD_CN"
     },
     {
@@ -41,6 +42,7 @@
         "volume_unit_shares": 100
       },
       "category": "BROAD",
+      "environment_index": "000852",
       "correlation_group": "BROAD_CN"
     },
     {
@@ -62,6 +64,7 @@
         "volume_unit_shares": 100
       },
       "category": "BROAD",
+      "environment_index": "000300",
       "correlation_group": "BROAD_CN"
     },
     {
@@ -82,7 +85,8 @@
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
       },
-      "category": "SMALL_CAP",
+      "category": "SECTOR",
+      "environment_index": "000852",
       "correlation_group": "SMALL_CAP_CN"
     },
     {
@@ -103,7 +107,8 @@
         "price_limit_pct": 0.2,
         "volume_unit_shares": 100
       },
-      "category": "GROWTH",
+      "category": "SECTOR",
+      "environment_index": "000852",
       "correlation_group": "GROWTH_CN"
     },
     {
@@ -124,7 +129,8 @@
         "price_limit_pct": 0.2,
         "volume_unit_shares": 100
       },
-      "category": "GROWTH",
+      "category": "SECTOR",
+      "environment_index": "000852",
       "correlation_group": "GROWTH_CN"
     },
     {
@@ -145,7 +151,8 @@
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
       },
-      "category": "DIVIDEND",
+      "category": "SECTOR",
+      "environment_index": "000300",
       "correlation_group": "DIVIDEND_CN"
     },
     {
@@ -165,7 +172,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "DIVIDEND_CN"
     },
     {
       "symbol": "159792",
@@ -184,7 +194,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "CROSS_BORDER",
+      "environment_index": null,
+      "correlation_group": "CROSS_BORDER"
     },
     {
       "symbol": "513050",
@@ -203,7 +216,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "CROSS_BORDER",
+      "environment_index": null,
+      "correlation_group": "CROSS_BORDER"
     },
     {
       "symbol": "159781",
@@ -222,7 +238,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.2,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "GROWTH_CN"
     },
     {
       "symbol": "159201",
@@ -241,7 +260,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "VALUE_CN"
     },
     {
       "symbol": "159263",
@@ -260,7 +282,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "VALUE_CN"
     },
     {
       "symbol": "159259",
@@ -279,7 +304,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "GROWTH_CN"
     },
     {
       "symbol": "159209",
@@ -298,7 +326,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "DIVIDEND_CN"
     },
     {
       "symbol": "159758",
@@ -317,7 +348,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "DIVIDEND_CN"
     },
     {
       "symbol": "512480",
@@ -336,7 +370,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "TECH_CN"
     },
     {
       "symbol": "515880",
@@ -355,7 +392,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "TECH_CN"
     },
     {
       "symbol": "159995",
@@ -374,7 +414,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "TECH_CN"
     },
     {
       "symbol": "562500",
@@ -393,7 +436,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "INDUSTRIAL_CN"
     },
     {
       "symbol": "512880",
@@ -412,7 +458,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "FINANCE_CN"
     },
     {
       "symbol": "516160",
@@ -431,7 +480,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "NEW_ENERGY_CN"
     },
     {
       "symbol": "512170",
@@ -450,7 +502,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "HEALTHCARE_CN"
     },
     {
       "symbol": "515120",
@@ -469,7 +524,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "HEALTHCARE_CN"
     },
     {
       "symbol": "159928",
@@ -488,7 +546,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "CONSUMPTION_CN"
     },
     {
       "symbol": "512400",
@@ -507,7 +568,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "RESOURCE_CN"
     },
     {
       "symbol": "159819",
@@ -526,7 +590,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "TECH_CN"
     },
     {
       "symbol": "159516",
@@ -545,7 +612,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "TECH_CN"
     },
     {
       "symbol": "159611",
@@ -564,7 +634,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "UTILITY_CN"
     },
     {
       "symbol": "159206",
@@ -583,7 +656,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "TECH_CN"
     },
     {
       "symbol": "512070",
@@ -602,7 +678,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "FINANCE_CN"
     },
     {
       "symbol": "159967",
@@ -621,7 +700,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.2,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "GROWTH_CN"
     },
     {
       "symbol": "588020",
@@ -640,7 +722,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.2,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "GROWTH_CN"
     },
     {
       "symbol": "159326",
@@ -659,7 +744,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000852",
+      "correlation_group": "INDUSTRIAL_CN"
     },
     {
       "symbol": "512010",
@@ -678,7 +766,10 @@
         "price_tick": 0.001,
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
-      }
+      },
+      "category": "SECTOR",
+      "environment_index": "000300",
+      "correlation_group": "HEALTHCARE_CN"
     }
   ]
 }

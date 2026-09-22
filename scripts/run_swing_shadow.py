@@ -25,6 +25,28 @@ from etf_rotation.swing_shadow_backtest import ExecutionCosts, replay_all_varian
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
+def _v11_outcome_bucket(
+    state: str, reasons: list[str] | tuple[str, ...], status: str,
+) -> str:
+    """Classify one read-only V11 result for shadow-report aggregation."""
+    normalized = {str(reason) for reason in reasons}
+    if status != "AVAILABLE" or not normalized and state == "DATA_UNAVAILABLE":
+        return "DATA_BLOCKED"
+    data_markers = {
+        "DATA_QUALITY_UNVERIFIED", "DATA_QUALITY_UNKNOWN", "DATA_UNAVAILABLE",
+        "NO_COMPLETED_BARS", "INSUFFICIENT_COMPLETED_BARS",
+        "INDICATOR_CONTEXT_UNAVAILABLE", "METADATA_INCOMPLETE",
+        "ENVIRONMENT_UNKNOWN", "QUASI_CLOSE_NOT_VERIFIED", "AS_OF_KIND_UNSUPPORTED",
+    }
+    if normalized & data_markers:
+        return "DATA_BLOCKED"
+    if state in {"TECHNICAL_CANDIDATE", "ACTION_CANDIDATE", "POSITION_ACTION"} and not normalized:
+        return "CANDIDATE"
+    if normalized:
+        return "RULE_BLOCKED"
+    return "NO_SIGNAL"
+
+
 def _load_history(
     path: Path,
 ) -> tuple[dict[str, tuple[DailyBar, ...]], set[str], list[dict[str, object]]]:
@@ -69,6 +91,8 @@ def _v11_shadow_result(
             "stop_width_rejection_count": 0,
             "missing_data_count": 1,
             "decision": None,
+            "outcome": "DATA_BLOCKED",
+            "outcome_counts": {"DATA_BLOCKED": 1},
         }
     data_quality = "VERIFIED" if (
         item.get("crosscheck_status") == "PASSED"
@@ -121,12 +145,17 @@ def _v11_shadow_result(
             "stop_width_rejection_count": 0,
             "missing_data_count": 1,
             "decision": None,
+            "outcome": "DATA_BLOCKED",
+            "outcome_counts": {"DATA_BLOCKED": 1},
         }
     reasons = list(decision.blocked_reasons)
     is_candidate = decision.state in {
         V11State.TECHNICAL_CANDIDATE, V11State.ACTION_CANDIDATE,
         V11State.POSITION_ACTION,
     }
+    outcome = _v11_outcome_bucket(
+        decision.state.value, list(decision.blocked_reasons), "AVAILABLE",
+    )
     return {
         "strategy_version": "SWING_V11_SHADOW",
         "validation_status": "SHADOW_ONLY",
@@ -140,6 +169,8 @@ def _v11_shadow_result(
             or "DATA_QUALITY_UNVERIFIED" in reasons
         ),
         "decision": decision.to_dict(),
+        "outcome": outcome,
+        "outcome_counts": {outcome: 1},
     }
 
 
@@ -180,6 +211,7 @@ def run_shadow_report(
     v11_config = load_v11_config(config_path)
     requested = tuple(strategy_versions or ("V1", "V2_A", "V2_B", "V2_C", "SWING_V11_SHADOW"))
     items: list[dict[str, object]] = []
+    v11_outcome_counts: Counter[str] = Counter()
     # Expand SWING_* request aliases to concrete replay variant names for compatibility.
     effective_requested = set(requested)
     if "SWING_V1" in requested:
@@ -235,9 +267,11 @@ def run_shadow_report(
                     "execution_assumptions": list(ExecutionCosts().assumptions()),
                 }
         if "SWING_V11_SHADOW" in requested:
-            variants["SWING_V11_SHADOW"] = _v11_shadow_result(
+            v11_result = _v11_shadow_result(
                 symbol, bars, item, v11_config,
             )
+            variants["SWING_V11_SHADOW"] = v11_result
+            v11_outcome_counts.update(v11_result.get("outcome_counts", {}))
         items.append({
             "symbol": symbol,
             "research_status": item.get("research_status"),
@@ -279,6 +313,7 @@ def run_shadow_report(
         "strategy_versions": list(requested),
         "performance_claim_allowed": not blocking_reasons,
         "blocking_reasons": blocking_reasons,
+        "shadow_outcome_counts": dict(v11_outcome_counts),
         "input_digest": input_digest,
         "invalid_history_lines": invalid_lines,
         "validation": {
