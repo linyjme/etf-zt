@@ -29,7 +29,7 @@ class SwingV11ContractTests(unittest.TestCase):
             PROJECT_ROOT / "data" / "monitor" / "etf_metadata.json",
         ).load()
         self.assertEqual(metadata["510300"].category, "BROAD")
-        self.assertEqual(metadata["159915"].category, "GROWTH")
+        self.assertEqual(metadata["159915"].category, "SECTOR")
         self.assertIsNone(metadata["510300"].fund_size_cny)
         self.assertEqual(metadata["510300"].dividend_dates, ())
 

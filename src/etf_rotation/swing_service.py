@@ -92,10 +92,14 @@ from .swing_strategy import (
 )
 from .swing_v11 import (
     V11Context,
+    calculate_relative_strength_20,
+    calculate_v11_environment,
     calculate_v11_indicators,
     classify_v11_environment,
     evaluate_v11,
     load_v11_config,
+    normalize_v11_indicators,
+    validate_v11_metadata,
 )
 
 
@@ -184,6 +188,7 @@ class SwingService:
         event_limit: int = 128,
         valuation_path: Path | None = None,
         shadow_config_path: Path | None = None,
+        index_history: Mapping[str, Sequence[DailyBar]] | None = None,
     ) -> None:
         if type(paths) is not SwingPaths:
             raise SwingServiceError("paths must be SwingPaths")
@@ -245,6 +250,10 @@ class SwingService:
         self._alert_store: SwingAlertStore | None = None
         self._portfolio_projection: PortfolioProjection | None = None
         self._history: tuple[DailyBar, ...] = ()
+        self._index_history: dict[str, tuple[DailyBar, ...]] = {
+            str(code): tuple(value)
+            for code, value in (index_history or {}).items()
+        }
         self._formal: dict[str, SwingDecision] = {}
         self._health: dict[str, str] = {
             "service": "STARTING",
@@ -3943,66 +3952,33 @@ class SwingService:
             base["blocked_reasons"] = ["NO_COMPLETED_BARS"]
             return base
         try:
-            indicators = calculate_v11_indicators(bars)
-            moving = indicators.get("moving_averages", {})
-            weekly = indicators.get("weekly", {})
-            setups = indicators.get("setups", {})
-            latest = bars[-1]
-            closes = [bar.adjusted_close for bar in bars]
-            ma20 = moving.get("ma20") if isinstance(moving, Mapping) else None
-            ma60 = moving.get("ma60") if isinstance(moving, Mapping) else None
-            ma20_slope = (
-                moving.get("ma20_slope_pct_10d")
-                if isinstance(moving, Mapping) else None
+            indicators = calculate_v11_indicators(
+                bars, closed_dates=self._closed_dates,
             )
-            indicator = {
-                "bar_count": len(bars),
-                "price": latest.adjusted_close,
-                "ma10": moving.get("ma10") if isinstance(moving, Mapping) else None,
-                "ma20": ma20,
-                "ma60": ma60,
-                "ma250": moving.get("ma250") if isinstance(moving, Mapping) else None,
-                "atr14": indicators.get("atr14"),
-                "ma20_slope_pct_10d": ma20_slope,
-                "weekly_close": weekly.get("close") if isinstance(weekly, Mapping) else None,
-                "weekly_ma10": weekly.get("ma10") if isinstance(weekly, Mapping) else None,
-                "weekly_ma20": weekly.get("ma20") if isinstance(weekly, Mapping) else None,
-                "bias20_pct": (
-                    indicators.get("bias20", {}).get("value")
-                    if isinstance(indicators.get("bias20"), Mapping) else None
-                ),
-                "volume_ratio20": (
-                    indicators.get("volume", {}).get("ratio20")
-                    if isinstance(indicators.get("volume"), Mapping) else None
-                ),
-                "pullback_window_ok": bool(setups.get("pullback_window_ok")),
-                "pullback_recovery_ok": bool(setups.get("pullback_recovery_ok")),
-                "volume_contraction_ok": bool(setups.get("volume_contraction_ok")),
-                "macd_trigger": bool(setups.get("macd_trigger")),
-                "rsi_trigger": bool(setups.get("rsi_trigger")),
-                "volume_recovery_trigger": bool(setups.get("volume_recovery_trigger")),
-                "box_ok": bool(setups.get("box_ok")),
-                "box_breakout_ok": bool(setups.get("box_breakout_ok")),
-                "macd_dif": (
-                    indicators.get("macd", {}).get("dif")
-                    if isinstance(indicators.get("macd"), Mapping) else None
-                ),
-                "macd_dea": (
-                    indicators.get("macd", {}).get("dea")
-                    if isinstance(indicators.get("macd"), Mapping) else None
-                ),
-                "macd_dif_nonnegative": bool(setups.get("macd_dif_nonnegative")),
-                "weekly_above_ma10": bool(setups.get("weekly_above_ma10")),
-            }
+            indicator = normalize_v11_indicators(indicators)
+            latest = bars[-1]
+            environment, environment_bars = self._v11_environment_context()
+            rs = None
+            if metadata is not None and metadata.environment_index:
+                rs = calculate_relative_strength_20(
+                    bars, environment_bars.get(metadata.environment_index, ()),
+                )
+            metadata_errors = validate_v11_metadata(
+                {symbol: metadata} if metadata is not None else {}, (symbol,),
+            )
             context = V11Context(
+                # Metadata completeness does not prove provider/history quality;
+                # the V11 service remains fail-closed until its quality gate
+                # supplies an explicit VERIFIED status.
                 data_quality="UNVERIFIED",
-                environment_state=classify_v11_environment(indicator),
+                environment_state=str(environment.get("state", "UNKNOWN")),
                 category=(
                     metadata.category if metadata is not None else None
                 ),
                 correlation_group=(
                     metadata.correlation_group if metadata is not None else None
                 ),
+                relative_strength_20=rs,
                 account_known=self._health.get("portfolio") == "OK",
                 equity_cny=(
                     float(self._portfolio_projection.equity)
@@ -4022,6 +3998,12 @@ class SwingService:
                 },
                 metadata=(metadata.to_dict() if metadata is not None else {}),
             )
+            context = replace(context, metadata={
+                **context.metadata,
+                "v11_metadata_errors": metadata_errors,
+                "environment": environment,
+                "relative_strength_20": rs,
+            })
             decision = evaluate_v11(bars, config=config, context=context)
             base.update({
                 "status": "AVAILABLE",
@@ -4036,6 +4018,28 @@ class SwingService:
             base["blocked_reasons"] = ["V11_DATA_ERROR"]
             base["error"] = self._safe_error(error)
             return base
+
+    def _v11_environment_context(
+        self,
+    ) -> tuple[dict[str, object], dict[str, tuple[DailyBar, ...]]]:
+        """Build CSI 300/1000 environment evidence from completed history."""
+        by_code: dict[str, tuple[DailyBar, ...]] = {}
+        for code in ("000300", "000852"):
+            selected = self._index_history.get(code, ())
+            if selected:
+                by_code[code] = tuple(sorted(selected, key=lambda item: item.trading_date))
+        indicators: dict[str, tuple[Mapping[str, object], ...]] = {}
+        for code, bars in by_code.items():
+            if len(bars) < 2:
+                continue
+            previous = normalize_v11_indicators(calculate_v11_indicators(
+                bars[:-1], closed_dates=self._closed_dates,
+            ))
+            latest = normalize_v11_indicators(calculate_v11_indicators(
+                bars, closed_dates=self._closed_dates,
+            ))
+            indicators[code] = (previous, latest)
+        return calculate_v11_environment(indicators), by_code
 
     def _shadow_snapshot(
         self,

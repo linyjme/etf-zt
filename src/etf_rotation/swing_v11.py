@@ -8,8 +8,9 @@ quality, environment, or position evidence fails closed.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from enum import StrEnum
 import json
 import math
@@ -251,7 +252,9 @@ def evaluate_v11(
             reasons=("NO_COMPLETED_BARS",), evidence={"bar_count": 0}, context=context,
         )
     try:
-        indicator = dict(context.indicator) or calculate_v11_indicators(materialized)
+        indicator = normalize_v11_indicators(context.indicator)
+        if not indicator:
+            indicator = normalize_v11_indicators(calculate_v11_indicators(materialized))
     except (ValueError, TypeError, KeyError):
         return _decision(
             V11State.DATA_UNAVAILABLE, config,
@@ -265,6 +268,8 @@ def evaluate_v11(
             evidence=indicator, context=context,
         )
     reasons: list[str] = []
+    if context.metadata.get("v11_metadata_errors"):
+        reasons.append("METADATA_INCOMPLETE")
     if context.data_quality != "VERIFIED":
         reasons.append("DATA_QUALITY_UNVERIFIED")
     if context.snapshot_only:
@@ -432,10 +437,12 @@ def classify_v11_environment(indicator: Mapping[str, object]) -> str:
     weekly_ma20 = _number_or_none(indicator.get("weekly_ma20"))
     if None in (price, ma20, ma60, slope):
         return "UNKNOWN"
-    if price > ma60 and ma20 > ma60 and slope > 0.0:
+    # A healthy index only needs to remain above MA60 while MA20 rises or
+    # stays effectively flat (within 0.5 percentage points over ten days).
+    if price > ma60 and slope >= -0.5:
         if weekly_close is None or weekly_ma20 is None or weekly_close >= weekly_ma20:
             return "ATTACK"
-    if price < ma60 and ma20 < ma60 and slope < 0.0:
+    if price < ma60 and slope <= 0.5:
         return "DEFENSE"
     if abs(slope) <= 0.8 and abs(price / ma60 - 1.0) <= 0.04:
         return "NEUTRAL"
@@ -558,7 +565,10 @@ def _average(values: Sequence[float], period: int) -> float | None:
     return sum(values[-period:]) / period
 
 
-def _completed_weekly(bars: Sequence[DailyBar]) -> dict[str, object]:
+def _completed_weekly(
+    bars: Sequence[DailyBar],
+    closed_dates: Iterable[date] | None = None,
+) -> dict[str, object]:
     grouped: list[tuple[tuple[int, int], DailyBar]] = []
     for bar in bars:
         key = (bar.trading_date.isocalendar().year, bar.trading_date.isocalendar().week)
@@ -566,19 +576,48 @@ def _completed_weekly(bars: Sequence[DailyBar]) -> dict[str, object]:
             grouped[-1] = (key, bar)
         else:
             grouped.append((key, bar))
-    complete = [bar for _, bar in grouped if bar.trading_date.weekday() == 4]
+    closures = frozenset(closed_dates or ())
+    complete: list[DailyBar] = []
+    for index, (_, bar) in enumerate(grouped):
+        if index < len(grouped) - 1:
+            complete.append(bar)
+            continue
+        # A trailing week is complete when Friday traded.  On a holiday
+        # Friday, the calendar confirms that no later trading day remains.
+        if bar.trading_date.weekday() == 4:
+            complete.append(bar)
+            continue
+        candidate = bar.trading_date + timedelta(days=1)
+        remaining = False
+        while candidate.isocalendar()[:2] == bar.trading_date.isocalendar()[:2]:
+            if candidate.weekday() < 5 and candidate not in closures:
+                remaining = True
+                break
+            candidate += timedelta(days=1)
+        if not remaining and closures:
+            complete.append(bar)
     closes = [bar.adjusted_close for bar in complete]
+    current_ma20 = _average(closes, 20)
+    previous_ma20 = _average(closes[:-10], 20) if len(closes) >= 30 else None
     return {
         "status": "READY" if len(closes) >= 20 else "WARMUP",
         "bar_count": len(closes),
         "close": closes[-1] if closes else None,
         "ma10": _average(closes, 10),
-        "ma20": _average(closes, 20),
+        "ma20": current_ma20,
+        "ma20_slope_pct_10d": (
+            (current_ma20 / previous_ma20 - 1.0) * 100.0
+            if current_ma20 is not None and previous_ma20 is not None else None
+        ),
         "as_of_trading_date": complete[-1].trading_date.isoformat() if complete else None,
     }
 
 
-def calculate_v11_indicators(bars: Sequence[DailyBar]) -> dict[str, object]:
+def calculate_v11_indicators(
+    bars: Sequence[DailyBar],
+    *,
+    closed_dates: Iterable[date] | None = None,
+) -> dict[str, object]:
     """Calculate V11 evidence from completed daily bars only.
 
     The function intentionally ignores a trailing partial ISO week.  Volume
@@ -684,7 +723,7 @@ def calculate_v11_indicators(bars: Sequence[DailyBar]) -> dict[str, object]:
     box_breakout_ok = bool(
         box_ok and box_high is not None and closes[-1] > box_high
     )
-    weekly = _completed_weekly(materialized)
+    weekly = _completed_weekly(materialized, closed_dates)
     weekly_above_ma10 = bool(
         weekly.get("close") is not None and weekly.get("ma10") is not None
         and weekly["close"] > weekly["ma10"]
@@ -693,6 +732,7 @@ def calculate_v11_indicators(bars: Sequence[DailyBar]) -> dict[str, object]:
         "status": "READY" if len(materialized) >= 250 else "WARMUP",
         "bar_count": len(materialized),
         "as_of_trading_date": materialized[-1].trading_date.isoformat() if materialized else None,
+        "price": closes[-1] if closes else None,
         "moving_averages": moving,
         "macd": snapshot["macd"],
         "rsi": snapshot["rsi"],
@@ -726,8 +766,183 @@ def calculate_v11_indicators(bars: Sequence[DailyBar]) -> dict[str, object]:
     }
 
 
+def normalize_v11_indicators(indicators: Mapping[str, object]) -> dict[str, object]:
+    """Normalize nested indicator output to the evaluator's flat contract."""
+    if not isinstance(indicators, Mapping):
+        raise TypeError("indicator context must be a mapping")
+    if not indicators:
+        return {}
+    raw = dict(indicators)
+    moving = raw.get("moving_averages")
+    moving = moving if isinstance(moving, Mapping) else {}
+    weekly = raw.get("weekly")
+    weekly = weekly if isinstance(weekly, Mapping) else {}
+    volume = raw.get("volume")
+    volume = volume if isinstance(volume, Mapping) else {}
+    setups = raw.get("setups")
+    setups = setups if isinstance(setups, Mapping) else {}
+    macd = raw.get("macd")
+    macd = macd if isinstance(macd, Mapping) else {}
+    bias = raw.get("bias20")
+    bias = bias if isinstance(bias, Mapping) else {}
+    latest = raw.get("latest")
+    latest = latest if isinstance(latest, Mapping) else {}
+    flat = dict(raw)
+    flat.update({
+        "bar_count": raw.get("bar_count"),
+        "price": raw.get("price", latest.get("price", raw.get("as_of_price"))),
+        "ma10": raw.get("ma10", moving.get("ma10")),
+        "ma20": raw.get("ma20", moving.get("ma20")),
+        "ma60": raw.get("ma60", moving.get("ma60")),
+        "ma250": raw.get("ma250", moving.get("ma250")),
+        "atr14": raw.get("atr14"),
+        "ma20_slope_pct_10d": raw.get("ma20_slope_pct_10d", moving.get("ma20_slope_pct_10d")),
+        "weekly_close": raw.get("weekly_close", weekly.get("close")),
+        "weekly_ma10": raw.get("weekly_ma10", weekly.get("ma10")),
+        "weekly_ma20": raw.get("weekly_ma20", weekly.get("ma20")),
+        "weekly_ma20_slope_pct_10d": raw.get(
+            "weekly_ma20_slope_pct_10d", weekly.get("ma20_slope_pct_10d")
+        ),
+        "bias20_pct": raw.get("bias20_pct", bias.get("value")),
+        "volume_ratio20": raw.get("volume_ratio20", volume.get("ratio20")),
+        "pullback_window_ok": bool(raw.get("pullback_window_ok", setups.get("pullback_window_ok"))),
+        "pullback_recovery_ok": bool(raw.get("pullback_recovery_ok", setups.get("pullback_recovery_ok"))),
+        "volume_contraction_ok": bool(raw.get("volume_contraction_ok", setups.get("volume_contraction_ok"))),
+        "macd_trigger": bool(raw.get("macd_trigger", setups.get("macd_trigger"))),
+        "rsi_trigger": bool(raw.get("rsi_trigger", setups.get("rsi_trigger"))),
+        "volume_recovery_trigger": bool(raw.get("volume_recovery_trigger", setups.get("volume_recovery_trigger"))),
+        "box_ok": bool(raw.get("box_ok", setups.get("box_ok"))),
+        "box_breakout_ok": bool(raw.get("box_breakout_ok", setups.get("box_breakout_ok"))),
+        "macd_dif": raw.get("macd_dif", macd.get("dif")),
+        "macd_dea": raw.get("macd_dea", macd.get("dea")),
+        "macd_dif_nonnegative": bool(raw.get("macd_dif_nonnegative", setups.get("macd_dif_nonnegative"))),
+        "weekly_above_ma10": bool(raw.get("weekly_above_ma10", setups.get("weekly_above_ma10"))),
+    })
+    return {key: value for key, value in flat.items() if value is not None}
+
+
+def calculate_relative_strength_20(
+    symbol_bars: Sequence[DailyBar],
+    environment_bars: Sequence[DailyBar],
+) -> float | None:
+    """Return the 20-session return difference in percentage points."""
+    symbol = {bar.trading_date: bar for bar in symbol_bars}
+    environment = {bar.trading_date: bar for bar in environment_bars}
+    dates = sorted(set(symbol) & set(environment))
+    if len(dates) < 21:
+        return None
+    start, end = dates[-21], dates[-1]
+    symbol_return = symbol[end].adjusted_close / symbol[start].adjusted_close - 1.0
+    environment_return = environment[end].adjusted_close / environment[start].adjusted_close - 1.0
+    value = (symbol_return - environment_return) * 100.0
+    return value if math.isfinite(value) else None
+
+
+def calculate_v11_environment(
+    index_indicators: Mapping[str, Sequence[Mapping[str, object]]],
+) -> dict[str, object]:
+    """Combine CSI 300/1000 evidence with two-day confirmation."""
+    required = ("000300", "000852")
+    if any(code not in index_indicators for code in required):
+        csi300 = index_indicators.get("000300", ())
+        if csi300:
+            latest = csi300[-1]
+            weekly_close = _number_or_none(latest.get("weekly_close"))
+            weekly_ma20 = _number_or_none(latest.get("weekly_ma20"))
+            weekly_slope = _number_or_none(latest.get("weekly_ma20_slope_pct_10d"))
+            if weekly_slope is None:
+                previous = _number_or_none(latest.get("weekly_ma20_prev"))
+                if weekly_ma20 is not None and previous:
+                    weekly_slope = (weekly_ma20 / previous - 1.0) * 100.0
+            if (
+                weekly_close is not None and weekly_ma20 is not None
+                and weekly_slope is not None and weekly_close < weekly_ma20
+                and weekly_slope < 0.0
+            ):
+                return {
+                    "state": "DEFENSE", "health": "PARTIAL",
+                    "hard_defense": True,
+                    "hard_defense_reason": "CSI300_WEEKLY_BREAK",
+                }
+        return {"state": "UNKNOWN", "health": "UNAVAILABLE", "hard_defense": False}
+    states: dict[str, tuple[str, ...]] = {}
+    for code in required:
+        values = tuple(index_indicators[code])
+        if len(values) < 2:
+            return {"state": "UNKNOWN", "health": "STALE", "hard_defense": False}
+        states[code] = tuple(classify_v11_environment(value) for value in values[-2:])
+    csi300_latest = index_indicators["000300"][-1]
+    weekly_ma20_prev = _number_or_none(csi300_latest.get("weekly_ma20_prev"))
+    weekly_slope = _number_or_none(csi300_latest.get("weekly_ma20_slope_pct_10d"))
+    if weekly_slope is None and weekly_ma20_prev:
+        current_weekly_ma20 = _number_or_none(csi300_latest.get("weekly_ma20"))
+        if current_weekly_ma20 is not None:
+            weekly_slope = (current_weekly_ma20 / weekly_ma20_prev - 1.0) * 100.0
+    hard_defense = (
+        _number_or_none(csi300_latest.get("weekly_close")) is not None
+        and _number_or_none(csi300_latest.get("weekly_ma20")) is not None
+        and float(csi300_latest["weekly_close"]) < float(csi300_latest["weekly_ma20"])
+        and weekly_slope is not None and weekly_slope < 0.0
+    )
+    if hard_defense:
+        state = "DEFENSE"
+    elif any(value == "UNKNOWN" for values in states.values() for value in values):
+        state = "UNKNOWN"
+    elif all(value == "ATTACK" for values in states.values() for value in values):
+        state = "ATTACK"
+    elif all(value == "DEFENSE" for values in states.values() for value in values):
+        state = "DEFENSE"
+    else:
+        state = "NEUTRAL"
+    return {
+        "state": state,
+        "health": "OK",
+        "hard_defense": hard_defense,
+        "hard_defense_reason": "CSI300_WEEKLY_BREAK" if hard_defense else None,
+        "states": states,
+    }
+
+
+_V11_CATEGORIES = frozenset({
+    "BROAD", "SECTOR", "CROSS_BORDER", "GOLD",
+})
+_V11_ENVIRONMENT_INDICES = frozenset({"000300", "000852"})
+
+
+def validate_v11_metadata(
+    metadata: Mapping[str, object], enabled_symbols: Iterable[str],
+) -> dict[str, tuple[str, ...]]:
+    """Return field-level errors for enabled ETF V11 metadata."""
+    errors: dict[str, tuple[str, ...]] = {}
+    for symbol in enabled_symbols:
+        item = metadata.get(symbol)
+        reasons: list[str] = []
+        if item is None:
+            reasons.append("metadata")
+        else:
+            category = getattr(item, "category", None)
+            if category not in _V11_CATEGORIES:
+                reasons.append("category")
+            environment_index = getattr(item, "environment_index", None)
+            if category in {"CROSS_BORDER", "GOLD"}:
+                if (
+                    environment_index not in (None, "NONE")
+                    and environment_index not in _V11_ENVIRONMENT_INDICES
+                ):
+                    reasons.append("environment_index")
+            elif environment_index not in _V11_ENVIRONMENT_INDICES:
+                reasons.append("environment_index")
+            if not getattr(item, "correlation_group", None):
+                reasons.append("correlation_group")
+        if reasons:
+            errors[symbol] = tuple(reasons)
+    return errors
+
+
 __all__ = [
     "V11Config", "V11Context", "V11Decision", "V11Position", "V11Setup", "V11State",
-    "calculate_v11_indicators", "classify_v11_environment", "evaluate_v11", "evaluate_v11_position",
+    "calculate_v11_indicators", "calculate_v11_environment", "calculate_relative_strength_20",
+    "classify_v11_environment", "evaluate_v11", "evaluate_v11_position",
+    "normalize_v11_indicators", "validate_v11_metadata",
     "load_v11_config", "size_v11_order",
 ]
