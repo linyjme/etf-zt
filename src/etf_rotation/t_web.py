@@ -1644,21 +1644,6 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             if self._reject_unexpected_query(parsed.query):
                 return
             self._json(HTTPStatus.OK, self.server.application.valuations())
-        elif path == "/portfolio":
-            if self._reject_unexpected_query(parsed.query):
-                return
-            from .portfolio_page import PORTFOLIO_PAGE
-
-            self._send(
-                HTTPStatus.OK,
-                PORTFOLIO_PAGE.encode("utf-8"),
-                "text/html; charset=utf-8",
-            )
-        elif path == "/api/portfolio":
-            if self._reject_unexpected_query(parsed.query):
-                return
-            # Reuse the published account view without a second cache or producer.
-            self._swing_read(lambda application: application.portfolio())
         elif path == "/swing":
             self._send(
                 HTTPStatus.OK,
@@ -1742,8 +1727,6 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         elif re.fullmatch(r"/api/swing/alerts/[0-9a-f]{24}/ignore", path):
             self._swing_alert_transition(path.split("/")[4], "ignore")
         elif path in {
-            "/portfolio",
-            "/api/portfolio",
             "/swing",
             "/api/swing/snapshot",
             "/api/swing/daily-quotes",

@@ -298,6 +298,9 @@ class EastmoneyDailyCollector:
                 last_completed_date=last_completed_date,
                 count=count,
             )
+            adjusted = self._complete_tencent_adjusted_suffix(
+                item.symbol, raw, adjusted,
+            )
             responses[item.symbol] = (raw, adjusted)
         return responses
 
@@ -340,6 +343,54 @@ class EastmoneyDailyCollector:
             adjusted=adjustment == 1,
             count=count,
         )
+
+    @staticmethod
+    def _complete_tencent_adjusted_suffix(
+        symbol: str,
+        raw: _Response,
+        adjusted: _Response,
+    ) -> _Response:
+        """Align Tencent qfq output to raw dates when its latest bar lags.
+
+        Tencent occasionally publishes the unadjusted close for the current
+        day before its qfq series catches up. The current-day qfq value is
+        still derivable from the same day's raw bar and the latest available
+        qfq/raw close factor; retaining that suffix prevents a one-day source
+        race from blocking the complete batch.
+        """
+        raw_by_date = {bar.trading_date: bar for bar in raw.bars}
+        adjusted_by_date = {bar.trading_date: bar for bar in adjusted.bars}
+        missing_dates = tuple(
+            day for day in raw_by_date if day not in adjusted_by_date
+        )
+        if missing_dates and any(
+            day <= adjusted.bars[-1].trading_date for day in missing_dates
+        ):
+            raise SwingDataError(f"{symbol} 腾讯kline复权日期无法对齐")
+        common_adjusted_dates = [
+            day for day in adjusted_by_date if day in raw_by_date
+        ]
+        if not common_adjusted_dates:
+            raise SwingDataError(f"{symbol} 腾讯kline没有可对齐的复权日期")
+        anchor_day = common_adjusted_dates[-1]
+        anchor_raw = raw_by_date[anchor_day]
+        anchor_adjusted = adjusted_by_date[anchor_day]
+        scale = anchor_adjusted.close / anchor_raw.close
+        if not math.isfinite(scale) or scale <= 0:
+            raise SwingDataError(f"{symbol} 腾讯kline复权比例无效")
+        completed = [bar for bar in adjusted.bars if bar.trading_date in raw_by_date]
+        for day in sorted(missing_dates):
+            source = raw_by_date[day]
+            completed.append(_ParsedKline(
+                trading_date=day,
+                open=source.open * scale,
+                close=source.close * scale,
+                high=source.high * scale,
+                low=source.low * scale,
+                volume=source.volume,
+                amount=source.amount,
+            ))
+        return _Response(adjusted.pre_close, tuple(completed))
 
     def _parse_tencent_payload(
         self,
@@ -594,29 +645,38 @@ class EastmoneyDailyCollector:
         symbol: str,
         endpoint: str,
     ) -> tuple[float, float, float, float]:
-        if endpoint != TENCENT_KLINE_ENDPOINT:
-            return adjusted.open, adjusted.high, adjusted.low, adjusted.close
         raw_prices = (raw.open, raw.high, raw.low, raw.close)
         adjusted_prices = (
             adjusted.open, adjusted.high, adjusted.low, adjusted.close,
         )
-        scale = adjusted.close / raw.close
-        offset = adjusted.close - raw.close
+        try:
+            scale = adjusted.close / raw.close
+        except (ZeroDivisionError, OverflowError):
+            scale = math.nan
+
+        # Vendors round each adjusted OHLC field independently.  Comparing the
+        # four raw/adjusted ratios exactly therefore rejects valid Eastmoney
+        # data (the disagreement is usually only a few price ticks).  Use the
+        # close-derived factor as the canonical factor, validate that every
+        # adjusted field is close to the same multiplicative series, and emit
+        # a normalized series so DailyBar receives one exact positive scale.
         price_tolerance = 0.011
-        multiplicative = all(
-            math.isclose(candidate, original * scale, abs_tol=price_tolerance)
-            for original, candidate in zip(raw_prices, adjusted_prices)
+        multiplicative = (
+            math.isfinite(scale)
+            and scale > 0
+            and all(
+                math.isclose(
+                    candidate,
+                    original * scale,
+                    rel_tol=0.0,
+                    abs_tol=price_tolerance,
+                )
+                for original, candidate in zip(raw_prices, adjusted_prices)
+            )
         )
-        additive = all(
-            math.isclose(candidate, original + offset, abs_tol=price_tolerance)
-            for original, candidate in zip(raw_prices, adjusted_prices)
-        )
-        if (
-            not math.isfinite(scale)
-            or scale <= 0
-            or not (multiplicative or additive)
-        ):
-            raise SwingDataError(f"{symbol} 腾讯kline复权OHLC不一致")
+        if not multiplicative:
+            provider = "腾讯kline" if endpoint == TENCENT_KLINE_ENDPOINT else "东方财富kline"
+            raise SwingDataError(f"{symbol} {provider}复权OHLC不一致")
         return tuple(price * scale for price in raw_prices)
 
     @staticmethod

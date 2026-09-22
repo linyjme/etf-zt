@@ -371,6 +371,32 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
             {str(DEFAULT_SWING_HISTORY_COUNT)},
         )
 
+    def test_normalizes_independently_rounded_adjusted_ohlc_to_one_scale(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            query = parse_qs(urlsplit(request.full_url).query)
+            payload = kline_payload(
+                "510300", 1, adjusted=query["fqt"] == ["1"],
+            )
+            if query["fqt"] == ["1"]:
+                # Eastmoney rounds each adjusted field independently. The
+                # close-derived factor remains authoritative within one tick.
+                payload["data"]["klines"][0] = (
+                    "2026-08-27,5.004,5.25,5.506,4.894,1000,10000,0,0,0,0"
+                )
+            return payload_bytes(payload)
+
+        bars = self.collector(transport).collect(
+            (SwingWatchItem("510300", True),), date(2026, 8, 28), count=2,
+        )
+
+        self.assertEqual(len(bars), 2)
+        first = bars[0]
+        scale = first.adjusted_close / first.close
+        self.assertAlmostEqual(first.adjusted_open / first.open, scale)
+        self.assertAlmostEqual(first.adjusted_high / first.high, scale)
+        self.assertAlmostEqual(first.adjusted_low / first.low, scale)
+        self.assertEqual(first.adjusted_open, first.open * scale)
+
     def test_requests_exact_params_headers_and_raw_adjusted_pair_per_symbol(self) -> None:
         transport = FixtureTransport()
         self.collector(transport, timeout=3.5).collect(
@@ -567,7 +593,24 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
                         (SwingWatchItem("510300", True),), date(2026, 8, 28), count=2,
                     )
 
-    def test_tencent_final_fallback_rejects_mismatched_retained_dates_and_scale(self) -> None:
+    def test_tencent_final_fallback_completes_adjusted_suffix_when_provider_lags(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            if not request.full_url.startswith(TENCENT_KLINE_ENDPOINT):
+                raise OSError("eastmoney down")
+            param = parse_qs(urlsplit(request.full_url).query)["param"][0].split(",")
+            adjusted = param[-1] == "qfq"
+            dates = (
+                ("2026-08-26", "2026-08-27")
+                if adjusted else ("2026-08-26", "2026-08-27", "2026-08-28")
+            )
+            return payload_bytes(tencent_payload("510300", adjusted=adjusted, dates=dates))
+
+        bars = self.collector(transport).collect(
+            (SwingWatchItem("510300", True),), date(2026, 8, 28), count=2,
+        )
+        self.assertEqual([bar.trading_date for bar in bars], [date(2026, 8, 27), date(2026, 8, 28)])
+
+    def test_tencent_final_fallback_rejects_interior_date_mismatch_or_scale(self) -> None:
         for mode in ("dates", "scale"):
             with self.subTest(mode=mode):
                 def transport(request: Request, timeout: float) -> bytes:
@@ -576,7 +619,7 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
                     param = parse_qs(urlsplit(request.full_url).query)["param"][0].split(",")
                     adjusted = param[-1] == "qfq"
                     dates = (
-                        ("2026-08-26", "2026-08-27")
+                        ("2026-08-26", "2026-08-28")
                         if adjusted and mode == "dates"
                         else ("2026-08-26", "2026-08-27", "2026-08-28")
                     )

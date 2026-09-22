@@ -25,7 +25,7 @@ SWING_PAGE = r"""<!doctype html>
 </head>
 <body>
 <main class="shell">
-  <nav aria-label="监控模式"><a href="/portfolio">资产总览</a><a href="/">做T监控</a><a href="/swing" aria-current="page">波段监控</a><a href="/notifications">通知中心</a></nav>
+  <nav aria-label="监控模式"><a href="/swing" aria-current="page">波段监控</a><a href="/">做T监控</a><a href="/pr">PR估值</a><a href="/notifications">通知中心</a></nav>
   <header class="topbar"><div><h1>指数ETF波段监控</h1><div class="subtitle">趋势过滤 · 回调计划 · 手工成交确认</div></div><div class="guard"><span class="badge">仅监控，不自动交易</span><button id="notification-permission" class="button secondary" type="button">通知需点击授权</button></div></header>
   <div id="swing-errors" role="alert"></div>
   <div id="swing-live-status" aria-live="polite">正在载入波段状态</div>
@@ -105,7 +105,7 @@ function selectedHoldingMarkup(payload,symbol){
   const view=payload?.holdings_snapshot,snapshot=view?.status==='SNAPSHOT_ONLY'?view.snapshot:null,position=(snapshot?.positions||[]).find(item=>item.symbol===symbol),code=validSymbol(symbol)?symbol:'—';
   const note=view?.status==='INVALID'?'持仓快照待核对；数据未知，不代表空仓。':position?'仅为报告持仓，买入日期和止损未知。':'该标的未登记持仓报告；— 不代表空仓。';
   const field=(label,key,digits)=>`<div><dt>${label}</dt><dd data-holding-field="${key}">${backtestNumber(position?.[key],digits)}</dd></div>`;
-  return `<aside class="selected-holding" aria-label="当前标的持仓"><div class="holding-heading"><h3>当前标的持仓 · ${escapeHtml(position?.name||code)}</h3><a href="/portfolio">查看资产总览 →</a></div><dl class="holding-facts">${field('报告份额','shares',0)}${field('报告可卖','sellable_shares',0)}${field('报告成本','average_cost',3)}</dl><p class="holding-context">持仓截图时点：${escapeHtml(snapshot?.positions_as_of||'未知')} · 非实时估值。${escapeHtml(note)}${position?.management_mode==='LONG_TERM_ONLY'?' 长期仅记账。':''}</p></aside>`;
+  return `<aside class="selected-holding" aria-label="当前标的持仓"><div class="holding-heading"><h3>当前标的持仓 · ${escapeHtml(position?.name||code)}</h3></div><dl class="holding-facts">${field('报告份额','shares',0)}${field('报告可卖','sellable_shares',0)}${field('报告成本','average_cost',3)}</dl><p class="holding-context">持仓截图时点：${escapeHtml(snapshot?.positions_as_of||'未知')} · 非实时估值。${escapeHtml(note)}${position?.management_mode==='LONG_TERM_ONLY'?' 长期仅记账。':''}</p></aside>`;
 }
 function payloadSafetyReady(payload){const h=payload?.health||{};return !holdingsSnapshotPresent(payload)&&Object.entries(REQUIRED_EXECUTION_HEALTH).every(([key,value])=>h[key]===value)&&Object.keys(payload?.errors||{}).length===0}
 function snapshotExecutionReady(state){const item=(state.snapshot?.items||[]).find(value=>value.symbol===state.selectedSymbol);return Boolean(item&&item.execution_status==='READY_TO_EXECUTE')}

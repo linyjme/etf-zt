@@ -132,7 +132,7 @@ function itemFor(){return null}
         self.assertIn('<nav aria-label="监控模式">', SWING_PAGE)
         self.assertIn('href="/"', SWING_PAGE)
         self.assertIn('href="/swing" aria-current="page"', SWING_PAGE)
-        self.assertIn('href="/portfolio">资产总览</a>', SWING_PAGE)
+        self.assertIn('href="/pr">PR估值</a>', SWING_PAGE)
         self.assertNotIn('id="portfolio-risk"', SWING_PAGE)
         self.assertIn('id="swing-watchlist"', SWING_PAGE)
         self.assertIn('id="swing-detail"', SWING_PAGE)
