@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import datetime, time, timedelta
 import json
 import os
 from pathlib import Path
@@ -67,24 +67,39 @@ class Trends2QuoteCollector:
         observed_at = self.now()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise MarketDataError("采集时间必须带时区")
-        endpoint = TRENDS2_ENDPOINT
-        try:
-            records, urls = self._collect_batch(enabled, endpoint)
-        except _RequestFailure as primary_error:
-            endpoint = TRENDS2_FALLBACK_ENDPOINT
+        records: list[dict[str, Any]] = []
+        urls: list[str] = []
+        endpoints_used: list[str] = []
+        for item in enabled:
+            primary_url = self._url(item.symbol, TRENDS2_ENDPOINT)
             try:
-                records, urls = self._collect_batch(enabled, endpoint)
-            except _RequestFailure as fallback_error:
-                raise MarketDataError(
-                    "trends2 主备端点请求均失败: "
-                    f"主端点 {primary_error}; 备用端点 {fallback_error}"
-                ) from fallback_error
-            except MarketDataError as fallback_error:
-                raise MarketDataError(
-                    "trends2 主端点请求失败且备用端点业务校验失败: "
-                    f"主端点 {primary_error}; "
-                    f"备用端点 ({endpoint}): {fallback_error}"
-                ) from fallback_error
+                urls.append(primary_url)
+                records.append(self._fetch(item, primary_url, TRENDS2_ENDPOINT))
+                endpoints_used.append(TRENDS2_ENDPOINT)
+            except _RequestFailure as primary_error:
+                fallback_url = self._url(item.symbol, TRENDS2_FALLBACK_ENDPOINT)
+                try:
+                    urls.append(fallback_url)
+                    records.append(self._fetch(item, fallback_url, TRENDS2_FALLBACK_ENDPOINT))
+                    endpoints_used.append(TRENDS2_FALLBACK_ENDPOINT)
+                except _RequestFailure as fallback_error:
+                    raise MarketDataError(
+                        "trends2 主备端点请求均失败: "
+                        f"主端点 {primary_error}; 备用端点 {fallback_error}"
+                    ) from fallback_error
+                except MarketDataError as fallback_error:
+                    raise MarketDataError(
+                        "trends2 主端点请求失败且备用端点业务校验失败: "
+                        f"主端点 {primary_error}; "
+                        f"备用端点 ({TRENDS2_FALLBACK_ENDPOINT}): {fallback_error}"
+                    ) from fallback_error
+        unique_endpoints = tuple(dict.fromkeys(endpoints_used))
+        endpoint = unique_endpoints[0] if unique_endpoints else TRENDS2_ENDPOINT
+        source_name = (
+            source_label(endpoint)
+            if len(unique_endpoints) <= 1
+            else f"{SOURCE_NAME} (主备混合)"
+        )
         for record in records:
             safe_points = [
                 point for point in record["points"]
@@ -92,10 +107,34 @@ class Trends2QuoteCollector:
             ]
             if not safe_points:
                 raise MarketDataError(f"{record['symbol']}没有不晚于观测时间的分钟点")
-            record["points"] = safe_points
-            record["price"] = safe_points[-1]["price"]
-            record["average_price"] = safe_points[-1]["average_price"]
-            record["timestamp"] = safe_points[-1]["timestamp"]
+            # 15:00 is the end-of-day close snapshot, not a completed minute
+            # bar. Keeping it in the minute series makes it look like a
+            # 15:00--15:01 interval and can contaminate minute indicators.
+            close_points = [
+                point for point in safe_points
+                if datetime.fromisoformat(point["timestamp"])
+                .astimezone(SHANGHAI).time().replace(tzinfo=None) == time(15, 0)
+            ]
+            intraday_points = [point for point in safe_points if point not in close_points]
+            completed_points = [
+                point for point in intraday_points
+                if observed_at >= datetime.fromisoformat(point["timestamp"])
+                + timedelta(minutes=1)
+            ]
+            close_snapshot = dict(close_points[-1]) if close_points else None
+            if close_snapshot is not None:
+                close_snapshot["is_close_snapshot"] = True
+            # During a partial/early session a feed may contain only the close
+            # snapshot. Preserve a valid adapter payload while exposing zero
+            # completed minutes to downstream quality gates.
+            visible_points = intraday_points or safe_points[-1:]
+            latest = visible_points[-1]
+            record["points"] = visible_points
+            record["completed_minute_count"] = len(completed_points)
+            record["close_snapshot"] = close_snapshot
+            record["price"] = latest["price"]
+            record["average_price"] = latest["average_price"]
+            record["timestamp"] = latest["timestamp"]
             record["observed_at"] = observed_at.isoformat()
             record["collected_at"] = observed_at.isoformat()
         quotes = JsonQuoteAdapter().parse({"quotes": records})
@@ -108,12 +147,26 @@ class Trends2QuoteCollector:
         return {
             "schema_version": 2,
             "source": {
-                "name": source_label(endpoint),
+                "name": source_name,
                 "endpoint": endpoint,
                 "urls": urls,
             },
             "observed_at": observed_at.isoformat(),
             "collected_at": observed_at.isoformat(),
+            "coverage": {
+                "expected_symbols": symbols,
+                "received_symbols": sorted(quotes),
+                "missing_symbols": missing,
+                "coverage_pct": round(len(quotes) / len(symbols) * 100.0, 2),
+                "completed_minute_counts": {
+                    record["symbol"]: record.get("completed_minute_count", 0)
+                    for record in records
+                },
+                "close_snapshot_symbols": [
+                    record["symbol"] for record in records
+                    if record.get("close_snapshot") is not None
+                ],
+            },
             "quotes": records,
         }
 

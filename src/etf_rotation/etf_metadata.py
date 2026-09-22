@@ -1,15 +1,28 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import date
 import json
 import math
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 
 class MetadataError(ValueError):
     pass
+
+
+def is_valid_index_code(value: object) -> bool:
+    """Accept canonical six-character ASCII index IDs, including CSI H30533."""
+    return (
+        isinstance(value, str)
+        and len(value) == 6
+        and value.isascii()
+        and value.isalnum()
+        and value == value.upper()
+    )
 
 
 @dataclass(frozen=True)
@@ -119,7 +132,7 @@ class EtfMetadataStore:
             symbol,
             name,
             IndexMetadata(
-                self._code(index.get("code"), "指数"),
+                self._index_code(index.get("code")),
                 self._text(index.get("name"), "指数名称"),
                 self._text(index.get("provider"), "指数提供方"),
             ),
@@ -150,6 +163,12 @@ class EtfMetadataStore:
             or not value.isdigit()
         ):
             raise MetadataError(f"{label}代码必须是6位数字")
+        return value
+
+    @staticmethod
+    def _index_code(value: object) -> str:
+        if not is_valid_index_code(value):
+            raise MetadataError("指数代码必须是6位ASCII大写字母或数字")
         return value
 
     @staticmethod
@@ -221,3 +240,93 @@ class EtfMetadataStore:
                 raise MetadataError(f"{label}不能重复")
             result.append(normalized)
         return tuple(result)
+
+
+_PENDING_ETF_KEYS = frozenset({
+    "symbol", "name", "index", "exchange", "asset_type", "intraday_turnaround",
+    "sellable_delay_days", "lot_size", "price_tick", "price_limit_pct",
+    "volume_unit_shares", "status", "sources",
+})
+_PENDING_ASSET_TYPES = frozenset({
+    "DOMESTIC_EQUITY_ETF", "CROSS_BORDER_EQUITY_ETF", "QDII_EQUITY_ETF",
+})
+
+
+def _pending_etf_record(record: object) -> dict[str, Any]:
+    if not isinstance(record, dict) or set(record) != _PENDING_ETF_KEYS:
+        raise MetadataError("观察ETF身份字段无效")
+    EtfMetadataStore._code(record["symbol"], "ETF")
+    EtfMetadataStore._text(record["name"], "ETF名称")
+    index = record["index"]
+    if not isinstance(index, dict) or set(index) != {"code", "name", "provider"}:
+        raise MetadataError("观察ETF指数字段无效")
+    EtfMetadataStore._index_code(index["code"])
+    EtfMetadataStore._text(index["name"], "指数名称")
+    EtfMetadataStore._text(index["provider"], "指数提供方")
+    if record["exchange"] not in {"SSE", "SZSE"}:
+        raise MetadataError("观察ETF交易所无效")
+    if record["asset_type"] not in _PENDING_ASSET_TYPES:
+        raise MetadataError("观察ETF资产类型无效")
+    turnaround = record["intraday_turnaround"]
+    delay = record["sellable_delay_days"]
+    if type(turnaround) is not bool or type(delay) is not int:
+        raise MetadataError("观察ETF回转字段类型无效")
+    if delay != (0 if turnaround else 1):
+        raise MetadataError("观察ETF回转与可卖延迟不一致")
+    EtfMetadataStore._positive_int(record["lot_size"], "买入申报单位")
+    EtfMetadataStore._positive_number(record["price_tick"], "最小价位")
+    limit = EtfMetadataStore._positive_number(record["price_limit_pct"], "涨跌幅限制")
+    if limit > 1:
+        raise MetadataError("观察ETF涨跌幅限制不能大于1")
+    if record["volume_unit_shares"] is not None or record["status"] != "OBSERVATION_ONLY":
+        raise MetadataError("观察ETF必须保留未知成交量单位与仅观察状态")
+    sources = record["sources"]
+    if not isinstance(sources, list) or not sources:
+        raise MetadataError("观察ETF必须包含公开资料来源")
+    for source in sources:
+        if not isinstance(source, str) or any(character.isspace() for character in source):
+            raise MetadataError("观察ETF资料链接无效")
+        parsed = urlsplit(source)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise MetadataError("观察ETF资料链接必须是无凭据的HTTPS地址")
+    try:
+        json.dumps(record, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (UnicodeError, ValueError):
+        raise MetadataError("观察ETF身份文本编码无效") from None
+    return deepcopy(record)
+
+
+def load_pending_etfs(path: Path) -> dict[str, dict[str, Any]]:
+    """Read observation-only identities, never constructing trading metadata.
+
+    Missing is optional and empty; malformed data fails closed as a whole.
+    Callers must not merge these records into an active collector watchlist.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as error:
+        raise MetadataError("观察ETF身份目录读取失败") from error
+    try:
+        payload = json.loads(text)
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"schema_version", "items"}
+            or type(payload["schema_version"]) is not int
+            or payload["schema_version"] != 1
+            or not isinstance(payload["items"], list)
+        ):
+            raise MetadataError("观察ETF身份目录结构无效")
+        result: dict[str, dict[str, Any]] = {}
+        for supplied in payload["items"]:
+            record = _pending_etf_record(supplied)
+            symbol = record["symbol"]
+            if symbol in result:
+                raise MetadataError("观察ETF身份代码重复")
+            result[symbol] = record
+        return result
+    except MetadataError:
+        raise
+    except (ValueError, TypeError, OverflowError, RecursionError) as error:
+        raise MetadataError("观察ETF身份目录内容无效") from error

@@ -20,6 +20,7 @@ from etf_rotation.swing_collector import (
     FIELDS2,
     KLINE_ENDPOINT,
     KLINE_FALLBACK_ENDPOINT,
+    TENCENT_KLINE_ENDPOINT,
     EastmoneyDailyCollector,
 )
 from etf_rotation.swing_config import SwingWatchItem
@@ -63,6 +64,35 @@ def kline_payload(
 
 def payload_bytes(payload: object) -> bytes:
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def tencent_payload(
+    symbol: str,
+    *,
+    adjusted: bool,
+    dates: tuple[str, ...] = ("2026-08-26", "2026-08-27", "2026-08-28"),
+) -> dict[str, object]:
+    market_symbol = f"{'sh' if symbol.startswith(('5', '6')) else 'sz'}{symbol}"
+    scale = 0.5 if adjusted else 1.0
+    lines = []
+    for offset, trading_day in enumerate(dates):
+        lines.append([
+            trading_day,
+            str((9.0 + offset) * scale),
+            str((9.5 + offset) * scale),
+            str((10.0 + offset) * scale),
+            str((8.0 + offset) * scale),
+            str(1000 + offset),
+        ])
+    return {
+        "code": 0,
+        "msg": "",
+        "data": {
+            market_symbol: {
+                "qfqday" if adjusted else "day": lines,
+            },
+        },
+    }
 
 
 class FixtureTransport:
@@ -383,7 +413,7 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
             )
         self.assertEqual(len(transport.requests), 1)
 
-    def test_primary_request_failure_refetches_whole_batch_from_fallback(self) -> None:
+    def test_primary_request_failure_retries_only_that_symbol_from_fallback(self) -> None:
         requests: list[str] = []
 
         def transport(request: Request, timeout: float) -> bytes:
@@ -410,16 +440,84 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
             ("push2his.eastmoney.com", "1.510300", "0"),
             ("push2his.eastmoney.com", "1.510300", "1"),
             ("push2his.eastmoney.com", "0.159915", "0"),
-            ("push2delay.eastmoney.com", "1.510300", "0"),
-            ("push2delay.eastmoney.com", "1.510300", "1"),
             ("push2delay.eastmoney.com", "0.159915", "0"),
             ("push2delay.eastmoney.com", "0.159915", "1"),
         ])
+        by_symbol = {bar.symbol: bar.source for bar in bars}
+        self.assertEqual(by_symbol["510300"], "东方财富 kline (push2his.eastmoney.com)")
+        self.assertEqual(by_symbol["159915"], "东方财富 kline (push2delay.eastmoney.com)")
+
+    def test_both_request_failures_use_tencent_raw_and_qfq_final_fallback(self) -> None:
+        requests: list[str] = []
+
+        def transport(request: Request, timeout: float) -> bytes:
+            requests.append(request.full_url)
+            if not request.full_url.startswith(TENCENT_KLINE_ENDPOINT):
+                raise OSError("HOSTILE_TRANSPORT_SECRET")
+            param = parse_qs(urlsplit(request.full_url).query)["param"][0].split(",")
+            symbol = param[0][2:]
+            return payload_bytes(tencent_payload(
+                symbol,
+                adjusted=param[-1] == "qfq",
+            ))
+
+        bars = self.collector(transport).collect(
+            (SwingWatchItem("510300", True),), date(2026, 8, 28), count=2,
+        )
+
+        self.assertEqual(len(requests), 4)
+        tencent_requests = requests[-2:]
+        self.assertTrue(all(url.startswith(TENCENT_KLINE_ENDPOINT) for url in tencent_requests))
+        params = [parse_qs(urlsplit(url).query)["param"][0].split(",") for url in tencent_requests]
+        self.assertEqual(params, [
+            ["sh510300", "day", "", "2026-08-28", "3", ""],
+            ["sh510300", "day", "", "2026-08-28", "3", "qfq"],
+        ])
+        self.assertEqual([bar.trading_date for bar in bars], [date(2026, 8, 27), date(2026, 8, 28)])
+        self.assertEqual([bar.previous_close for bar in bars], [9.5, 10.5])
+        self.assertEqual([bar.adjusted_close for bar in bars], [5.25, 5.75])
+        self.assertAlmostEqual(bars[0].amount, (10.0 + 11.0 + 9.0 + 10.5) / 4 * 1001 * 100)
         self.assertEqual({bar.source for bar in bars}, {
-            "东方财富 kline (push2delay.eastmoney.com)",
+            "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算",
         })
 
-    def test_both_request_failures_have_safe_context_and_preserve_cause(self) -> None:
+    def test_tencent_qfq_request_accepts_day_when_qfqday_is_absent(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            if not request.full_url.startswith(TENCENT_KLINE_ENDPOINT):
+                raise OSError("eastmoney down")
+            payload = tencent_payload("563360", adjusted=False)
+            return payload_bytes(payload)
+
+        bars = self.collector(transport).collect(
+            (SwingWatchItem("563360", True),), date(2026, 8, 28), count=2,
+        )
+
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(
+            [bar.adjusted_close for bar in bars],
+            [bar.close for bar in bars],
+        )
+
+    def test_tencent_qfqday_takes_priority_over_day(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            if not request.full_url.startswith(TENCENT_KLINE_ENDPOINT):
+                raise OSError("eastmoney down")
+            param = parse_qs(urlsplit(request.full_url).query)["param"][0].split(",")
+            adjusted = param[-1] == "qfq"
+            payload = tencent_payload("510300", adjusted=adjusted)
+            if adjusted:
+                payload["data"]["sh510300"]["day"] = tencent_payload(
+                    "510300", adjusted=False,
+                )["data"]["sh510300"]["day"]
+                payload["data"]["sh510300"]["qfqday"] = []
+            return payload_bytes(payload)
+
+        with self.assertRaisesRegex(SwingDataError, "腾讯最终回退失败"):
+            self.collector(transport).collect(
+                (SwingWatchItem("510300", True),), date(2026, 8, 28), count=2,
+            )
+
+    def test_all_three_sources_fail_with_safe_context_and_preserve_cause(self) -> None:
         def transport(request: Request, timeout: float) -> bytes:
             raise OSError("HOSTILE_TRANSPORT_SECRET")
 
@@ -427,9 +525,107 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
             self.collector(transport).collect(
                 (SwingWatchItem("510300", True),), date(2026, 8, 28),
             )
-        self.assertIn("主备端点请求均失败", str(caught.exception))
-        self.assertNotIn("HOSTILE_TRANSPORT_SECRET", str(caught.exception))
+        message = str(caught.exception)
+        self.assertIn("主备端点请求均失败且腾讯最终回退失败", message)
+        self.assertIn("push2his.eastmoney.com", message)
+        self.assertIn("push2delay.eastmoney.com", message)
+        self.assertIn("web.ifzq.gtimg.cn", message)
+        self.assertNotIn("HOSTILE_TRANSPORT_SECRET", message)
         self.assertIsNotNone(caught.exception.__cause__)
+
+    def test_tencent_final_fallback_strictly_rejects_malformed_raw_and_qfq(self) -> None:
+        cases = []
+        missing_qfq = tencent_payload("510300", adjusted=True)
+        missing_qfq["data"]["sh510300"] = {"day": []}
+        cases.append(("missing qfq", missing_qfq, True))
+        extra_field = tencent_payload("510300", adjusted=False)
+        extra_field["data"]["sh510300"]["day"][1].append("unexpected")
+        cases.append(("extra field", extra_field, False))
+        wrong_code = tencent_payload("159915", adjusted=False)
+        cases.append(("wrong code", wrong_code, False))
+        duplicate = tencent_payload("510300", adjusted=True)
+        duplicate["data"]["sh510300"]["qfqday"][2][0] = "2026-08-27"
+        cases.append(("duplicate date", duplicate, True))
+        nonfinite = tencent_payload("510300", adjusted=False)
+        nonfinite["data"]["sh510300"]["day"][1][2] = "nan"
+        cases.append(("nonfinite", nonfinite, False))
+
+        for label, bad_payload, bad_adjusted in cases:
+            with self.subTest(label=label):
+                def transport(request: Request, timeout: float) -> bytes:
+                    if not request.full_url.startswith(TENCENT_KLINE_ENDPOINT):
+                        raise OSError("eastmoney down")
+                    param = parse_qs(urlsplit(request.full_url).query)["param"][0].split(",")
+                    adjusted = param[-1] == "qfq"
+                    payload = bad_payload if adjusted == bad_adjusted else tencent_payload(
+                        "510300", adjusted=adjusted,
+                    )
+                    return payload_bytes(payload)
+
+                with self.assertRaisesRegex(SwingDataError, "腾讯最终回退失败"):
+                    self.collector(transport).collect(
+                        (SwingWatchItem("510300", True),), date(2026, 8, 28), count=2,
+                    )
+
+    def test_tencent_final_fallback_rejects_mismatched_retained_dates_and_scale(self) -> None:
+        for mode in ("dates", "scale"):
+            with self.subTest(mode=mode):
+                def transport(request: Request, timeout: float) -> bytes:
+                    if not request.full_url.startswith(TENCENT_KLINE_ENDPOINT):
+                        raise OSError("eastmoney down")
+                    param = parse_qs(urlsplit(request.full_url).query)["param"][0].split(",")
+                    adjusted = param[-1] == "qfq"
+                    dates = (
+                        ("2026-08-26", "2026-08-27")
+                        if adjusted and mode == "dates"
+                        else ("2026-08-26", "2026-08-27", "2026-08-28")
+                    )
+                    payload = tencent_payload("510300", adjusted=adjusted, dates=dates)
+                    if adjusted and mode == "scale":
+                        payload["data"]["sh510300"]["qfqday"][1][4] = "4.4"
+                    return payload_bytes(payload)
+
+                with self.assertRaisesRegex(SwingDataError, "腾讯最终回退失败"):
+                    self.collector(transport).collect(
+                        (SwingWatchItem("510300", True),), date(2026, 8, 28), count=2,
+                    )
+
+    def test_tencent_final_fallback_accepts_two_decimal_rounding_on_scale(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            if not request.full_url.startswith(TENCENT_KLINE_ENDPOINT):
+                raise OSError("eastmoney down")
+            param = parse_qs(urlsplit(request.full_url).query)["param"][0].split(",")
+            adjusted = param[-1] == "qfq"
+            payload = tencent_payload("510300", adjusted=adjusted)
+            if adjusted:
+                payload["data"]["sh510300"]["qfqday"][1][1] = "5.005"
+            return payload_bytes(payload)
+
+        bars = self.collector(transport).collect(
+            (SwingWatchItem("510300", True),), date(2026, 8, 28), count=2,
+        )
+        self.assertEqual(len(bars), 2)
+        self.assertTrue(all("腾讯" in bar.source for bar in bars))
+
+    def test_tencent_uses_adjusted_as_raw_when_unadjusted_has_corporate_action_gap(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            if not request.full_url.startswith(TENCENT_KLINE_ENDPOINT):
+                raise OSError("eastmoney down")
+            param = parse_qs(urlsplit(request.full_url).query)["param"][0].split(",")
+            adjusted = param[-1] == "qfq"
+            payload = tencent_payload("510300", adjusted=adjusted)
+            if not adjusted:
+                payload["data"]["sh510300"]["day"][2][1:5] = ["2.0", "2.1", "2.2", "1.9"]
+            return payload_bytes(payload)
+
+        bars = self.collector(transport).collect(
+            (SwingWatchItem("510300", True),), date(2026, 8, 28), count=2,
+        )
+        self.assertEqual(len(bars), 2)
+        self.assertTrue(all("一致前复权序列" in bar.source for bar in bars))
+        self.assertEqual(bars[0].close, bars[0].adjusted_close)
+        self.assertEqual(bars[1].close, bars[1].adjusted_close)
+        self.assertEqual(bars[1].previous_close, bars[0].close)
 
     def test_primary_business_or_schema_failure_never_falls_back(self) -> None:
         bad_payloads = (

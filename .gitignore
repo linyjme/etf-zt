@@ -8,6 +8,9 @@ var/
 /data/monitor/quotes.jsonl
 /data/monitor/alerts.jsonl
 /data/monitor/history/
+/data/swing/shadow/
+/outputs/
+.workbuddy/
 *.log
 *.pid
 *.tmp

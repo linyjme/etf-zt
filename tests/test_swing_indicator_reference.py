@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 from etf_rotation.swing_indicators import calculate_indicator_context, calculate_indicator_snapshot
 from tests.swing_helpers import swing_strategy_bars
 
 
 class SwingIndicatorReferenceTests(unittest.TestCase):
+    def test_cross_age_does_not_recalculate_every_historical_kdj_prefix(self):
+        from etf_rotation import swing_indicators as module
+        with patch.object(module, "_kdj", wraps=module._kdj) as calculate:
+            calculate_indicator_context(swing_strategy_bars(140), lookback=3)
+        self.assertLessEqual(calculate.call_count, 6)
+
     def test_indicator_context_exposes_recent_direction_without_lookahead(self):
         bars = swing_strategy_bars(140)
         context = calculate_indicator_context(bars, lookback=3)

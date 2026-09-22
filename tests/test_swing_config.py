@@ -202,15 +202,41 @@ class SwingConfigurationTests(unittest.TestCase):
 
         raw_watchlist = json.loads(watchlist_path.read_text(encoding="utf-8"))
         self.assertEqual(set(raw_watchlist), {"schema_version", "items"})
+        loaded = load_watchlist(watchlist_path, metadata_path)
         self.assertEqual(
-            tuple(raw_watchlist["items"]),
-            tuple({"symbol": symbol, "enabled": True} for symbol in SWING_SYMBOLS),
+            loaded,
+            tuple(
+                SwingWatchItem(item["symbol"], item["enabled"] is True)
+                for item in raw_watchlist["items"]
+            ),
         )
-        self.assertEqual(
-            load_watchlist(watchlist_path, metadata_path),
-            tuple(SwingWatchItem(symbol, True) for symbol in SWING_SYMBOLS),
-        )
+        self.assertIn(SwingWatchItem("588020", True), loaded)
         self.assertEqual(asdict(load_strategy(strategy_path)), SWING_V1_DEFAULTS)
+
+    def test_repository_enables_159781_for_swing_monitoring(self) -> None:
+        watchlist_path = PROJECT_ROOT / "data" / "swing" / "watchlist.json"
+        metadata_path = PROJECT_ROOT / "data" / "monitor" / "etf_metadata.json"
+
+        self.assertIn(
+            SwingWatchItem("159781", True),
+            load_watchlist(watchlist_path, metadata_path),
+        )
+
+    def test_repository_enables_588020_for_swing_monitoring(self) -> None:
+        items = load_watchlist(
+            PROJECT_ROOT / "data" / "swing" / "watchlist.json",
+            PROJECT_ROOT / "data" / "monitor" / "etf_metadata.json",
+        )
+        self.assertIn(SwingWatchItem("588020", True), items)
+
+    def test_repository_enables_cashflow_and_value_etfs_for_swing_monitoring(self) -> None:
+        items = load_watchlist(
+            PROJECT_ROOT / "data/swing/watchlist.json",
+            PROJECT_ROOT / "data/monitor/etf_metadata.json",
+        )
+        for symbol in ("159201", "159263", "159259"):
+            with self.subTest(symbol=symbol):
+                self.assertIn(SwingWatchItem(symbol, True), items)
 
     def test_loaded_models_are_frozen(self) -> None:
         watchlist = load_watchlist(

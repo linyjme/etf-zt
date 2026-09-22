@@ -15,7 +15,9 @@ from etf_rotation.etf_metadata import EtfMetadataStore
 from etf_rotation.swing_alerts import AlertInput, SwingAlertStore
 from etf_rotation.swing_config import SwingWatchItem
 from etf_rotation.swing_data import DailyBar, DailyHistoryStore
+from etf_rotation.swing_minutes import expected_complete_minutes, parse_minute_payload
 from etf_rotation.swing_portfolio import PortfolioLedger, TradeInput
+from etf_rotation.swing_quality import summarize_common_history
 from etf_rotation.swing_service import SwingPaths, SwingService
 from etf_rotation.swing_strategy import (
     SwingState,
@@ -178,6 +180,168 @@ class SwingServiceTests(unittest.TestCase):
                 })
                 self.assertEqual(result["as_of_kind"], "COMPLETED_DAILY")
                 self.assertFalse(result["quasi_close_available"])
+
+    def test_snapshot_publishes_indicator_snapshot_for_each_enabled_etf(self) -> None:
+        snapshot = self.make_service().snapshot()
+
+        items = snapshot["items"]
+        self.assertTrue(items)
+        for item in items:
+            indicators = item["indicators"]
+            self.assertEqual(indicators["schema_version"], 1)
+            self.assertEqual(indicators["symbol"], item["symbol"])
+            self.assertIn(indicators["status"], {"READY", "WARMUP", "DATA_UNAVAILABLE", "DATA_ERROR"})
+            self.assertIn("macd", indicators)
+            self.assertIn("kdj", indicators)
+            self.assertIn("rsi", indicators)
+
+    def test_snapshot_separates_formal_and_shadow_layers(self) -> None:
+        item = self.make_service().snapshot()["items"][0]
+        self.assertEqual(item["formal"]["strategy_version"], "SWING_V1")
+        self.assertEqual(item["shadow"]["strategy_version"], "SWING_V2_SHADOW")
+        self.assertFalse(item["shadow"]["executable"])
+        self.assertIn("V2_A", item["shadow"]["variants"])
+        self.assertIn("HYBRID", item["shadow"]["variants"])
+        self.assertEqual(
+            item["shadow"]["variants"]["HYBRID"]["strategy_version"],
+            "SWING_HYBRID_SHADOW",
+        )
+
+    def test_snapshot_only_or_unknown_quality_blocks_shadow_execution(self) -> None:
+        item = self.make_service().snapshot()["items"][0]
+        self.assertFalse(item["shadow"]["executable"])
+        self.assertTrue(any(
+            reason in item["shadow"]["blocked_reasons"]
+            for reason in ("INSUFFICIENT_COMPLETED_BARS", "DATA_QUALITY_UNKNOWN")
+        ))
+
+    def test_formal_uses_account_risk_without_mutating_strategy_defaults(self) -> None:
+        service = self.make_service()
+        original_config = service._strategy
+        bars = retime_daily_bars(
+            swing_strategy_bars(70, raw_scale=0.04),
+            ending_on=date(2026, 8, 31),
+        )
+        for risk_rate, expected_budget in ((0.001, 100.0), (0.01, 1000.0)):
+            with self.subTest(risk_rate=risk_rate):
+                projection = replace(
+                    service._portfolio_projection,
+                    default_risk_per_trade=risk_rate,
+                )
+                decision = service._calculate_formal(
+                    bars, projection, "OK", "OK",
+                    datetime(2026, 9, 1, 14, tzinfo=SHANGHAI),
+                )["510300"]
+                self.assertAlmostEqual(
+                    decision.evidence["risk_budget_amount"], expected_budget,
+                )
+                self.assertLessEqual(decision.planned_risk_rate, risk_rate)
+                self.assertEqual(
+                    decision.evidence["effective_risk_per_trade"], risk_rate,
+                )
+                self.assertEqual(decision.evidence["risk_setting_source"], "ACCOUNT")
+                self.assertIs(service._strategy, original_config)
+                self.assertEqual(service._strategy.risk_per_trade, 0.0075)
+
+    def test_unhealthy_or_missing_account_cannot_activate_custom_risk(self) -> None:
+        service = self.make_service()
+        projection = replace(
+            service._portfolio_projection, default_risk_per_trade=0.001,
+        )
+        for account, health in ((None, "UNINITIALIZED"), (projection, "BLOCKED")):
+            with self.subTest(health=health):
+                decision = service._calculate_formal(
+                    self.initial_bars, account, health, "OK",
+                    datetime(2026, 9, 1, 14, tzinfo=SHANGHAI),
+                )["510300"]
+                self.assertEqual(decision.planned_shares, 0)
+                self.assertFalse(decision.evidence["ledger_healthy"])
+                self.assertEqual(
+                    decision.evidence.get("effective_risk_per_trade"), 0.0075,
+                )
+                self.assertEqual(decision.evidence["risk_setting_source"], "STRATEGY_DEFAULT")
+
+    def test_snapshot_publishes_read_only_quality_and_common_sample_coverage(self) -> None:
+        before = self.paths.daily_history.read_bytes()
+        service = self.make_service()
+        snapshot = service.snapshot()
+        self.assertIn("data_quality", snapshot["items"][0])
+        quality = snapshot["items"][0]["data_quality"]
+        self.assertEqual(quality["bar_count"], 70)
+        self.assertEqual(quality["amount_quality"], "UNKNOWN")
+        self.assertEqual(quality["crosscheck_status"], "NOT_RECORDED")
+        self.assertEqual(snapshot["history_coverage"]["common_bar_count"], 70)
+        self.assertEqual(snapshot["history_coverage"]["walk_forward_fold_count"], 0)
+        self.assertFalse(snapshot["history_coverage"]["performance_validated"])
+        quality["warnings"].append("CLIENT_EDIT")
+        self.assertNotIn("CLIENT_EDIT", service.snapshot()["items"][0]["data_quality"]["warnings"])
+        self.assertEqual(self.paths.daily_history.read_bytes(), before)
+
+    def test_available_symbols_explain_history_preparation_without_collecting(self) -> None:
+        self.paths.metadata.write_text(
+            json.dumps(metadata_fixture(("510300", "515180"))), encoding="utf-8",
+        )
+        self.paths.watchlist.write_text(json.dumps({
+            "schema_version": 1,
+            "items": [{"symbol": "510300", "enabled": True},
+                      {"symbol": "515180", "enabled": False}],
+        }), encoding="utf-8")
+        collector = FailingDailyCollector()
+        service = self.make_service(collector=collector)
+        before = self.paths.daily_history.read_bytes()
+        available = {item["symbol"]: item for item in service.snapshot()["available_symbols"]}
+        self.assertEqual(available["515180"].get("daily_count"), 0)
+        self.assertEqual(available["515180"].get("minimum_daily_bars"), 70)
+        self.assertIsNone(available["515180"].get("latest_daily_date"))
+        self.assertFalse(available["515180"]["can_enable"])
+        self.assertIn("独立补齐", available["515180"]["enable_block_reason"])
+        self.assertEqual(available["510300"]["daily_count"], 70)
+        self.assertEqual(available["510300"]["latest_daily_date"], "2026-08-31")
+        self.assertTrue(available["510300"]["can_enable"])
+        self.assertEqual(collector.calls, 0)
+        self.assertEqual(self.paths.daily_history.read_bytes(), before)
+        self.assertFalse(json.loads(self.paths.watchlist.read_text())["items"][1]["enabled"])
+
+    def test_snapshot_diagnostics_are_cross_section_and_reuse_coverage(self) -> None:
+        service = self.make_service()
+        now = datetime(2026, 9, 1, 14, tzinfo=SHANGHAI)
+        with patch(
+            "etf_rotation.swing_service.summarize_common_history",
+            wraps=summarize_common_history,
+        ) as spy:
+            snapshot = service._build_snapshot(now)
+            self.assertEqual(spy.call_count, 1)
+        diagnostics = snapshot["diagnostics"]
+        self.assertTrue(diagnostics["snapshot_scope"])
+        self.assertEqual(diagnostics["item_status"], "AVAILABLE")
+        self.assertEqual(diagnostics["layers"]["research_quality"], "UNVERIFIED")
+        self.assertEqual(diagnostics["layers"]["performance"], "NOT_VALIDATED")
+        self.assertEqual(diagnostics["layers"]["daily_load"], "OK")
+        self.assertEqual(diagnostics["layers"]["account"], "OK")
+        self.assertEqual(diagnostics["layers"]["intraday"], "UNAVAILABLE")
+        self.assertTrue(diagnostics["coverage"]["sample_windows_are_not_validation"])
+        # The same coverage object backs both fields; nothing is recomputed.
+        self.assertEqual(
+            diagnostics["coverage"]["common_bar_count"],
+            snapshot["history_coverage"]["common_bar_count"],
+        )
+        self.assertEqual(
+            diagnostics["coverage"]["required"],
+            snapshot["history_coverage"]["walk_forward_required_bars"],
+        )
+        self.assertEqual(
+            diagnostics["coverage"]["fold"],
+            snapshot["history_coverage"]["walk_forward_fold_count"],
+        )
+
+    def test_empty_snapshot_diagnostics_report_no_data_not_healthy(self) -> None:
+        service = self.make_service()
+        service._formal = {}
+        snapshot = service._build_snapshot(datetime(2026, 9, 1, 14, tzinfo=SHANGHAI))
+        self.assertEqual(snapshot["diagnostics"]["item_status"], "NO_DATA")
+        self.assertEqual(snapshot["diagnostics"]["warning_counts"], {})
+        self.assertEqual(snapshot["diagnostics"]["formal_state_counts"], {})
+        self.assertEqual(snapshot["diagnostics"]["layers"]["performance"], "NOT_VALIDATED")
 
     def test_backtest_is_strict_cached_content_addressed_and_revision_neutral(self) -> None:
         service = self.make_service()
@@ -569,6 +733,63 @@ class SwingServiceTests(unittest.TestCase):
                 "price": price,
             })
         return {"upserts": points}
+
+    def test_expected_complete_minutes_preserves_session_boundaries_and_wrapper(
+        self,
+    ) -> None:
+        trading_date = date(2026, 9, 1)
+        expected = expected_complete_minutes(trading_date)
+        self.assertEqual(len(expected), 241)
+        self.assertEqual(
+            expected[0].time(), datetime.min.time().replace(hour=9, minute=30),
+        )
+        self.assertEqual(
+            expected[120].time(), datetime.min.time().replace(hour=11, minute=30),
+        )
+        self.assertEqual(
+            expected[121].time(), datetime.min.time().replace(hour=13, minute=1),
+        )
+        self.assertEqual(
+            expected[-1].time(), datetime.min.time().replace(hour=15),
+        )
+        self.assertEqual(
+            SwingService._expected_complete_minutes(trading_date), expected,
+        )
+
+    def test_minute_payload_parsing_handles_supported_shapes_and_boundaries(
+        self,
+    ) -> None:
+        target = self.final_bars[-1]
+        points = self.full_day_points(target)["upserts"]
+        expected = tuple(points)
+        for payload in (
+            {"upserts": points},
+            {"upserts": {"upserts": points}},
+            {"upserts": None, "points": points},
+        ):
+            with self.subTest(payload_shape=tuple(payload)):
+                self.assertEqual(
+                    parse_minute_payload(payload, target.trading_date), expected,
+                )
+                self.assertEqual(
+                    SwingService._minute_points(payload, target.trading_date),
+                    expected,
+                )
+
+        for invalid in (
+            {"upserts": points[:-1]},
+            {"upserts": [points[0], *points]},
+            {"upserts": [points[1], points[0], *points[2:]]},
+            {"upserts": [
+                {
+                    **points[0],
+                    "timestamp": "2026-09-01T09:30:01+08:00",
+                },
+                *points[1:],
+            ]},
+        ):
+            with self.subTest(invalid=invalid["upserts"][:2]):
+                self.assertEqual(parse_minute_payload(invalid, target.trading_date), ())
 
     def test_bootstrap_reads_history_without_collecting_or_writing(self) -> None:
         before = self.paths.daily_history.read_bytes()
@@ -2144,6 +2365,10 @@ class SwingServiceTests(unittest.TestCase):
         self.paths.metadata.write_text(json.dumps(
             metadata_fixture(("510300", "159915")),
         ), encoding="utf-8")
+        verified_metadata = EtfMetadataStore(self.paths.metadata).load()
+        DailyHistoryStore(
+            self.paths.daily_history, verified_metadata, frozenset(),
+        ).upsert(tuple(replace(bar, symbol="159915") for bar in self.initial_bars))
         service = self.make_service()
         result = service.update_watchlist("159915", True)
         self.assertEqual(result["items"], [

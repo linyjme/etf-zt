@@ -1446,6 +1446,7 @@ class SwingStrategyTests(unittest.TestCase):
             SwingState.TREND_BLOCKED,
             SwingState.UPTREND_WATCH,
             SwingState.PULLBACK_WATCH,
+            SwingState.TRIAL_ENTRY_OBSERVE,
             SwingState.HOLDING,
             SwingState.COOLDOWN,
         ):
@@ -1464,6 +1465,19 @@ class SwingStrategyTests(unittest.TestCase):
                 planned_risk_rate=0.0,
                 valid_for_trading_date=None,
             )
+        observed = replace(
+            trial,
+            state=SwingState.TRIAL_ENTRY_OBSERVE,
+            planned_shares=0,
+            planned_stop=None,
+            planned_risk_rate=0.0,
+            valid_for_trading_date=None,
+            blocked_reasons=("holdings_snapshot_only",),
+        )
+        self.assertEqual(observed.state, SwingState.TRIAL_ENTRY_OBSERVE)
+        self.assertEqual(observed.planned_shares, 0)
+        self.assertIsNotNone(observed.planned_entry_low)
+        self.assertIsNotNone(observed.planned_entry_high)
 
     def test_swing_decision_wraps_hostile_mappingproxy_evidence_failure(self) -> None:
         formal = evaluate_swing(swing_strategy_bars(), self.config, self.portfolio())

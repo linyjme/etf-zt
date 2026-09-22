@@ -7,10 +7,12 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
+from .etf_metadata import is_valid_index_code
+
 
 VALUATION_FIELDS = (
     "pe_ttm", "pb", "dividend_yield", "pe_percentile_5y", "pe_percentile_10y",
-    "pb_percentile_5y", "pb_percentile_10y",
+    "pb_percentile_5y", "pb_percentile_10y", "roe_ttm", "pr_pe_roe", "pr_pe_pb",
 )
 
 
@@ -26,6 +28,9 @@ class ValuationSnapshot:
     pe_percentile_10y: float | None
     pb_percentile_5y: float | None
     pb_percentile_10y: float | None
+    roe_ttm: float | None
+    pr_pe_roe: float | None
+    pr_pe_pb: float | None
     level: str
     status: str
     source: str | None
@@ -63,7 +68,7 @@ class ValuationStore:
             return None
         code = record.get("index_code")
         name = record.get("index_name")
-        if not isinstance(code, str) or len(code) != 6 or not code.isdigit() or not isinstance(name, str) or not name.strip():
+        if not is_valid_index_code(code) or not isinstance(name, str) or not name.strip():
             return None
         values: dict[str, float | None] = {}
         for field in VALUATION_FIELDS:
@@ -88,6 +93,11 @@ class ValuationStore:
                 date.fromisoformat(as_of)
             except (TypeError, ValueError):
                 return None
+        roe = values["roe_ttm"]
+        pe = values["pe_ttm"]
+        pb = values["pb"]
+        values["pr_pe_roe"] = (pe / roe) if pe is not None and roe is not None and roe > 0 else None
+        values["pr_pe_pb"] = (pe * pe / (pb * 100)) if pe is not None and pb is not None and pb > 0 else None
         percentiles = [values[key] for key in ("pe_percentile_10y", "pb_percentile_10y", "pe_percentile_5y", "pb_percentile_5y") if values[key] is not None]
         level = "UNKNOWN" if not percentiles else ("LOW" if sum(percentiles) / len(percentiles) <= 20 else "HIGH" if sum(percentiles) / len(percentiles) >= 80 else "NORMAL")
         status = record.get("status") if record.get("status") in {"OK", "MISSING_VALUATION", "INSUFFICIENT_HISTORY", "STALE", "UNKNOWN"} else ("OK" if percentiles else "UNKNOWN")

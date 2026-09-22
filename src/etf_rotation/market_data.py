@@ -28,6 +28,13 @@ _AFTERNOON_END = time(15, 0)
 _HISTORY_LOCKS_GUARD = threading.Lock()
 _HISTORY_LOCKS: dict[str, Any] = {}
 
+# Fields whose change after tracking started counts as a revision. ``name`` and
+# the various routing/timestamp fields are intentionally excluded.
+_TRACKED_TRACE_FIELDS = (
+    "price", "average_price", "open", "high", "low",
+    "volume", "amount", "previous_close", "source",
+)
+
 
 def _history_lock(path: Path) -> Any:
     key = os.path.normcase(str(path.resolve(strict=False)))
@@ -81,6 +88,12 @@ def finalized_points(
     result: list[QuotePoint] = []
     for item in points:
         timestamp = _aware_time(item.timestamp, "分钟时间")
+        local_timestamp = timestamp.astimezone(SHANGHAI)
+        if local_timestamp.time().replace(tzinfo=None) == time(15, 0):
+            # The feed's 15:00 value is the end-of-day close snapshot. It is
+            # not a 15:00--15:01 completed minute and must not enter intraday
+            # trend, VWAP, or volatility calculations.
+            continue
         if observed >= timestamp + timedelta(minutes=1):
             result.append(item)
     return tuple(result)
@@ -95,6 +108,8 @@ class MarketHealthClassifier:
         now: datetime,
         last_quote_at: datetime | None,
         error: str | None,
+        *,
+        completed_minute: bool = False,
     ) -> MarketHealth:
         local = _aware_time(now, "当前时间").astimezone(SHANGHAI)
         session = market_session_state(local, closed_dates=self.closed_dates)
@@ -107,6 +122,12 @@ class MarketHealthClassifier:
         if last_quote_at is None:
             return MarketHealth("OUTAGE", None, "缺少当日行情")
         quote_time = _aware_time(last_quote_at, "行情时间").astimezone(SHANGHAI)
+        if completed_minute:
+            # Minute timestamps denote interval starts. Waiting for completion
+            # is not feed latency; re-fetching an old bar must not renew it.
+            quote_time += timedelta(minutes=1)
+            if quote_time > local:
+                return MarketHealth("OUTAGE", None, "分钟尚未完成或时间异常")
         age = max(0.0, (local - quote_time).total_seconds())
         if age <= REALTIME_MAX_AGE_SECONDS:
             return MarketHealth("REALTIME", age, "行情实时")
@@ -247,6 +268,7 @@ class MinuteHistoryStore:
                     key = (symbol, record["timestamp"])
                     old = indexed.get(key)
                     if old is None or self._observation(record) > self._observation(old):
+                        record["observation_trace"] = self._compute_observation_trace(old, record)
                         indexed[key] = record
                         changed += 1
 
@@ -328,6 +350,7 @@ class MinuteHistoryStore:
                     key = (record["symbol"], record["timestamp"])
                     old = indexed.get(key)
                     if old is None or self._observation(record) > self._observation(old):
+                        record["observation_trace"] = self._compute_observation_trace(old, record)
                         indexed[key] = record
             ordered = [indexed[key] for key in sorted(indexed)]
             self._validate_previous_closes(ordered, {})
@@ -670,7 +693,16 @@ class MinuteHistoryStore:
         name = record.get("name", symbol)
         if not isinstance(name, str) or not name.strip():
             raise MarketDataError(f"{symbol}历史行情name无效")
-        return {
+        trace_value = record.get("observation_trace")
+        trace = None
+        if trace_value is not None:
+            trace = self._normalize_trace(trace_value, symbol)
+            if self._timestamp(trace["last_seen_at"], "last_seen_at") != observed_at:
+                raise MarketDataError(f"{symbol}历史行情last_seen_at与observed_at不一致")
+            earliest = trace["first_seen_at"] or trace["tracking_started_at"]
+            if self._timestamp(earliest, "首次追踪时间") < timestamp + timedelta(minutes=1):
+                raise MarketDataError(f"{symbol}历史行情observation_trace早于分钟完成时间")
+        normalized: dict[str, Any] = {
             "schema_version": 3,
             "symbol": symbol,
             "name": name,
@@ -688,6 +720,9 @@ class MinuteHistoryStore:
             "volume": volume,
             "amount": amount,
         }
+        if trace is not None:
+            normalized["observation_trace"] = trace
+        return normalized
 
     def _validate_records(
         self,
@@ -742,6 +777,77 @@ class MinuteHistoryStore:
 
     def _observation(self, record: Mapping[str, Any]) -> datetime:
         return self._timestamp(record.get("observed_at"), "观测时间")
+
+    def _compute_observation_trace(
+        self,
+        old: Mapping[str, Any] | None,
+        new_record: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        observed_at = new_record["observed_at"]
+        old_trace = old.get("observation_trace") if old is not None else None
+        if old_trace is None:
+            # Either a brand-new key (first seen == observed at), or legacy
+            # history whose original observation time is unknown: never back
+            # infer ``first_seen_at`` for the latter.
+            first_seen_at = None if old is not None else observed_at
+            return {
+                "first_seen_at": first_seen_at,
+                "tracking_started_at": observed_at,
+                "last_seen_at": observed_at,
+                "revision_count_since_tracking": 0,
+            }
+        count = int(old_trace.get("revision_count_since_tracking") or 0)
+        if self._tracked_trace_fields_changed(old, new_record):
+            count += 1
+        return {
+            "first_seen_at": old_trace.get("first_seen_at"),
+            "tracking_started_at": old_trace.get("tracking_started_at"),
+            "last_seen_at": observed_at,
+            "revision_count_since_tracking": count,
+        }
+
+    def _tracked_trace_fields_changed(
+        self,
+        old: Mapping[str, Any],
+        new: Mapping[str, Any],
+    ) -> bool:
+        for field in _TRACKED_TRACE_FIELDS:
+            if old.get(field) != new.get(field):
+                return True
+        return False
+
+    def _normalize_trace(self, trace: object, symbol: str) -> dict[str, Any]:
+        if not isinstance(trace, dict):
+            raise MarketDataError(f"{symbol}历史行情observation_trace必须是对象")
+        revision_count = trace.get("revision_count_since_tracking")
+        if (
+            isinstance(revision_count, bool)
+            or not isinstance(revision_count, int)
+            or revision_count < 0
+        ):
+            raise MarketDataError(f"{symbol}历史行情revision_count_since_tracking必须是非负整数")
+        first_seen = trace.get("first_seen_at")
+        first_seen_value = None
+        if first_seen is not None:
+            first_seen_value = self._timestamp(first_seen, "first_seen_at")
+        tracking_started = trace.get("tracking_started_at")
+        if tracking_started is None:
+            raise MarketDataError(f"{symbol}历史行情tracking_started_at缺失")
+        tracking_value = self._timestamp(tracking_started, "tracking_started_at")
+        last_seen = trace.get("last_seen_at")
+        if last_seen is None:
+            raise MarketDataError(f"{symbol}历史行情last_seen_at缺失")
+        last_seen_value = self._timestamp(last_seen, "last_seen_at")
+        if last_seen_value < tracking_value:
+            raise MarketDataError(f"{symbol}历史行情observation_trace时间顺序无效")
+        if first_seen_value is not None and tracking_value < first_seen_value:
+            raise MarketDataError(f"{symbol}历史行情observation_trace时间顺序无效")
+        return {
+            "first_seen_at": first_seen_value.isoformat() if first_seen_value is not None else None,
+            "tracking_started_at": tracking_value.isoformat(),
+            "last_seen_at": last_seen_value.isoformat(),
+            "revision_count_since_tracking": revision_count,
+        }
 
     @staticmethod
     def _timestamp(value: object, label: str) -> datetime:

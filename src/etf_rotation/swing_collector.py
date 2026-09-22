@@ -25,6 +25,7 @@ from .swing_data import DailyBar, SwingDataError
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 KLINE_ENDPOINT = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 KLINE_FALLBACK_ENDPOINT = "https://push2delay.eastmoney.com/api/qt/stock/kline/get"
+TENCENT_KLINE_ENDPOINT = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 FIELDS1 = "f1,f2,f3,f4,f5,f6"
 FIELDS2 = "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
 _FINAL_TIME = time(15, 10)
@@ -51,7 +52,7 @@ class _ParsedKline:
     high: float
     low: float
     volume: float
-    amount: float
+    amount: float | None
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,11 @@ def _market_for_symbol(symbol: str) -> int:
 
 def _source_label(endpoint: str) -> str:
     host = urlsplit(endpoint).netloc
+    if endpoint == TENCENT_KLINE_ENDPOINT:
+        return (
+            f"腾讯 fqkline 原始+前复权 ({host or endpoint}); "
+            "amount=OHLC均价×成交量(手)×100估算"
+        )
     return f"东方财富 kline ({host or endpoint})"
 
 
@@ -105,42 +111,61 @@ class EastmoneyDailyCollector:
         if type(count) is not int or not 0 < count <= _MAX_COUNT:
             raise SwingDataError(f"count必须是1到{_MAX_COUNT}的整数")
         observed_at = self._observed_at()
+        collected: list[DailyBar] = []
+        for item in enabled:
+            collected.extend(
+                self._collect_symbol(item, last_completed_date, count, observed_at),
+            )
+        return tuple(sorted(collected, key=lambda bar: (bar.symbol, bar.trading_date)))
 
-        endpoint = KLINE_ENDPOINT
+    def _collect_symbol(
+        self,
+        item: SwingWatchItem,
+        last_completed_date: date,
+        count: int,
+        observed_at: datetime,
+    ) -> tuple[DailyBar, ...]:
+        watch = (item,)
         try:
             responses = self._collect_batch(
-                enabled, last_completed_date, count, endpoint,
+                watch, last_completed_date, count, KLINE_ENDPOINT,
             )
-        except DailyRequestFailure as primary_error:
-            endpoint = KLINE_FALLBACK_ENDPOINT
+            return self._build_bars(
+                watch, responses, last_completed_date, observed_at, KLINE_ENDPOINT,
+            )
+        except DailyRequestFailure:
             try:
                 responses = self._collect_batch(
-                    enabled, last_completed_date, count, endpoint,
+                    watch, last_completed_date, count, KLINE_FALLBACK_ENDPOINT,
                 )
                 return self._build_bars(
-                    enabled,
+                    watch,
                     responses,
                     last_completed_date,
                     observed_at,
-                    endpoint,
+                    KLINE_FALLBACK_ENDPOINT,
                 )
-            except DailyRequestFailure as fallback_error:
-                raise SwingDataError(
-                    "kline 主备端点请求均失败 "
-                    f"({KLINE_ENDPOINT}; {KLINE_FALLBACK_ENDPOINT})",
-                ) from fallback_error
-            except SwingDataError as fallback_error:
-                raise SwingDataError(
-                    "kline 主端点请求失败且备用端点业务校验失败 "
-                    f"({KLINE_ENDPOINT}; {KLINE_FALLBACK_ENDPOINT})",
-                ) from fallback_error
-        return self._build_bars(
-            enabled,
-            responses,
-            last_completed_date,
-            observed_at,
-            endpoint,
-        )
+            except (DailyRequestFailure, SwingDataError) as fallback_error:
+                try:
+                    responses = self._collect_tencent_batch(
+                        watch, last_completed_date, count,
+                    )
+                    return self._build_bars(
+                        watch,
+                        responses,
+                        last_completed_date,
+                        observed_at,
+                        TENCENT_KLINE_ENDPOINT,
+                    )
+                except (DailyRequestFailure, SwingDataError) as tencent_error:
+                    if isinstance(fallback_error, DailyRequestFailure):
+                        message = "kline 主备端点请求均失败且腾讯最终回退失败"
+                    else:
+                        message = "kline 主端点请求失败且备用端点业务校验失败，腾讯最终回退失败"
+                    raise SwingDataError(
+                        f"{message} ({KLINE_ENDPOINT}; "
+                        f"{KLINE_FALLBACK_ENDPOINT}; {TENCENT_KLINE_ENDPOINT})",
+                    ) from tencent_error
 
     def _enabled_watchlist(
         self, watchlist: Sequence[SwingWatchItem],
@@ -251,6 +276,120 @@ class EastmoneyDailyCollector:
             expected_market=expected_market,
             require_pre_close=adjustment == 0,
             count=count,
+        )
+
+    def _collect_tencent_batch(
+        self,
+        watchlist: tuple[SwingWatchItem, ...],
+        last_completed_date: date,
+        count: int,
+    ) -> dict[str, tuple[_Response, _Response]]:
+        responses: dict[str, tuple[_Response, _Response]] = {}
+        for item in watchlist:
+            raw = self._fetch_tencent(
+                item.symbol,
+                adjustment=0,
+                last_completed_date=last_completed_date,
+                count=count,
+            )
+            adjusted = self._fetch_tencent(
+                item.symbol,
+                adjustment=1,
+                last_completed_date=last_completed_date,
+                count=count,
+            )
+            responses[item.symbol] = (raw, adjusted)
+        return responses
+
+    def _fetch_tencent(
+        self,
+        symbol: str,
+        *,
+        adjustment: int,
+        last_completed_date: date,
+        count: int,
+    ) -> _Response:
+        market = _market_for_symbol(symbol)
+        market_symbol = f"{'sh' if market == 1 else 'sz'}{symbol}"
+        adjustment_name = "qfq" if adjustment == 1 else ""
+        query = urlencode({
+            "param": (
+                f"{market_symbol},day,,{last_completed_date.isoformat()},"
+                f"{count + 1},{adjustment_name}"
+            ),
+        })
+        request = Request(f"{TENCENT_KLINE_ENDPOINT}?{query}", headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://finance.qq.com/",
+        })
+        try:
+            encoded = self.transport(request, self.timeout)
+            if type(encoded) is not bytes:
+                raise TypeError("transport result is not bytes")
+            payload = json.loads(encoded.decode("utf-8"))
+        except Exception as error:
+            failure = DailyRequestFailure(
+                symbol, TENCENT_KLINE_ENDPOINT, adjustment,
+            )
+            raise failure from error
+        return self._parse_tencent_payload(
+            payload,
+            symbol=symbol,
+            market_symbol=market_symbol,
+            adjusted=adjustment == 1,
+            count=count,
+        )
+
+    def _parse_tencent_payload(
+        self,
+        payload: Any,
+        *,
+        symbol: str,
+        market_symbol: str,
+        adjusted: bool,
+        count: int,
+    ) -> _Response:
+        if (
+            type(payload) is not dict
+            or type(payload.get("code")) is not int
+            or payload.get("code") != 0
+        ):
+            raise SwingDataError(f"{symbol} 腾讯kline返回失败")
+        data = payload.get("data")
+        if type(data) is not dict:
+            raise SwingDataError(f"{symbol} 腾讯kline缺少data")
+        security = data.get(market_symbol)
+        if type(security) is not dict:
+            raise SwingDataError(f"{symbol} 腾讯kline代码不匹配")
+        key = "qfqday" if adjusted and "qfqday" in security else "day"
+        lines = security.get(key)
+        if type(lines) is not list or len(lines) < 2:
+            expected_key = "qfqday或day" if adjusted else "day"
+            raise SwingDataError(
+                f"{symbol} 腾讯kline缺少{expected_key}或首日昨收"
+            )
+        if len(lines) > count + 1 or len(lines) > _MAX_COUNT + 1:
+            raise SwingDataError(f"{symbol} 腾讯kline条数超过count限制")
+        bars = tuple(self._parse_tencent_line(symbol, line) for line in lines)
+        dates = [bar.trading_date for bar in bars]
+        if len(set(dates)) != len(dates):
+            raise SwingDataError(f"{symbol} 腾讯kline日期重复")
+        if any(left >= right for left, right in zip(dates, dates[1:])):
+            raise SwingDataError(f"{symbol} 腾讯kline日期必须严格递增")
+        return _Response(bars[0].close, bars[1:])
+
+    def _parse_tencent_line(self, symbol: str, value: Any) -> _ParsedKline:
+        if type(value) is not list or len(value) != 6:
+            raise SwingDataError(f"{symbol} 腾讯kline日线字段无效")
+        return _ParsedKline(
+            trading_date=self._date(value[0], symbol),
+            open=self._positive(value[1], f"{symbol}.open"),
+            close=self._positive(value[2], f"{symbol}.close"),
+            high=self._positive(value[3], f"{symbol}.high"),
+            low=self._positive(value[4], f"{symbol}.low"),
+            volume=self._nonnegative(value[5], f"{symbol}.volume"),
+            amount=None,
         )
 
     def _parse_payload(
@@ -394,29 +533,102 @@ class EastmoneyDailyCollector:
             adjusted_by_date = {
                 bar.trading_date: bar for bar in adjusted_retained
             }
+            item_source = source
+            if endpoint == TENCENT_KLINE_ENDPOINT:
+                def _raw_exceeds_gap(bar: _ParsedKline) -> bool:
+                    previous = previous_close_by_date[bar.trading_date]
+                    return any(
+                        previous <= 0 or abs(price / previous - 1.0) > 0.25
+                        for price in (bar.open, bar.high, bar.low, bar.close)
+                    )
+                if any(_raw_exceeds_gap(bar) for bar in raw_retained):
+                    adjusted_pre_close = adjusted_response.pre_close
+                    if adjusted_pre_close is None:
+                        raise SwingDataError(f"{item.symbol}缺少复权首日昨收")
+                    previous_close_by_date = {}
+                    previous_close = adjusted_pre_close
+                    for adjusted_bar in adjusted_response.bars:
+                        previous_close_by_date[adjusted_bar.trading_date] = previous_close
+                        previous_close = adjusted_bar.close
+                    raw_by_date = adjusted_by_date
+                    host = urlsplit(endpoint).netloc
+                    item_source = (
+                        f"腾讯 fqkline 一致前复权序列 ({host or endpoint}); "
+                        "amount=OHLC均价×成交量(手)×100估算"
+                    )
             for trading_day in retained_dates:
                 raw = raw_by_date[trading_day]
                 adjusted = adjusted_by_date[trading_day]
+                adjusted_prices = self._adjusted_prices(
+                    raw, adjusted, item.symbol, endpoint,
+                )
                 result.append(DailyBar.from_mapping({
                     "schema_version": 1,
                     "symbol": item.symbol,
                     "trading_date": trading_day.isoformat(),
                     "observed_at": observed_at.isoformat(),
-                    "source": source,
+                    "source": item_source,
                     "open": raw.open,
                     "high": raw.high,
                     "low": raw.low,
                     "close": raw.close,
                     "previous_close": previous_close_by_date[trading_day],
                     "volume": raw.volume,
-                    "amount": raw.amount,
-                    "adjusted_open": adjusted.open,
-                    "adjusted_high": adjusted.high,
-                    "adjusted_low": adjusted.low,
-                    "adjusted_close": adjusted.close,
+                    "amount": (
+                        raw.amount
+                        if raw.amount is not None
+                        else self._estimated_amount(raw, item.symbol)
+                    ),
+                    "adjusted_open": adjusted_prices[0],
+                    "adjusted_high": adjusted_prices[1],
+                    "adjusted_low": adjusted_prices[2],
+                    "adjusted_close": adjusted_prices[3],
                     "is_final": True,
                 }))
         return tuple(sorted(result, key=lambda bar: (bar.symbol, bar.trading_date)))
+
+    @staticmethod
+    def _adjusted_prices(
+        raw: _ParsedKline,
+        adjusted: _ParsedKline,
+        symbol: str,
+        endpoint: str,
+    ) -> tuple[float, float, float, float]:
+        if endpoint != TENCENT_KLINE_ENDPOINT:
+            return adjusted.open, adjusted.high, adjusted.low, adjusted.close
+        raw_prices = (raw.open, raw.high, raw.low, raw.close)
+        adjusted_prices = (
+            adjusted.open, adjusted.high, adjusted.low, adjusted.close,
+        )
+        scale = adjusted.close / raw.close
+        offset = adjusted.close - raw.close
+        price_tolerance = 0.011
+        multiplicative = all(
+            math.isclose(candidate, original * scale, abs_tol=price_tolerance)
+            for original, candidate in zip(raw_prices, adjusted_prices)
+        )
+        additive = all(
+            math.isclose(candidate, original + offset, abs_tol=price_tolerance)
+            for original, candidate in zip(raw_prices, adjusted_prices)
+        )
+        if (
+            not math.isfinite(scale)
+            or scale <= 0
+            or not (multiplicative or additive)
+        ):
+            raise SwingDataError(f"{symbol} 腾讯kline复权OHLC不一致")
+        return tuple(price * scale for price in raw_prices)
+
+    @staticmethod
+    def _estimated_amount(bar: _ParsedKline, symbol: str) -> float:
+        try:
+            average_price = math.fsum((bar.open, bar.high, bar.low, bar.close)) / 4.0
+            amount = average_price * bar.volume * 100.0
+        except (OverflowError, ValueError) as error:
+            raise SwingDataError(f"{symbol} 腾讯kline成交额估算失败") from error
+        if not math.isfinite(amount) or amount < 0:
+            raise SwingDataError(f"{symbol} 腾讯kline成交额估算必须是有限非负数")
+        return amount
 
     @staticmethod
     def _validate_retained_dates(symbol: str, dates: list[date]) -> None:

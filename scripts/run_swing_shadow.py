@@ -25,18 +25,33 @@ from etf_rotation.swing_shadow_backtest import ExecutionCosts, replay_all_varian
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
-def _load_history(path: Path) -> dict[str, tuple[DailyBar, ...]]:
+def _load_history(
+    path: Path,
+) -> tuple[dict[str, tuple[DailyBar, ...]], set[str], list[dict[str, object]]]:
     groups: dict[str, list[DailyBar]] = defaultdict(list)
+    invalid_symbols: set[str] = set()
+    invalid_lines: list[dict[str, object]] = []
     if not path.exists():
-        return {}
+        return {}, invalid_symbols, invalid_lines
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        symbol: str | None = None
         try:
-            groups[json.loads(line)["symbol"]].append(
-                DailyBar.from_mapping(json.loads(line))
-            )
+            payload = json.loads(line)
+            if isinstance(payload, dict) and isinstance(payload.get("symbol"), str):
+                symbol = payload["symbol"]
+            bar = DailyBar.from_mapping(payload)
+            groups[bar.symbol].append(bar)
         except Exception as error:
-            raise ValueError(f"invalid daily history line {line_number}") from error
-    return {symbol: tuple(bars) for symbol, bars in groups.items()}
+            if symbol is not None and len(symbol) == 6 and symbol.isdigit():
+                invalid_symbols.add(symbol)
+            invalid_lines.append({
+                "line": line_number,
+                "symbol": symbol,
+                "reason": type(error).__name__,
+            })
+    for symbol in invalid_symbols:
+        groups.pop(symbol, None)
+    return {symbol: tuple(bars) for symbol, bars in groups.items()}, invalid_symbols, invalid_lines
 
 
 def _v11_shadow_result(
@@ -156,26 +171,68 @@ def run_shadow_report(
     if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
         raise ValueError("research manifest schema is invalid")
     resolved_history = Path(history_path or manifest["history_path"])
-    history = _load_history(resolved_history)
+    history, invalid_symbols, invalid_lines = _load_history(resolved_history)
+    if end_date is not None:
+        cutoff = datetime.fromisoformat(end_date).date()
+        history = {symbol: tuple(bar for bar in bars if bar.trading_date <= cutoff)
+                   for symbol, bars in history.items()}
     config_path = Path(__file__).parents[1] / "data" / "swing" / "v11_strategy.json"
     v11_config = load_v11_config(config_path)
     requested = tuple(strategy_versions or ("V1", "V2_A", "V2_B", "V2_C", "SWING_V11_SHADOW"))
     items: list[dict[str, object]] = []
+    # Expand SWING_* request aliases to concrete replay variant names for compatibility.
+    effective_requested = set(requested)
+    if "SWING_V1" in requested:
+        effective_requested.add("V1")
+    if "SWING_V2_SHADOW" in requested:
+        effective_requested.update(("V2_A", "V2_B", "V2_C", "HYBRID"))
     for item in manifest.get("items", []):
         symbol = item["symbol"]
         bars = history.get(symbol, ())
-        results = replay_all_variants({symbol: bars}, costs=ExecutionCosts()) if bars else {}
+        invalid_history = symbol in invalid_symbols or not bars
+        quality_blocked = (
+            item.get("research_status") != "VERIFIED"
+            or item.get("crosscheck_status") != "PASSED"
+            or item.get("adjustment_status") != "VERIFIED"
+        )
+        results = replay_all_variants({symbol: bars}, costs=ExecutionCosts()) if bars and not invalid_history else {}
         variants: dict[str, dict[str, object]] = {}
         for name, result in results.items():
             key = "SWING_V1" if name == "V1" and "SWING_V1" in requested else name
-            if name in requested or key in requested:
-                variants[key] = {
-                    "validation_status": result.validation_status,
-                    "performance_claim_allowed": result.performance_claim_allowed,
-                    "trade_count": len(result.trades),
-                    "net_pnl": result.net_pnl,
-                    "max_drawdown": result.max_drawdown,
-                    "execution_assumptions": list(result.execution_assumptions),
+            if name in effective_requested:
+                if quality_blocked:
+                    variants[key] = {
+                        "validation_status": "BLOCKED_DATA_QUALITY",
+                        "performance_claim_allowed": False,
+                        "trade_count": 0,
+                        "folds": [],
+                        "metrics": {},
+                        "net_pnl": 0.0,
+                        "max_drawdown": 0.0,
+                        "execution_assumptions": list(ExecutionCosts().assumptions()),
+                    }
+                else:
+                    variants[key] = {
+                        "validation_status": result.validation_status,
+                        "performance_claim_allowed": result.performance_claim_allowed,
+                        "trade_count": len(result.trades),
+                        "folds": list(result.folds),
+                        "metrics": dict(result.metrics),
+                        "net_pnl": result.net_pnl,
+                        "max_drawdown": result.max_drawdown,
+                        "execution_assumptions": list(result.execution_assumptions),
+                    }
+        if invalid_history:
+            for name in ("V1", "V2_A", "V2_B", "V2_C", "HYBRID"):
+                variants[name] = {
+                    "validation_status": "BLOCKED_INVALID_HISTORY",
+                    "performance_claim_allowed": False,
+                    "trade_count": 0,
+                    "folds": [],
+                    "metrics": {},
+                    "net_pnl": 0.0,
+                    "max_drawdown": 0.0,
+                    "execution_assumptions": list(ExecutionCosts().assumptions()),
                 }
         if "SWING_V11_SHADOW" in requested:
             variants["SWING_V11_SHADOW"] = _v11_shadow_result(
@@ -186,17 +243,28 @@ def run_shadow_report(
             "research_status": item.get("research_status"),
             "sample_class": item.get("sample_class"),
             "data_version": item.get("data_version"),
+            "invalid_history": invalid_history,
+            "invalid_history_reason": (
+                "INVALID_DAILY_HISTORY" if symbol in invalid_symbols else
+                "NO_DAILY_HISTORY" if not bars else None
+            ),
             "variants": variants,
         })
     blocking_reasons = _quality_blockers(manifest, list(manifest.get("items", [])))
     if "SWING_V11_SHADOW" in requested:
         blocking_reasons.append("V11_SHADOW_ONLY")
     blocking_reasons = sorted(set(blocking_reasons))
-    generated_at = datetime.now(SHANGHAI).isoformat(timespec="seconds")
+    generated_at = datetime.now(SHANGHAI).isoformat(timespec="microseconds")
+    input_digest = hashlib.sha256(json.dumps({
+        symbol: [bar.to_dict() for bar in bars] for symbol, bars in sorted(history.items())
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     run_key = json.dumps({
         "manifest": manifest.get("generated_at"),
         "items": [(item["symbol"], item.get("data_version")) for item in items],
         "end_date": end_date,
+        "input_digest": input_digest,
+        "invalid_history_lines": invalid_lines,
+        "generated_at": generated_at,
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     run_id = hashlib.sha256(run_key).hexdigest()[:16]
     report = {
@@ -211,6 +279,15 @@ def run_shadow_report(
         "strategy_versions": list(requested),
         "performance_claim_allowed": not blocking_reasons,
         "blocking_reasons": blocking_reasons,
+        "input_digest": input_digest,
+        "invalid_history_lines": invalid_lines,
+        "validation": {
+            "status": "BLOCKED_DATA_QUALITY",
+            "performance_claim_allowed": False,
+            "walk_forward": {"train_sessions": 504, "test_sessions": 126, "step_sessions": 126,
+                "minimum_common_sessions": 630, "required_folds": 2},
+            "costs": list(ExecutionCosts().assumptions()),
+        },
         "items": items,
     }
     output_path = Path(output_root) / run_id / "shadow-report.json"
@@ -239,4 +316,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

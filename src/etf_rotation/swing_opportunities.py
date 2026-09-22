@@ -6,8 +6,11 @@ from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from enum import StrEnum
 from hashlib import sha256
+import json
 from types import MappingProxyType
+from collections.abc import Collection, Sequence
 from typing import Mapping
+from .swing_data import DailyBar
 
 
 class OpportunityStatus(StrEnum):
@@ -104,14 +107,30 @@ class OpportunityEvent:
         }
 
 
-def _expiry_date(start: date, sessions: int) -> date:
+def _normalise_closed_dates(closed_dates: Collection[date] | None) -> frozenset[date]:
+    if closed_dates is None:
+        return frozenset()
+    result = frozenset(closed_dates)
+    if any(type(value) is not date for value in result):
+        raise ValueError("closed_dates must contain dates")
+    return result
+
+
+def _expiry_date(
+    start: date,
+    sessions: int,
+    closed_dates: Collection[date] | None = None,
+) -> date:
     if type(sessions) is not int or sessions <= 0:
         raise ValueError("recovery_window_sessions must be positive")
+    if type(start) is not date:
+        raise ValueError("start must be a date")
+    holidays = _normalise_closed_dates(closed_dates)
     current = start
     completed = 0
     while completed < sessions:
         current += timedelta(days=1)
-        if current.weekday() < 5:
+        if current.weekday() < 5 and current not in holidays:
             completed += 1
     return current
 
@@ -140,9 +159,11 @@ def update_opportunity(
     previous: OpportunityEvent | None,
     observation: OpportunityObservation,
     recovery_window_sessions: int = 5,
+    closed_dates: Collection[date] | None = None,
 ) -> OpportunityEvent | None:
     """Advance an event using one completed observation, without look-ahead."""
     _validate_observation(observation)
+    holidays = _normalise_closed_dates(closed_dates)
     if type(previous) not in (OpportunityEvent, type(None)):
         raise ValueError("previous must be OpportunityEvent or None")
 
@@ -157,7 +178,7 @@ def update_opportunity(
             pullback_start_date=observation.trading_date,
             recovery_date=None,
             expiry_date=_expiry_date(
-                observation.trading_date, recovery_window_sessions,
+                observation.trading_date, recovery_window_sessions, holidays,
             ),
             status=OpportunityStatus.PULLBACK_WATCH,
             conditions=observation.conditions,
@@ -189,10 +210,42 @@ def update_opportunity(
     return previous
 
 
+def opportunity_timeline(
+    bars: Sequence[DailyBar], points: Sequence[Mapping[str, object]], *,
+    window_sessions: int = 5, atr_distance_max: float = 1.0,
+    closed_dates: Collection[date] = (),
+) -> dict[date, OpportunityEvent | None]:
+    """Fold prefix-only observations, with stable IDs as later days arrive."""
+    if len(bars) != len(points):
+        raise ValueError("one indicator point is required for every completed bar")
+    timeline = {}
+    event = None
+    digest = sha256()
+    for index, (bar, point) in enumerate(zip(bars, points)):
+        digest.update(json.dumps(bar.to_dict(), sort_keys=True, separators=(",", ":")).encode())
+        ma20 = point["moving_averages"]["ma20"]
+        distance = point.get("close_ma20_atr_distance")
+        pullback = bool(ma20 is not None and distance is not None
+            and distance <= atr_distance_max and bar.adjusted_low <= ma20)
+        prior_ma20 = points[index - 1]["moving_averages"]["ma20"] if index else None
+        recovery = bool(index and ma20 is not None and prior_ma20 is not None
+            and bars[index - 1].adjusted_close < prior_ma20 and bar.adjusted_close >= ma20)
+        observation = OpportunityObservation(symbol=bar.symbol, trading_date=bar.trading_date,
+            pullback=pullback, recovery=recovery, is_final=bar.is_final,
+            data_version="sha256:" + digest.hexdigest(),
+            conditions={"pullback": pullback, "recovery": recovery,
+                "close_ma20_atr_distance": distance})
+        if event is not None and (event.status in _TERMINAL_STATUSES or bar.trading_date > event.expiry_date):
+            event = None
+        event = update_opportunity(previous=event, observation=observation,
+            recovery_window_sessions=window_sessions, closed_dates=closed_dates)
+        timeline[bar.trading_date] = event
+    return timeline
+
+
 __all__ = [
     "OpportunityEvent",
     "OpportunityObservation",
     "OpportunityStatus",
     "update_opportunity",
 ]
-

@@ -21,6 +21,7 @@ from . import constants
 from .etf_metadata import EtfMetadataStore
 from .market_data import (
     MarketDataValidator,
+    MarketHealth,
     MarketHealthClassifier,
     MinuteHistoryStore,
     SHANGHAI,
@@ -40,6 +41,13 @@ from .t_monitor import (
     snapshot_to_dict,
 )
 from .t_page import PAGE
+from .pr_page import PR_PAGE
+from .industry_page import INDUSTRY_PAGE, INDUSTRY_SWING_PAGE
+from .quote_quality import (
+    MinuteQuarantineStore,
+    prepare_quote_batch,
+    read_validation_issues,
+)
 from .swing_alerts import AlertStoreError
 from .swing_page import SWING_PAGE
 from .swing_portfolio import PortfolioLedgerError, TradeInput
@@ -286,7 +294,7 @@ class MonitorApplication:
         ok = (
             snapshot.get("refresh_error") is None
             and not errors
-            and not {"OUTAGE", "DELAYED"}.intersection(statuses)
+            and not {"OUTAGE", "DELAYED", "DATA_ERROR"}.intersection(statuses)
         )
         return {
             "status": "ok" if ok else "degraded",
@@ -463,8 +471,15 @@ class MonitorApplication:
                     if not isinstance(payload, Mapping):
                         raise ValueError("行情文件必须是对象")
                     all_quotes = JsonQuoteAdapter().parse(payload)
+                    issues = read_validation_issues(payload)
                     if self.history_store is not None:
-                        self._validate_quotes(all_quotes, metadata)
+                        clean_payload, all_quotes, issues = prepare_quote_batch(payload, metadata)
+                        if clean_payload != payload:
+                            staging.write_text(json.dumps(
+                                clean_payload, ensure_ascii=False, allow_nan=False,
+                            ), encoding="utf-8")
+                        payload = clean_payload
+                    audit_issues = issues
                 except Exception as error:
                     with self.lifecycle_gate:
                         if self._generation_cancelled(generation):
@@ -476,15 +491,34 @@ class MonitorApplication:
                         return False
                     try:
                         now = self.clock()
+                        day = now.astimezone(SHANGHAI).date().isoformat()
+                        evidence = MinuteQuarantineStore(self._quarantine_path()).read()
+                        issues = self._unresolved_quality_issues(
+                            all_quotes,
+                            [issue for issue in [*evidence, *issues] if issue['trading_date'] == day],
+                            metadata or None,
+                        )
+                        if issues != read_validation_issues(payload):
+                            if 'quotes' not in payload:
+                                payload = {'quotes': [
+                                    {'symbol': symbol, **record}
+                                    for symbol, record in payload.items()
+                                ]}
+                            payload['validation_issues'] = issues
+                            staging.write_text(json.dumps(
+                                payload, ensure_ascii=False, allow_nan=False,
+                            ), encoding='utf-8')
                         quotes = self._quotes_for_now(all_quotes, now)
-                        health = self._health_by_symbol(quotes, now)
+                        health = self._health_by_symbol(quotes, now, issues=issues)
                         published = snapshot_to_dict(self.engine.evaluate(
                             watchlist, quotes, generated_at=now, health=health,
                         ))
+                        self._annotate_quality(published, issues)
                     except Exception as error:
                         self._publish_outage(str(error), watchlist)
                         return False
                     try:
+                        MinuteQuarantineStore(self._quarantine_path()).append(audit_issues)
                         self._commit_staged_quotes(staging)
                         staging = None
                     except Exception as error:
@@ -562,10 +596,12 @@ class MonitorApplication:
     ) -> None:
         watchlist = load_watchlist(self.watchlist_path)
         error: str | None = None
+        issues: list[dict[str, Any]] = []
         try:
             raw = json.loads(self.quotes_path.read_text(encoding="utf-8"))
             all_quotes = JsonQuoteAdapter().parse(raw)
             payload = raw if isinstance(raw, dict) else {}
+            issues = read_validation_issues(payload)
         except (ValueError, OSError) as failure:
             all_quotes = {}
             payload = {}
@@ -576,13 +612,24 @@ class MonitorApplication:
             except (ValueError, OSError) as failure:
                 error = str(failure)
         now = self.clock() if now is None else now
+        if error is None:
+            try:
+                day = now.astimezone(SHANGHAI).date().isoformat()
+                evidence = MinuteQuarantineStore(self._quarantine_path()).read()
+                issues = self._unresolved_quality_issues(
+                    all_quotes,
+                    [issue for issue in [*evidence, *issues] if issue['trading_date'] == day],
+                )
+            except (ValueError, OSError) as failure:
+                error = str(failure)
         quotes = self._quotes_for_now(all_quotes, now)
-        health = self._health_by_symbol(quotes, now, error)
+        health = self._health_by_symbol(quotes, now, error, issues=issues)
         published = snapshot_to_dict(self.engine.evaluate(
             watchlist, quotes, generated_at=now, health=health,
         ))
         if error is not None:
             published["errors"] = [error]
+        self._annotate_quality(published, issues)
         self._publish(
             published, payload, error=error, increment_revision=increment_revision,
         )
@@ -625,14 +672,131 @@ class MonitorApplication:
         quotes: Mapping[str, Any],
         now: datetime,
         error: str | None = None,
+        *,
+        issues: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for symbol, quote in quotes.items():
             completed = finalized_points(quote.points, quote.observed_at)
             result[symbol] = self.health_classifier.classify(
                 now, completed[-1].timestamp if completed else None, error,
+                completed_minute=True,
             )
+        current_date = now.astimezone(SHANGHAI).date().isoformat()
+        for issue in issues:
+            if issue["trading_date"] == current_date:
+                result[issue["symbol"]] = MarketHealth(
+                    "DATA_ERROR", None, self._quality_reason(issue),
+                )
         return result
+
+    def _quarantine_path(self) -> Path:
+        return self.quotes_path.with_name("quarantine.jsonl")
+
+    @staticmethod
+    def _quality_reason(issue: Mapping[str, Any]) -> str:
+        return (
+            f"{issue['symbol']} {issue['timestamp']}: {issue['reason']}；"
+            "异常分钟已隔离，该标的候选提醒暂停"
+        )
+
+    def _replay_quality_symbols(
+        self, payload: Any,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> set[str]:
+        # Legacy replay fixtures/history may be top-level arrays. They have
+        # already passed JsonQuoteAdapter, but cannot carry envelope metadata.
+        current_issues = read_validation_issues(payload) if isinstance(payload, dict) else []
+        evidence = MinuteQuarantineStore(self._quarantine_path()).read()
+        latest_quotes = JsonQuoteAdapter().parse(payload)
+        # These endpoints replay all local history. A completely isolated first
+        # day has no surviving quote to define its date range, but still counts.
+        return {issue['symbol'] for issue in self._unresolved_quality_issues(
+            latest_quotes, [*evidence, *current_issues], metadata,
+        )}
+
+    def _unresolved_quality_issues(
+        self, latest_quotes: Mapping[str, Quote],
+        evidence: Sequence[dict[str, Any]],
+        metadata: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        pending: dict[tuple[str, str], dict[str, Any]] = {}
+        def observed(issue: Mapping[str, Any]) -> datetime:
+            return datetime.fromisoformat(issue.get('last_observed_at', issue['observed_at']))
+        for issue in evidence:
+            key = (issue['symbol'], issue['timestamp'])
+            if key not in pending or observed(issue) > observed(pending[key]):
+                pending[key] = issue
+        unresolved = []
+        history_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for issue in pending.values():
+            symbol = issue["symbol"]
+            day = issue["trading_date"]
+            if metadata is None:
+                metadata = self.metadata_store.load()
+            item_metadata = metadata.get(symbol)
+            candidates = []
+            current = latest_quotes.get(symbol)
+            if current is not None:
+                candidates.extend(
+                    (point, current.observed_at, current.previous_close)
+                    for point in current.points
+                    if point.timestamp.isoformat() == issue["timestamp"]
+                )
+            if self.history_store is not None:
+                key = (symbol, day)
+                if key not in history_cache:
+                    history_cache[key] = self.history_store.query(day, symbol)
+                candidates.extend(
+                    (JsonQuoteAdapter()._point(symbol, row),
+                     datetime.fromisoformat(row["observed_at"]), row["previous_close"])
+                    for row in history_cache[key]
+                    if row["timestamp"] == issue["timestamp"]
+                )
+            resolved = False
+            if item_metadata is not None:
+                validator = MarketDataValidator(item_metadata.trading)
+                for point, observed_at, previous_close in candidates:
+                    if observed_at <= observed(issue):
+                        continue
+                    try:
+                        validator.validate_point(point, previous_close)
+                    except ValueError:
+                        continue
+                    resolved = True
+                    break
+            if not resolved:
+                unresolved.append(issue)
+        return unresolved
+
+    @classmethod
+    def _annotate_quality(
+        cls, published: dict[str, Any], issues: Sequence[Mapping[str, Any]],
+    ) -> None:
+        current_date = datetime.fromisoformat(
+            published["generated_at"],
+        ).astimezone(SHANGHAI).date().isoformat()
+        summaries = [
+            {key: issue[key] for key in ("symbol", "timestamp", "trading_date", "reason")}
+            for issue in issues if issue["trading_date"] == current_date
+        ]
+        published["validation_issues"] = summaries
+        for item in published.get("items", []):
+            own = [issue for issue in summaries if issue["symbol"] == item["symbol"]]
+            item["validation_issues"] = own
+            if not own:
+                continue
+            # Missing-quote engine branches cannot consume an injected health
+            # value. Keep them unsafe too, before any alert can be persisted.
+            item["health_status"] = "DATA_ERROR"
+            item["health_reason"] = cls._quality_reason(own[0])
+            if item["action"] in {"BUY_CANDIDATE", "SELL_CANDIDATE"}:
+                item["action"] = "DEVIATION_OBSERVE"
+                item["label"] = "偏离观察"
+            item["trade_markers"] = []
+            item["blocked_reasons"] = list(dict.fromkeys([
+                *item.get("blocked_reasons", []), "MARKET_DATA_INVALID",
+            ]))
 
     @staticmethod
     def _validate_quotes(
@@ -1061,6 +1225,34 @@ class MonitorApplication:
             return
         self._bootstrap(increment_revision=True, now=now)
 
+    def valuations(self) -> dict[str, Any]:
+        metadata = self.metadata_store.load()
+        store = ValuationStore(self.valuation_path) if self.valuation_path else None
+        values = store.load() if store else {}
+        items = []
+        for symbol, item in metadata.items():
+            snapshot = values.get(item.index.code)
+            items.append({"symbol": symbol, "name": item.name, "index": item.index.to_dict(), "status": snapshot.status if snapshot else "MISSING_VALUATION", "valuation": snapshot.to_dict() if snapshot else None, "read_only": True})
+        return {"generated_at": datetime.now(SHANGHAI).isoformat(), "items": items, "read_only": True}
+
+    def industry_valuations(self) -> dict[str, Any]:
+        path = self.metadata_path.parent.parent / "industry" / "watchlist.json"
+        try:
+            records = json.loads(path.read_text(encoding="utf-8")).get("items", [])
+        except (OSError, json.JSONDecodeError):
+            records = []
+        values = ValuationStore(self.valuation_path).load() if self.valuation_path else {}
+        items = []
+        for r in records:
+            code = str(r.get("index_code", "")); v = values.get(code)
+            items.append({"symbol": r.get("symbol"), "name": r.get("name"), "index_code": code, "index_name": r.get("index_name"), "pe": v.pe_ttm if v else None, "pb": v.pb if v else None, "roe": v.roe_ttm if v else None, "pr": v.pr_pe_roe if v else None, "as_of": v.as_of if v else None, "status": "OK" if v and v.pr_pe_roe is not None else "MISSING_VALUATION"})
+        return {"generated_at": datetime.now(SHANGHAI).isoformat(), "items": items, "read_only": True}
+
+    def industry_swing(self) -> dict[str, Any]:
+        payload = self.swing_application.snapshot()
+        allowed = {str(x.get("symbol")) for x in json.loads((self.metadata_path.parent.parent / "industry" / "watchlist.json").read_text(encoding="utf-8")).get("items", [])}
+        return {"generated_at": datetime.now(SHANGHAI).isoformat(), "items": [{"symbol": x.get("symbol"), "name": x.get("name"), "state": x.get("formal_state", "MISSING"), "score": x.get("formal_decision", {}).get("trend_score"), "data_status": x.get("execution_status", "MISSING")} for x in payload.get("items", []) if x.get("symbol") in allowed], "read_only": True}
+
     def valuation(self, symbol: str) -> dict[str, Any]:
         metadata = EtfMetadataStore(self.metadata_path).get(symbol) if self.metadata_path else None
         if metadata is None:
@@ -1070,15 +1262,22 @@ class MonitorApplication:
         return {"symbol": symbol, "status": snapshot.status if snapshot else "MISSING_VALUATION", "index": metadata.index.to_dict(), "valuation": usable.to_dict() if usable else None, "read_only": True}
 
     def t_backtest(self) -> dict[str, Any]:
-        quotes = JsonQuoteAdapter().load(self.quotes_path)
+        payload = json.loads(self.quotes_path.read_text(encoding="utf-8"))
+        quotes = JsonQuoteAdapter().parse(payload)
         if self.history_path is not None:
             store = QuoteHistoryStore(self.history_path)
             quotes = store.merge(quotes)
         watchlist = load_watchlist(self.watchlist_path)
         metadata = self.metadata_store.load()
+        invalid_symbols = self._replay_quality_symbols(payload, metadata)
         items = []
         for item in watchlist:
             if not item.enabled:
+                continue
+            if item.symbol in invalid_symbols:
+                invalid = self._empty_backtest_item(item.symbol, "INVALID_DATA")
+                invalid["reason"] = "存在尚未重新核验的隔离分钟，暂停该标的收益回测"
+                items.append(invalid)
                 continue
             quote = quotes.get(item.symbol)
             if quote is None:
@@ -1117,12 +1316,24 @@ class MonitorApplication:
         return self.t_backtest()
 
     def signal_replay(self) -> dict[str, Any]:
-        quotes = JsonQuoteAdapter().load(self.quotes_path)
+        payload = json.loads(self.quotes_path.read_text(encoding="utf-8"))
+        quotes = JsonQuoteAdapter().parse(payload)
         if self.history_path is not None:
             quotes = QuoteHistoryStore(self.history_path).merge(quotes)
+        invalid_symbols = self._replay_quality_symbols(
+            payload,
+        )
         items: list[dict[str, Any]] = []
         for item in load_watchlist(self.watchlist_path):
             if not item.enabled:
+                continue
+            if item.symbol in invalid_symbols:
+                items.append({
+                    "symbol": item.symbol, "status": "INVALID_DATA",
+                    "reason": "存在尚未重新核验的隔离分钟，暂停该标的信号回放",
+                    "evaluated_signal_count": 0, "candidate_action_count": 0,
+                    "actions": [],
+                })
                 continue
             quote = quotes.get(item.symbol)
             if quote is None:
@@ -1276,11 +1487,15 @@ class MonitorServer(ThreadingHTTPServer):
         super().__init__(address, MonitorRequestHandler)
         self.application = application
         self.swing_application = swing_application
+        self.notifications = None
+        self.notification_error = None
         self.request_deadline_seconds = _REQUEST_SOCKET_TIMEOUT_SECONDS
         self.response_socket_timeout_seconds = _RESPONSE_SOCKET_TIMEOUT_SECONDS
 
     def server_close(self) -> None:
         try:
+            if self.notifications is not None:
+                self.notifications.stop()
             if self.swing_application is not None:
                 self.swing_application.stop_refresh()
         finally:
@@ -1347,7 +1562,15 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             if not self.raw_requestline:
                 self.close_connection = True
                 return
-            if not self.parse_request():
+            try:
+                parsed = self.parse_request()
+            except UnicodeError:
+                self.close_connection = True
+                self._json(HTTPStatus.FORBIDDEN, {
+                    "error": "forbidden", "message": "请求头编码无效",
+                })
+                return
+            if not parsed:
                 return
             method_name = "do_" + self.command
             if not hasattr(self, method_name):
@@ -1376,8 +1599,66 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)
         path = parsed.path
-        if path == "/":
+        if path == "/notifications" or path.startswith("/api/notifications"):
+            from .notification_web import handle_get
+            handle_get(self, parsed)
+        elif path == "/":
             self._send(HTTPStatus.OK, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/industry":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            self._send(HTTPStatus.OK, INDUSTRY_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/industry-swing":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            self._send(HTTPStatus.OK, INDUSTRY_SWING_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/api/industry/valuations":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            self._json(HTTPStatus.OK, self.server.application.industry_valuations())
+        elif path == "/api/industry/swing":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            payload = self.server.swing_application.snapshot() if self.server.swing_application is not None else {"items": []}
+            path = self.server.application.metadata_path.parent.parent / "industry" / "watchlist.json"
+            try:
+                industry_records = json.loads(path.read_text(encoding="utf-8")).get("items", [])
+            except (OSError, json.JSONDecodeError):
+                industry_records = []
+            industry_names = {str(x.get("symbol")): x.get("name", str(x.get("symbol"))) for x in industry_records}
+            allowed = set(industry_names)
+            snapshot_items = {str(x.get("symbol")): x for x in payload.get("items", [])}
+            rows = []
+            for symbol in sorted(allowed):
+                x = snapshot_items.get(symbol)
+                if x is None:
+                    rows.append({"symbol": symbol, "name": industry_names[symbol], "state": "DATA_NOT_READY", "score": None, "data_status": "INDUSTRY_HISTORY_PENDING"})
+                else:
+                    rows.append({"symbol": x.get("symbol"), "name": x.get("name"), "state": x.get("formal_state", "MISSING"), "score": x.get("formal_decision", {}).get("trend_score"), "data_status": x.get("execution_status", "MISSING")})
+            self._json(HTTPStatus.OK, {"generated_at": datetime.now(SHANGHAI).isoformat(), "items": rows, "read_only": True})
+        elif path == "/pr":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            self._send(HTTPStatus.OK, PR_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/api/valuations":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            self._json(HTTPStatus.OK, self.server.application.valuations())
+        elif path == "/portfolio":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            from .portfolio_page import PORTFOLIO_PAGE
+
+            self._send(
+                HTTPStatus.OK,
+                PORTFOLIO_PAGE.encode("utf-8"),
+                "text/html; charset=utf-8",
+            )
+        elif path == "/api/portfolio":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            # Reuse the published account view without a second cache or producer.
+            self._swing_read(lambda application: application.portfolio())
         elif path == "/swing":
             self._send(
                 HTTPStatus.OK,
@@ -1433,6 +1714,10 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         self.close_connection = True
         parsed = urlsplit(self.path)
         path = parsed.path
+        if path == "/notifications" or path.startswith("/api/notifications"):
+            from .notification_web import handle_post
+            handle_post(self, parsed)
+            return
         if (path == "/swing" or path.startswith("/api/swing/")) and parsed.query:
             self._json(HTTPStatus.BAD_REQUEST, {
                 "error": "invalid_query", "message": "query parameters are not allowed",
@@ -1457,6 +1742,8 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         elif re.fullmatch(r"/api/swing/alerts/[0-9a-f]{24}/ignore", path):
             self._swing_alert_transition(path.split("/")[4], "ignore")
         elif path in {
+            "/portfolio",
+            "/api/portfolio",
             "/swing",
             "/api/swing/snapshot",
             "/api/swing/daily-quotes",
@@ -2152,11 +2439,26 @@ def create_server(
         intraday_points_provider=lambda symbol: application.quotes(symbol, 0),
         clock=(swing_clock or clock or application.clock),
         refresh_interval=refresh_interval,
+        valuation_path=valuation_path,
     )
     server = MonitorServer((host, port), application, swing_application)
     try:
         application.start_refresh()
         swing_application.start_refresh()
+        # Notifications are optional and cannot take the existing market
+        # service down if their private configuration/storage is unavailable.
+        try:
+            from .notification_service import NotificationService
+            runtime_parent = Path(quotes_path).parent
+            if runtime_parent.name == "monitor":
+                runtime_parent = runtime_parent.parent
+            server.notifications = NotificationService(
+                runtime_parent / "notifications", application, swing_application,
+                clock=application.clock, read_only=collector is None,
+            )
+            server.notifications.start()
+        except Exception:
+            server.notification_error = "通知模块启动失败；行情服务继续运行"
     except BaseException as start_error:
         try:
             server.server_close()

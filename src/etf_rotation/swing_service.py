@@ -25,8 +25,9 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from .constants import DEFAULT_SWING_HISTORY_COUNT, REALTIME_MAX_AGE_SECONDS
-from .etf_metadata import EtfMetadata, EtfMetadataStore
-from .market_data import load_closed_dates
+from .etf_metadata import EtfMetadata, EtfMetadataStore, load_pending_etfs
+from .holdings_snapshot import read_holdings_snapshot
+from .market_data import MarketHealthClassifier, load_closed_dates
 from .swing_alerts import AlertInput, SwingAlertStore
 from .swing_backtest import (
     SwingBacktestError,
@@ -43,6 +44,31 @@ from .swing_data import (
     DailyBar,
     DailyHistoryStore,
     _SiblingFileLock,
+)
+from .swing_minutes import expected_complete_minutes, parse_minute_payload
+from .valuation import ValuationStore
+from .swing_indicators import (
+    DEFAULT_MINIMUM_BARS,
+    INDICATOR_SCHEMA_VERSION,
+    IndicatorInputError,
+    calculate_indicator_context,
+    calculate_indicator_snapshot,
+)
+from .swing_opportunities import (
+    opportunity_timeline,
+)
+from .swing_shadow import (
+    ShadowContext,
+    ShadowVariant,
+    evaluate_hybrid_shadow,
+    evaluate_shadow,
+    infer_shadow_regime,
+    load_shadow_config,
+)
+from .swing_quality import (
+    summarize_common_history,
+    summarize_history_quality,
+    summarize_strategy_diagnostics,
 )
 from .swing_portfolio import (
     InitialPositionInput,
@@ -156,6 +182,8 @@ class SwingService:
         clock: Callable[[], datetime],
         refresh_interval: float = 60.0,
         event_limit: int = 128,
+        valuation_path: Path | None = None,
+        shadow_config_path: Path | None = None,
     ) -> None:
         if type(paths) is not SwingPaths:
             raise SwingServiceError("paths must be SwingPaths")
@@ -183,6 +211,19 @@ class SwingService:
         self.intraday_points_provider = intraday_points_provider
         self.clock = clock
         self.refresh_interval = float(refresh_interval)
+        self.valuation_path = Path(valuation_path) if valuation_path is not None else self.paths.metadata.with_name("valuation.json")
+        self._valuation_store = ValuationStore(self.valuation_path)
+        self.shadow_config_path = (
+            Path(shadow_config_path)
+            if shadow_config_path is not None
+            else Path(__file__).resolve().parents[2] / "data/swing/shadow_strategy.json"
+        )
+        self._shadow_config = None
+        self._shadow_config_error: str | None = None
+        try:
+            self._shadow_config = load_shadow_config(self.shadow_config_path)
+        except Exception as error:
+            self._shadow_config_error = self._safe_error(error)
         self.producer_lock = threading.Lock()
         self.publish_condition = threading.Condition(threading.Lock())
         self.events: deque[dict[str, object]] = deque(maxlen=event_limit)
@@ -193,6 +234,11 @@ class SwingService:
         self._strategy: SwingStrategyConfig | None = None
         self._v11_config = None
         self._metadata: Mapping[str, EtfMetadata] = {}
+        self._pending_instruments: dict[str, object] = {}
+        self._holdings_snapshot: dict[str, object] = {
+            "status": "ABSENT", "snapshot": None, "error": None,
+            "read_only": True, "strategy_ready": False,
+        }
         self._closed_dates: frozenset[date] | None = None
         self._history_store: DailyHistoryStore | None = None
         self._ledger: PortfolioLedger | None = None
@@ -266,6 +312,8 @@ class SwingService:
                 if enabled:
                     self._ensure_current_formal_alerts(self._safe_now())
                 return self.watchlist()
+            if enabled and not self._watch_history_ready(symbol):
+                raise SwingServiceError("该标的已完成日线尚未就绪，请先补齐并校验最少日线，再启用监控")
             if index is None:
                 candidate.append(SwingWatchItem(symbol, enabled))
             else:
@@ -330,6 +378,14 @@ class SwingService:
                 self._errors = next_errors
                 self._publish_locked(snapshot)
             return self.watchlist()
+
+    def _watch_history_ready(self, symbol: str) -> bool:
+        return bool(
+            self._strategy is not None
+            and self._health.get("daily") == "OK"
+            and sum(bar.symbol == symbol for bar in self._history)
+            >= self._strategy.minimum_daily_bars
+        )
 
     def _ensure_current_formal_alerts(self, now: datetime) -> None:
         store = self._alert_store
@@ -2146,14 +2202,16 @@ class SwingService:
             try:
                 cycle_time = self._local_time(self.clock() if now is None else now)
             except Exception as error:
+                self._reload_holdings_snapshot(self._fallback_now())
                 self._publish_component_failure(
                     "service", "CLOCK_FAILED", error, now=self._fallback_now(),
                 )
                 return False
             recovered = self._mark_clock_success() if used_clock else False
+            holdings_changed = self._reload_holdings_snapshot(cycle_time)
             revision_before_refresh = self.revision
             result = self._refresh_completed_daily(cycle_time)
-            if recovered and self.revision == revision_before_refresh:
+            if (recovered or holdings_changed) and self.revision == revision_before_refresh:
                 self._publish(self._build_snapshot(cycle_time))
             return result
 
@@ -2162,11 +2220,14 @@ class SwingService:
             try:
                 cycle_time = self._local_time(self.clock())
             except Exception as error:
+                fallback_time = self._fallback_now()
+                self._reload_holdings_snapshot(fallback_time)
                 self._health["service"] = "CLOCK_FAILED"
                 self._errors["service"] = self._safe_error(error)
-                self._withdraw_intraday("CLOCK_FAILED", None, error)
+                self._withdraw_intraday("CLOCK_FAILED", fallback_time, error)
                 return self.snapshot()
             self._mark_clock_success()
+            self._reload_holdings_snapshot(cycle_time)
             return self._refresh_intraday_overlay(cycle_time)
 
     # ---- Local mutation boundary (used by HTTP integration) -----------
@@ -2183,6 +2244,7 @@ class SwingService:
         default_risk_per_trade: float | None = None,
     ) -> dict[str, object]:
         with self.producer_lock:
+            self._require_no_holdings_snapshot()
             ledger = self._require_ledger()
             risk = (
                 self._strategy.risk_per_trade
@@ -2203,6 +2265,7 @@ class SwingService:
         self, trade: TradeInput, idempotency_key: str,
     ) -> dict[str, object]:
         with self.producer_lock:
+            self._require_no_holdings_snapshot()
             ledger = self._require_ledger()
             normalized = trade
             events = ledger.load_events()
@@ -2466,6 +2529,7 @@ class SwingService:
         self, event_id: str, idempotency_key: str,
     ) -> dict[str, object]:
         with self.producer_lock:
+            self._require_no_holdings_snapshot()
             event = self._require_ledger().reverse(event_id, idempotency_key)
             self._rebuild_after_portfolio_mutation(self._safe_now())
             return event.to_dict()
@@ -2502,6 +2566,8 @@ class SwingService:
         except Exception as error:
             self._health["configuration"] = "BLOCKED"
             self._errors["configuration"] = self._safe_error(error)
+
+        self._read_holdings_source()
 
         try:
             v11_path = self.paths.strategy.parent / "v11_strategy.json"
@@ -2580,6 +2646,54 @@ class SwingService:
             )
         return self._build_snapshot(now)
 
+    def _read_holdings_source(self) -> None:
+        # Pending registrations identify reports, never strategy-tradable metadata.
+        try:
+            self._pending_instruments = load_pending_etfs(
+                self.paths.metadata.with_name("pending_etfs.json"),
+            )
+            self._errors.pop("pending_instruments", None)
+        except Exception:
+            self._pending_instruments = {}
+            self._errors["pending_instruments"] = "待接入标的登记不可用，请核对本地文件"
+        self._holdings_snapshot = read_holdings_snapshot(
+            self.paths.portfolio_snapshot.with_name("holdings_snapshot.json"),
+            {**self._metadata, **self._pending_instruments},
+        )
+
+    def _holdings_snapshot_present(self) -> bool:
+        return self._holdings_snapshot.get("status") != "ABSENT"
+
+    def _snapshot_position(self, symbol: str) -> Mapping[str, object] | None:
+        snapshot = self._holdings_snapshot.get("snapshot")
+        if not isinstance(snapshot, Mapping):
+            return None
+        for position in snapshot.get("positions", []):
+            if isinstance(position, Mapping) and position.get("symbol") == symbol:
+                return position
+        return None
+
+    def _reload_holdings_snapshot(self, now: datetime | None = None) -> datetime | None:
+        previous = (self._holdings_snapshot, self._pending_instruments,
+                    self._errors.get("pending_instruments"))
+        self._read_holdings_source()
+        changed = previous != (self._holdings_snapshot, self._pending_instruments,
+                               self._errors.get("pending_instruments"))
+        if changed:
+            changed_at = now if now is not None else self._safe_now()
+            self._load_portfolio_projection(changed_at)
+            self._recompute_formal(changed_at, publish_alerts=False)
+            return changed_at
+        return None
+
+    def _require_no_holdings_snapshot(self) -> None:
+        # Re-read at the write boundary: a report can arrive after bootstrapping.
+        changed_at = self._reload_holdings_snapshot()
+        if changed_at is not None:
+            self._publish(self._build_snapshot(changed_at))
+        if self._holdings_snapshot_present():
+            raise SwingServiceError("已导入持仓快照（或文件待修复）；需完成明确迁移后才能初始化、记成交或冲正")
+
     def _load_portfolio_projection(self, now: datetime) -> None:
         projection, status, error = self._calculate_portfolio_projection(
             self._history, now,
@@ -2598,6 +2712,12 @@ class SwingService:
         *,
         persist: bool = True,
     ) -> tuple[PortfolioProjection | None, str, str | None]:
+        if self._holdings_snapshot_present():
+            return (
+                None,
+                "SNAPSHOT_ONLY" if self._holdings_snapshot.get("status") == "SNAPSHOT_ONLY" else "BLOCKED",
+                "已导入持仓快照：买入日期和止损未知，仅记录不激活策略；需迁移后启用账本",
+            )
         ledger = self._require_ledger()
         if self._closed_dates is None:
             return (
@@ -2651,6 +2771,14 @@ class SwingService:
     ) -> dict[str, SwingDecision]:
         if self._strategy is None:
             return {}
+        snapshot_only = self._holdings_snapshot_present()
+        if snapshot_only:
+            projection, portfolio_health = None, "SNAPSHOT_ONLY"
+        account_risk_active = portfolio_health == "OK" and projection is not None
+        effective_strategy = (
+            replace(self._strategy, risk_per_trade=projection.default_risk_per_trade)
+            if account_risk_active else self._strategy
+        )
         grouped = self._bars_by_symbol(history)
         expected = self._last_completed_trading_date(now)
         result: dict[str, SwingDecision] = {}
@@ -2674,8 +2802,77 @@ class SwingService:
                 projection=projection,
                 portfolio_health=portfolio_health,
             )
-            result[item.symbol] = evaluate_swing(
-                bars, self._strategy, context,
+            decision = evaluate_swing(
+                bars, effective_strategy, context,
+            )
+            if snapshot_only:
+                position = self._snapshot_position(item.symbol)
+                # Keep market/trend evidence, including technical entry zone.
+                evidence = {
+                    key: value for key, value in decision.evidence.items()
+                    if not any(token in key for token in (
+                        "risk", "shares", "cash", "cap_",
+                        "minimum_lot", "exit_", "reduce_", "add_",
+                    ))
+                }
+                evidence.update({
+                    "snapshot_only": True,
+                    "snapshot_has_position": bool(position and position["shares"] > 0),
+                    "snapshot_shares": position["shares"] if position else None,
+                    "snapshot_sellable_shares": position["sellable_shares"] if position else None,
+                    "position_risk_amount": None,
+                    "entry_date_known": False,
+                    "stop_loss_known": False,
+                })
+                published_state = decision.state
+                technical_trial = bool(
+                    evidence.get("pullback_low_touched")
+                    and evidence.get("reclaim_close_above_ma20")
+                    and evidence.get("confirmation_above_previous_high")
+                    and evidence.get("anti_chase_ok")
+                    and evidence.get("trend_close_above_ma60")
+                    and evidence.get("trend_ma20_above_ma60")
+                    and evidence.get("trend_ma60_rising")
+                )
+                if technical_trial or published_state is SwingState.TRIAL_ENTRY_CANDIDATE:
+                    published_state = SwingState.TRIAL_ENTRY_OBSERVE
+                    evidence["technical_trial_ready"] = True
+                elif published_state in {
+                    SwingState.ADD_CANDIDATE,
+                    SwingState.REDUCE_CANDIDATE,
+                    SwingState.EXIT_CANDIDATE,
+                }:
+                    published_state = (
+                        SwingState.HOLDING
+                        if position and position["shares"] > 0
+                        else SwingState.UPTREND_WATCH
+                    )
+                decision = replace(
+                    decision,
+                    state=published_state,
+                    evidence=evidence,
+                    blocked_reasons=tuple(dict.fromkeys((
+                        *(reason for reason in decision.blocked_reasons if reason not in {
+                            "ledger_healthy", "cash_cap", "single_symbol_cap",
+                            "total_exposure_cap", "trade_risk_cap", "portfolio_risk_cap",
+                            "minimum_lot",
+                        }),
+                        "holdings_snapshot_only",
+                    ))),
+                    planned_stop=None, planned_shares=0, planned_risk_rate=0.0,
+                    first_reduce_price=None,
+                    valid_for_trading_date=None,
+                )
+            result[item.symbol] = replace(
+                decision,
+                evidence={
+                    **decision.evidence,
+                    "effective_risk_per_trade": None if snapshot_only else effective_strategy.risk_per_trade,
+                    "risk_setting_source": (
+                        "SNAPSHOT_UNKNOWN" if snapshot_only else
+                        "ACCOUNT" if account_risk_active else "STRATEGY_DEFAULT"
+                    ),
+                },
             )
         return result
 
@@ -3113,70 +3310,11 @@ class SwingService:
     def _minute_points(
         payload: object, trading_date: date,
     ) -> tuple[Mapping[str, object], ...]:
-        if not isinstance(payload, Mapping):
-            return ()
-        candidates: object = payload.get("upserts")
-        if isinstance(candidates, Mapping):
-            candidates = candidates.get("upserts", ())
-        if not isinstance(candidates, (tuple, list)):
-            candidates = payload.get("points", ())
-        if not isinstance(candidates, (tuple, list)):
-            return ()
-        accepted: list[Mapping[str, object]] = []
-        timestamps: list[datetime] = []
-        for point in candidates:
-            if not isinstance(point, Mapping):
-                return ()
-            if (
-                type(point.get("schema_version")) is not int
-                or point.get("schema_version") != 3
-                or point.get("trading_date") != trading_date.isoformat()
-                or point.get("is_complete") is not True
-                or type(point.get("timestamp")) is not str
-            ):
-                return ()
-            try:
-                parsed = datetime.fromisoformat(str(point["timestamp"]))
-                if parsed.tzinfo is None or parsed.utcoffset() is None:
-                    return ()
-                local = parsed.astimezone(SHANGHAI)
-            except Exception:
-                return ()
-            if (
-                local.date() != trading_date
-                or local.second != 0
-                or local.microsecond != 0
-            ):
-                return ()
-            accepted.append(point)
-            timestamps.append(local)
-        if len(set(timestamps)) != len(timestamps):
-            return ()
-        if any(left >= right for left, right in zip(timestamps, timestamps[1:])):
-            return ()
-        if tuple(timestamps) != SwingService._expected_complete_minutes(trading_date):
-            return ()
-        return tuple(accepted)
+        return parse_minute_payload(payload, trading_date)
 
     @staticmethod
     def _expected_complete_minutes(trading_date: date) -> tuple[datetime, ...]:
-        """Return Eastmoney/T-monitor's 241 completed minute timestamps."""
-        result: list[datetime] = []
-        current = datetime.combine(
-            trading_date, time(9, 30), tzinfo=SHANGHAI,
-        )
-        morning_end = current.replace(hour=11, minute=30)
-        while current <= morning_end:
-            result.append(current)
-            current += timedelta(minutes=1)
-        current = datetime.combine(
-            trading_date, time(13, 1), tzinfo=SHANGHAI,
-        )
-        afternoon_end = current.replace(hour=15, minute=0)
-        while current <= afternoon_end:
-            result.append(current)
-            current += timedelta(minutes=1)
-        return tuple(result)
+        return expected_complete_minutes(trading_date)
 
     @staticmethod
     def _aggregate_minute_ohlc(
@@ -3245,6 +3383,12 @@ class SwingService:
             resolved_status = self._execution_status(
                 formal, now, market_realtime=healthy,
             )
+            if self._holdings_snapshot_present():
+                overlays[symbol] = None
+                current[symbol] = (
+                    intraday.price, timestamp, resolved_status, validated_health,
+                )
+                continue
             if (
                 intraday.overlay is IntradayOverlay.APPROACHING_ENTRY_ZONE
                 and (
@@ -3294,6 +3438,8 @@ class SwingService:
             aggregate_health = "UNAVAILABLE"
         elif "OUTAGE" in validated_statuses:
             aggregate_health = "OUTAGE"
+        elif "DATA_ERROR" in validated_statuses:
+            aggregate_health = "DATA_ERROR"
         elif "STALE" in validated_statuses:
             aggregate_health = "STALE"
         elif "DELAYED" in validated_statuses:
@@ -3329,6 +3475,9 @@ class SwingService:
         raw: Mapping[str, object] | None,
         now: datetime,
     ) -> tuple[bool, str | None, str]:
+        if raw is not None and raw.get("health_status") == "DATA_ERROR":
+            timestamp = raw.get("timestamp")
+            return False, timestamp if type(timestamp) is str else None, "DATA_ERROR"
         if self._closed_dates is None:
             return False, None, "UNAVAILABLE"
         now_time = now.timetz().replace(tzinfo=None)
@@ -3360,6 +3509,9 @@ class SwingService:
             return False, None, "UNAVAILABLE"
         if type(status) is not str:
             return False, raw_timestamp, "UNAVAILABLE"
+        minute_basis = raw.get("timestamp_basis") == "MINUTE_START"
+        if "timestamp_basis" in raw and not minute_basis:
+            return False, raw_timestamp, "UNAVAILABLE"
         try:
             timestamp = datetime.fromisoformat(raw_timestamp)
             if timestamp.tzinfo is None or timestamp.utcoffset() is None:
@@ -3372,6 +3524,18 @@ class SwingService:
             return False, raw_timestamp, status
         if status != "REALTIME":
             return False, raw_timestamp, "UNAVAILABLE"
+        if minute_basis:
+            if (
+                local_timestamp.date() != now.date()
+                or not self._in_continuous_session(
+                    local_timestamp.timetz().replace(tzinfo=None),
+                )
+            ):
+                return False, raw_timestamp, "STALE"
+            minute_health = MarketHealthClassifier(self._closed_dates).classify(
+                now, local_timestamp, None, completed_minute=True,
+            )
+            return minute_health.status == "REALTIME", raw_timestamp, minute_health.status
         if (
             local_timestamp.date() != now.date()
             or not self._in_continuous_session(
@@ -3538,6 +3702,12 @@ class SwingService:
 
     def _build_snapshot(self, now: datetime) -> dict[str, object]:
         current = self.published if hasattr(self, "published") else {}
+        history_by_symbol = self._bars_by_symbol()
+        enabled_histories = {
+            watch.symbol: history_by_symbol.get(watch.symbol, ())
+            for watch in self._watchlist if watch.enabled
+        }
+        valuation_by_index = self._valuation_store.load()
         current_items = {
             str(item.get("symbol")): item
             for item in current.get("items", [])
@@ -3558,12 +3728,36 @@ class SwingService:
                 metadata,
                 previous,
             )
+            quality = (
+                summarize_history_quality(
+                    enabled_histories[watch.symbol], self._strategy,
+                )
+                if self._strategy is not None else None
+            )
+            valuation = self._valuation_snapshot(metadata, valuation_by_index)
             items.append({
                 "symbol": watch.symbol,
                 "name": metadata.name if metadata is not None else watch.symbol,
                 "formal_state": formal.state.value,
                 "formal_decision": formal.to_dict(),
                 "v11": v11,
+                "data_quality": quality,
+                "valuation": valuation,
+                "indicators": self._indicator_snapshot(
+                    watch.symbol, enabled_histories[watch.symbol],
+                ),
+                "formal": {
+                    "strategy_version": formal.strategy_version,
+                    "state": formal.state.value,
+                    "decision": formal.to_dict(),
+                },
+                "shadow": self._shadow_snapshot(
+                    watch.symbol,
+                    enabled_histories[watch.symbol],
+                    quality,
+                    valuation,
+                    formal,
+                ),
                 "signal_data_date": (
                     formal.as_of_trading_date.isoformat()
                     if formal.as_of_trading_date is not None else None
@@ -3573,16 +3767,28 @@ class SwingService:
                     formal, now,
                     market_realtime=self._health["intraday"] == "REALTIME",
                 ),
-                "intraday_overlay": previous.get("intraday_overlay"),
+                "intraday_overlay": (
+                    None if self._holdings_snapshot_present() else previous.get("intraday_overlay")
+                ),
+                "reported_holding": copy.deepcopy(self._snapshot_position(watch.symbol)),
                 "current_price": previous.get("current_price"),
                 "current_price_time": previous.get("current_price_time"),
                 "intraday_health_status": previous.get(
                     "intraday_health_status", "UNAVAILABLE",
                 ),
             })
+        history_coverage = (
+            summarize_common_history(enabled_histories, self._strategy)
+            if self._strategy is not None else None
+        )
+        diagnostics = summarize_strategy_diagnostics(items, history_coverage, self._health)
         alert_history, active_alerts = self._alert_snapshot(
             now, include_retracted=True,
         )
+        if self._holdings_snapshot_present():
+            active_alerts = []
+            for alert in alert_history:
+                alert.update(currently_active=False, active=False, active_notification=False)
         alert_items = [
             copy.deepcopy(item) for item in alert_history
             if not item.get("retracted")
@@ -3623,6 +3829,7 @@ class SwingService:
             "error": copy.deepcopy(self._errors.get("portfolio")),
             "revision": self.revision,
             "local_only": True,
+            "holdings_snapshot": copy.deepcopy(self._holdings_snapshot),
         }
         alert_current_view = {
             "status": self._health["alerts"],
@@ -3647,12 +3854,38 @@ class SwingService:
             "generated_at": now.isoformat(),
             "as_of_trading_date": self._history_as_of(),
             "daily_history_digest": self._enabled_history_digest(),
+            "history_coverage": history_coverage,
+            "diagnostics": diagnostics,
             "health": copy.deepcopy(self._health),
             "errors": copy.deepcopy(self._errors),
             "portfolio": (
                 self._portfolio_projection.to_dict()
                 if self._portfolio_projection is not None else None
             ),
+            "holdings_snapshot": copy.deepcopy(self._holdings_snapshot),
+            "available_symbols": [
+                {
+                    "symbol": symbol, "name": metadata.name,
+                    "can_enable": self._watch_history_ready(symbol),
+                    "daily_count": len(history_by_symbol.get(symbol, ())),
+                    "minimum_daily_bars": (
+                        self._strategy.minimum_daily_bars if self._strategy is not None else None
+                    ),
+                    "latest_daily_date": (
+                        history_by_symbol[symbol][-1].trading_date.isoformat()
+                        if history_by_symbol.get(symbol) else None
+                    ),
+                    "enable_block_reason": (
+                        None if self._watch_history_ready(symbol)
+                        else "策略配置不可用，请先恢复配置" if self._strategy is None
+                        else "日线校验未通过，请修复数据后再启用"
+                        if self._health.get("daily") != "OK"
+                        else "先独立补齐并校验已完成日线，再启用监控；等待或刷新不会自动补齐"
+                    ),
+                }
+                for symbol, metadata in self._metadata.items()
+            ],
+            "pending_instruments": copy.deepcopy(list(self._pending_instruments.values())),
             "items": items,
             "alerts": copy.deepcopy(active_alerts),
             "active_alerts": active_alerts,
@@ -3803,6 +4036,239 @@ class SwingService:
             base["blocked_reasons"] = ["V11_DATA_ERROR"]
             base["error"] = self._safe_error(error)
             return base
+
+    def _shadow_snapshot(
+        self,
+        symbol: str,
+        bars: Sequence[DailyBar],
+        data_quality: Mapping[str, object] | None,
+        valuation: Mapping[str, object] | None,
+        formal: SwingDecision,
+    ) -> dict[str, object]:
+        """Build the read-only V2 shadow layer without changing formal state."""
+        base = {
+            "strategy_version": "SWING_V2_SHADOW",
+            "status": "UNAVAILABLE",
+            "data_quality_status": "UNKNOWN",
+            "data_healthy": False,
+            "account_known": False,
+            "cost_ok": False,
+            "risk_ok": False,
+            "snapshot_only": self._holdings_snapshot_present(),
+            "variants": {},
+            "opportunity": None,
+            "blocked_reasons": [],
+            "executable": False,
+            "error": None,
+        }
+        if self._shadow_config is None:
+            base["blocked_reasons"] = ["SHADOW_CONFIG_UNAVAILABLE"]
+            base["error"] = self._shadow_config_error
+            return base
+
+        quality_status = "UNKNOWN"
+        if isinstance(data_quality, Mapping):
+            warnings = data_quality.get("warnings")
+            quality_status = (
+                "VERIFIED"
+                if not warnings
+                and data_quality.get("crosscheck_status") == "PASSED"
+                and data_quality.get("adjustment_status") == "VERIFIED"
+                and data_quality.get("sample_class") not in {
+                    "SHORT_SAMPLE", "NO_SAMPLE", "EXCLUDED",
+                }
+                else "UNKNOWN"
+            )
+        opportunity = self._shadow_opportunity_snapshot(symbol, bars)
+        trend_state, regime_evidence = infer_shadow_regime(bars)
+        evidence = formal.evidence
+        cost_gate_keys = (
+            "entry_sizing_gates_ok", "cash_cap_ok", "single_symbol_cap_ok",
+            "total_exposure_cap_ok", "trade_risk_cap_ok",
+            "portfolio_risk_cap_ok", "minimum_lot_ok", "calendar_validity_ok",
+        )
+        cost_ok = all(evidence.get(key) is True for key in cost_gate_keys)
+        stop = formal.planned_stop
+        risk_ok = (
+            evidence.get("health_gates_ok") is True
+            and evidence.get("entry_hard_gates_ok") is True
+            and evidence.get("cooldown_ok") is True
+            and isinstance(stop, (int, float))
+            and math.isfinite(float(stop))
+            and float(stop) > 0.0
+        )
+        symbol_data_healthy = evidence.get("data_healthy") is True
+        account_known = (
+            self._health.get("portfolio") == "OK"
+            and evidence.get("ledger_healthy") is True
+        )
+        context = ShadowContext(
+            snapshot_only=self._holdings_snapshot_present(),
+            data_quality=quality_status,
+            data_healthy=symbol_data_healthy,
+            account_known=account_known,
+            cost_ok=cost_ok,
+            risk_ok=risk_ok,
+            valuation_status=str((valuation or {}).get("level", "UNKNOWN")),
+            trend_state=trend_state,
+            range_confirmed=trend_state == "RANGE",
+            uncertain=trend_state == "UNCERTAIN",
+            opportunity_id=(
+                str(opportunity.get("opportunity_id"))
+                if isinstance(opportunity, Mapping)
+                else None
+            ),
+            opportunity_status=(
+                str(opportunity.get("status"))
+                if isinstance(opportunity, Mapping)
+                else None
+            ),
+            data_version=self._history_digest_for_symbol(symbol, bars),
+        )
+        variants: dict[str, object] = {}
+        blocked: set[str] = set()
+        for variant in self._shadow_config.variants:
+            try:
+                decision = evaluate_shadow(
+                    bars, variant=variant, config=self._shadow_config,
+                    context=context,
+                )
+                value = decision.to_dict()
+            except Exception as error:
+                value = {
+                    "strategy_version": "SWING_V2_SHADOW",
+                    "variant": variant.value,
+                    "state": "DATA_UNAVAILABLE",
+                    "executable": False,
+                    "blocked_reasons": ["DATA_ERROR"],
+                    "evidence": {},
+                    "data_version": context.data_version,
+                    "indicator_version": "INDICATORS_V1",
+                    "opportunity_id": None,
+                    "error": self._safe_error(error),
+                }
+            variants[variant.value] = value
+            reasons = value.get("blocked_reasons", [])
+            if isinstance(reasons, list):
+                blocked.update(reason for reason in reasons if isinstance(reason, str))
+        try:
+            hybrid = evaluate_hybrid_shadow(bars, context=context)
+            hybrid_value = hybrid.to_dict()
+        except Exception as error:
+            hybrid_value = {
+                "strategy_version": "SWING_HYBRID_SHADOW",
+                "variant": ShadowVariant.HYBRID.value,
+                "state": "DATA_UNAVAILABLE",
+                "executable": False,
+                "blocked_reasons": ["DATA_ERROR"],
+                "evidence": {},
+                "data_version": context.data_version,
+                "indicator_version": "INDICATORS_V1",
+                "opportunity_id": None,
+                "error": self._safe_error(error),
+            }
+        variants[ShadowVariant.HYBRID.value] = hybrid_value
+        reasons = hybrid_value.get("blocked_reasons", [])
+        if isinstance(reasons, list):
+            blocked.update(reason for reason in reasons if isinstance(reason, str))
+        base.update({
+            "status": "AVAILABLE",
+            "data_quality_status": quality_status,
+            "data_healthy": symbol_data_healthy,
+            "account_known": account_known,
+            "cost_ok": cost_ok,
+            "risk_ok": risk_ok,
+            "regime": {"state": trend_state, **dict(regime_evidence)},
+            "variants": variants,
+            "opportunity": opportunity,
+            "blocked_reasons": sorted(blocked),
+        })
+        return base
+
+    def _shadow_opportunity_snapshot(
+        self,
+        symbol: str,
+        bars: Sequence[DailyBar],
+    ) -> dict[str, object] | None:
+        """Rebuild the read-only five-session opportunity from completed bars."""
+        if self._shadow_config is None or not bars:
+            return None
+        try:
+            context = calculate_indicator_context(bars, lookback=len(bars))
+            recent = context.get("recent")
+            if not isinstance(recent, Sequence) or len(recent) != len(bars):
+                return None
+            timeline = opportunity_timeline(
+                bars, recent,
+                window_sessions=self._shadow_config.event_window_sessions,
+                atr_distance_max=self._shadow_config.atr_distance_max,
+                closed_dates=self._closed_dates or frozenset(),
+            )
+            event = timeline.get(bars[-1].trading_date)
+            return event.to_dict() if event is not None else None
+        except (IndicatorInputError, ValueError, TypeError, IndexError):
+            return None
+
+    def _valuation_snapshot(
+        self,
+        metadata: EtfMetadata | None,
+        valuation_by_index: Mapping[str, object],
+    ) -> dict[str, object] | None:
+        if metadata is None:
+            return None
+        snapshot = valuation_by_index.get(metadata.index.code)
+        if snapshot is not None:
+            return snapshot.to_dict()
+        return {
+            "index_code": metadata.index.code,
+            "index_name": metadata.index.name,
+            "as_of": None,
+            "pe_ttm": None,
+            "pb": None,
+            "dividend_yield": None,
+            "pe_percentile_5y": None,
+            "pe_percentile_10y": None,
+            "pb_percentile_5y": None,
+            "pb_percentile_10y": None,
+            "roe_ttm": None,
+            "pr_pe_roe": None,
+            "pr_pe_pb": None,
+            "level": "UNKNOWN",
+            "status": "MISSING_VALUATION",
+            "source": None,
+        }
+
+    @staticmethod
+    def _indicator_snapshot(
+        symbol: str,
+        bars: Sequence[DailyBar],
+    ) -> dict[str, object]:
+        try:
+            return calculate_indicator_snapshot(
+                bars, minimum_bars=DEFAULT_MINIMUM_BARS,
+            )
+        except IndicatorInputError as error:
+            latest = bars[-1].trading_date.isoformat() if bars else None
+            return {
+                "schema_version": INDICATOR_SCHEMA_VERSION,
+                "symbol": symbol,
+                "as_of_trading_date": latest,
+                "bar_count": len(bars),
+                "minimum_bars": DEFAULT_MINIMUM_BARS,
+                "status": "DATA_ERROR",
+                "reason": "INVALID_COMPLETED_BARS",
+                "error": str(error),
+                "macd": {
+                    "ema12": None, "ema26": None, "dif": None,
+                    "dea": None, "histogram": None,
+                },
+                "kdj": {"k": None, "d": None, "j": None},
+                "rsi": {"rsi14": None},
+                "moving_averages": {
+                    "ma5": None, "ma10": None,
+                    "ma20": None, "ma60": None,
+                },
+            }
 
     def _publish(
         self,
@@ -4170,6 +4636,19 @@ class SwingService:
         ]
         return self._canonical_digest(canonical_history)
 
+    def _history_digest_for_symbol(
+        self, symbol: str, bars: Sequence[DailyBar],
+    ) -> str:
+        """Fingerprint only the completed bars used for one ETF's shadow decision."""
+        canonical_history = [
+            bar.to_dict()
+            for bar in sorted(
+                (bar for bar in bars if bar.symbol == symbol),
+                key=lambda item: (item.trading_date, item.observed_at),
+            )
+        ]
+        return self._canonical_digest(canonical_history) or "sha256:unknown"
+
     def _snapshot_as_of(self) -> str | None:
         with self.publish_condition:
             value = self.published.get("as_of_trading_date")
@@ -4202,6 +4681,9 @@ class SwingService:
         return result
 
     def _has_position(self, symbol: str) -> bool:
+        if self._holdings_snapshot_present():
+            position = self._snapshot_position(symbol)
+            return bool(position and position["shares"] > 0)
         projection = self._portfolio_projection
         return bool(
             projection is not None
@@ -4216,6 +4698,8 @@ class SwingService:
         *,
         market_realtime: bool,
     ) -> str:
+        if self._holdings_snapshot_present():
+            return "PAUSED_HOLDINGS_SNAPSHOT"
         if not market_realtime:
             return "PAUSED_MARKET_NOT_REALTIME"
         if formal.state in _PORTFOLIO_DEPENDENT_STATES:

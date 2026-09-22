@@ -183,13 +183,21 @@ class SwingWebTests(unittest.TestCase):
                 self.assertEqual(captured.exception.code, 400)
                 captured.exception.close()
 
-    def test_watchlist_only_toggles_metadata_verified_symbols(self) -> None:
+    def test_watchlist_only_toggles_verified_symbols_with_ready_history(self) -> None:
         status, payload = self._post(
             "/api/swing/watchlist", {"symbol": "510500", "enabled": True},
         )
+        self.assertEqual(status, 422)
+        status, payload = self._post(
+            "/api/swing/watchlist", {"symbol": "510300", "enabled": False},
+        )
         self.assertEqual(status, 200)
         self.assertTrue(any(
-            item["symbol"] == "510500" and item["enabled"]
+            item["symbol"] == "510300" and not item["enabled"]
+            for item in payload["items"]
+        ))
+        self.assertTrue(any(
+            item["symbol"] == "510500" and not item["enabled"]
             for item in payload["items"]
         ))
         status, _ = self._post(
@@ -297,7 +305,7 @@ class SwingWebTests(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertEqual(error["error"], "invalid_request")
         status, _ = self._post(
-            "/api/swing/watchlist", {"symbol": "510500", "enabled": True},
+            "/api/swing/watchlist", {"symbol": "510300", "enabled": True},
             content_type="application/json; charset=utf-8",
         )
         self.assertEqual(status, 200)

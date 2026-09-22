@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .swing_data import DailyBar
-from .swing_indicators import calculate_indicator_context
+from .swing_indicators import IndicatorInputError, calculate_indicator_context
 
 
 class ShadowVariant(StrEnum):
@@ -23,6 +23,7 @@ class ShadowVariant(StrEnum):
     V2_A = "V2_A"
     V2_B = "V2_B"
     V2_C = "V2_C"
+    HYBRID = "HYBRID"
 
 
 class ShadowState(StrEnum):
@@ -60,8 +61,85 @@ class ShadowContext:
     range_confirmed: bool = False
     uncertain: bool = False
     opportunity_id: str | None = None
+    opportunity_status: str | None = None
     data_version: str = "sha256:unknown"
     indicator_version: str = "INDICATORS_V1"
+
+
+def infer_shadow_regime(
+    bars: Sequence[DailyBar],
+) -> tuple[str, Mapping[str, object]]:
+    """Classify the daily shadow mode without defaulting missing evidence to TREND.
+
+    This is deliberately conservative: a RANGE requires low path efficiency,
+    both sides of the 20-day mean, and a small mean slope; a TREND requires
+    aligned price/MA direction, slope, and path efficiency.  Everything else
+    remains UNCERTAIN so V2-C cannot silently use a trend rule on ambiguous data.
+    """
+    try:
+        materialized = tuple(bars)
+        if any(type(bar) is not DailyBar for bar in materialized):
+            raise ValueError("invalid daily bars")
+        closes = [float(bar.adjusted_close) for bar in materialized]
+        if any(not math.isfinite(value) or value <= 0.0 for value in closes):
+            raise ValueError("invalid daily closes")
+    except (IndicatorInputError, ValueError, TypeError, OverflowError):
+        return "UNCERTAIN", {"reason": "INDICATOR_CONTEXT_UNAVAILABLE"}
+    if len(materialized) < 60:
+        return "UNCERTAIN", {
+            "reason": "INSUFFICIENT_DAILY_REGIME_SAMPLE",
+            "bar_count": len(materialized),
+        }
+    ma20 = sum(closes[-20:]) / 20.0
+    ma60 = sum(closes[-60:]) / 60.0
+    prior_ma20 = sum(closes[-25:-5]) / 20.0
+    prior_ma60 = sum(closes[-70:-10]) / 60.0 if len(closes) >= 70 else None
+    if prior_ma60 in (None, 0.0):
+        return "UNCERTAIN", {"reason": "REGIME_MA_SLOPE_UNAVAILABLE"}
+    slope20 = (ma20 / prior_ma20 - 1.0) * 100.0
+    slope60 = (ma60 / prior_ma60 - 1.0) * 100.0
+    closes = closes[-20:]
+    path = sum(abs(current - previous) for previous, current in zip(closes, closes[1:]))
+    efficiency = abs(closes[-1] - closes[0]) / path if path > 0.0 else 0.0
+    ma20_values = [
+        sum(float(bar.adjusted_close) for bar in materialized[index - 19:index + 1]) / 20.0
+        for index in range(len(materialized) - 20, len(materialized))
+    ]
+    above = sum(close >= float(mean) for close, mean in zip(closes, ma20_values))
+    below = len(closes) - above
+    one_side_ratio = max(above, below) / len(closes)
+    evidence = {
+        "path_efficiency_20d": efficiency,
+        "ma20_slope_pct_5d": float(slope20),
+        "ma60_slope_pct_10d": float(slope60),
+        "ma20_above_count": above,
+        "ma20_below_count": below,
+        "one_side_ratio": one_side_ratio,
+        "as_of_trading_date": materialized[-1].trading_date.isoformat(),
+    }
+    range_ok = (
+        efficiency <= 0.30
+        and above >= 4
+        and below >= 4
+        and one_side_ratio <= 0.70
+        and abs(float(slope20)) <= 0.20
+        and abs(float(slope60)) <= 0.20
+    )
+    close = closes[-1]
+    trend_up = (
+        close > float(ma60) and float(ma20) > float(ma60)
+        and float(slope60) >= 0.10 and efficiency >= 0.35
+    )
+    trend_down = (
+        close < float(ma60) and float(ma20) < float(ma60)
+        and float(slope60) <= -0.10 and efficiency >= 0.35
+    )
+    if range_ok:
+        return "RANGE", evidence
+    if trend_up or trend_down:
+        evidence["direction"] = "UP" if trend_up else "DOWN"
+        return "TREND", evidence
+    return "UNCERTAIN", evidence
 
 
 @dataclass(frozen=True)
@@ -180,9 +258,10 @@ def _decision(
     context: ShadowContext | Mapping[str, object],
     indicator_version: str,
     data_version: str,
+    strategy_version: str = "SWING_V2_SHADOW",
 ) -> ShadowDecision:
     return ShadowDecision(
-        strategy_version="SWING_V2_SHADOW",
+        strategy_version=strategy_version,
         variant=variant,
         state=state,
         executable=False,
@@ -191,6 +270,188 @@ def _decision(
         data_version=data_version,
         indicator_version=indicator_version,
         opportunity_id=_context_value(context, "opportunity_id", None),
+    )
+
+
+def evaluate_hybrid_shadow(
+    bars: Sequence[DailyBar], *,
+    context: ShadowContext | Mapping[str, object],
+    indicator: Mapping[str, object] | None = None,
+) -> ShadowDecision:
+    """Evaluate the approved multi-factor swing shadow without changing V1.
+
+    The hybrid deliberately scores trend, pullback, momentum, volume and
+    weekly context instead of requiring a simultaneous MACD/KDJ/RSI signal.
+    It remains research-only: even a clean candidate is never executable.
+    """
+    strategy_version = "SWING_HYBRID_SHADOW"
+    try:
+        indicator = indicator or calculate_indicator_context(bars, lookback=3)
+    except ValueError as error:
+        return _decision(
+            ShadowVariant.HYBRID, ShadowState.DATA_UNAVAILABLE, ("DATA_ERROR",),
+            {"error": str(error)}, context, "INDICATORS_V1", "sha256:unknown",
+            strategy_version,
+        )
+    data_version = str(_context_value(context, "data_version", "sha256:unknown"))
+    if data_version == "sha256:unknown":
+        data_version = str(indicator["data_version"])
+    indicator_version = str(
+        _context_value(context, "indicator_version", indicator["indicator_version"])
+    )
+    latest = indicator.get("latest")
+    if not isinstance(latest, Mapping):
+        return _decision(
+            ShadowVariant.HYBRID, ShadowState.DATA_UNAVAILABLE,
+            ("NO_COMPLETED_BARS",), {}, context, indicator_version, data_version,
+            strategy_version,
+        )
+    if indicator["status"] != "READY":
+        return _decision(
+            ShadowVariant.HYBRID, ShadowState.OBSERVE,
+            ("INSUFFICIENT_COMPLETED_BARS",),
+            {"bar_count": indicator["bar_count"], "status": indicator["status"]},
+            context, indicator_version, data_version, strategy_version,
+        )
+
+    materialized = tuple(bars)
+    latest_bar = materialized[-1]
+    closes = [float(bar.adjusted_close) for bar in materialized]
+    moving = latest.get("moving_averages", {})
+    macd = latest.get("macd", {})
+    rsi = latest.get("rsi", {})
+    kdj = latest.get("kdj", {})
+    bias = latest.get("bias20", {})
+    bollinger = latest.get("bollinger", {})
+    volume = latest.get("volume", {})
+    weekly = latest.get("weekly", {})
+    ma20 = moving.get("ma20") if isinstance(moving, Mapping) else None
+    ma60 = moving.get("ma60") if isinstance(moving, Mapping) else None
+    close = float(latest_bar.adjusted_close)
+    atr = _atr(materialized)
+    weekly_close = weekly.get("close") if isinstance(weekly, Mapping) else None
+    weekly_ma20 = weekly.get("ma20") if isinstance(weekly, Mapping) else None
+    trend_votes = (
+        ma60 is not None and close > float(ma60),
+        ma20 is not None and ma60 is not None and float(ma20) >= float(ma60),
+        (latest.get("ma60_slope_pct_10d") or 0.0) >= -0.10,
+        weekly_close is not None and weekly_ma20 is not None
+        and float(weekly_close) >= float(weekly_ma20),
+    )
+    trend_score = sum(bool(value) for value in trend_votes)
+    trend_ok = trend_score >= 3
+
+    recent_peak = max(closes[-15:]) if closes else close
+    drawdown_pct = (recent_peak / close - 1.0) * 100.0 if close > 0 else None
+    distance = latest.get("close_ma20_atr_distance")
+    near_ma20 = isinstance(distance, (int, float)) and float(distance) <= 1.5
+    orderly_pullback = (
+        isinstance(drawdown_pct, (int, float)) and 1.0 <= float(drawdown_pct) <= 8.0
+    )
+    bias_value = bias.get("value") if isinstance(bias, Mapping) else None
+    not_overextended = (
+        not isinstance(bias_value, (int, float)) or float(bias_value) <= 5.0
+    )
+    pullback_ok = (near_ma20 or orderly_pullback) and not_overextended
+
+    dif = macd.get("dif") if isinstance(macd, Mapping) else None
+    dea = macd.get("dea") if isinstance(macd, Mapping) else None
+    histogram_ok = bool(
+        isinstance(dif, (int, float)) and isinstance(dea, (int, float))
+        and float(dif) >= float(dea)
+        and int(latest.get("macd_histogram_rising_days") or 0) >= 2
+    )
+    rsi_value = rsi.get("rsi14") if isinstance(rsi, Mapping) else None
+    rsi_ok = bool(
+        isinstance(rsi_value, (int, float)) and 45.0 <= float(rsi_value) <= 68.0
+        and int(latest.get("rsi_rising_days") or 0) >= 1
+    )
+    kdj_k = kdj.get("k") if isinstance(kdj, Mapping) else None
+    kdj_d = kdj.get("d") if isinstance(kdj, Mapping) else None
+    kdj_j = kdj.get("j") if isinstance(kdj, Mapping) else None
+    kdj_ok = bool(
+        isinstance(kdj_k, (int, float)) and isinstance(kdj_d, (int, float))
+        and isinstance(kdj_j, (int, float)) and float(kdj_k) > float(kdj_d)
+        and float(kdj_j) <= 90.0
+    )
+    momentum_score = int(histogram_ok) + int(rsi_ok) + int(kdj_ok)
+    volume_ratio = volume.get("ratio20") if isinstance(volume, Mapping) else None
+    volume_ok = bool(
+        isinstance(volume_ratio, (int, float)) and float(volume_ratio) >= 1.05
+    )
+    middle = bollinger.get("middle") if isinstance(bollinger, Mapping) else None
+    upper = bollinger.get("upper") if isinstance(bollinger, Mapping) else None
+    band_ok = bool(
+        isinstance(middle, (int, float)) and isinstance(upper, (int, float))
+        and close >= float(middle) and close <= float(upper)
+    )
+
+    reasons: list[str] = []
+    for key, reason in (
+        ("data_healthy", "DATA_UNHEALTHY"),
+        ("account_known", "ACCOUNT_UNKNOWN"),
+        ("cost_ok", "COST_GATE"),
+        ("risk_ok", "RISK_GATE"),
+    ):
+        if _context_value(context, key, True) is not True:
+            reasons.append(reason)
+    if _context_value(context, "snapshot_only", False) is True:
+        reasons.append("SNAPSHOT_ONLY")
+    quality = str(_context_value(context, "data_quality", "UNKNOWN"))
+    if quality != "VERIFIED":
+        reasons.append(
+            "DATA_QUALITY_UNKNOWN"
+            if quality in {"UNKNOWN", "MIXED"} else "DATA_QUALITY_UNVERIFIED"
+        )
+    mode = str(_context_value(context, "trend_state", "TREND"))
+    if mode == "RANGE" or _context_value(context, "range_confirmed", False) is True:
+        reasons.append("RANGE_MODE")
+    if mode == "UNCERTAIN" or _context_value(context, "uncertain", False) is True:
+        reasons.append("UNCERTAIN_MODE")
+    if not trend_ok:
+        reasons.append("TREND_SCORE_BELOW_THRESHOLD")
+    if not pullback_ok:
+        reasons.append("PULLBACK_NOT_CONFIRMED")
+    if momentum_score < 2:
+        reasons.append("MOMENTUM_SCORE_BELOW_THRESHOLD")
+    if not (volume_ok or band_ok):
+        reasons.append("VOLUME_OR_BAND_CONFIRMATION_MISSING")
+    candidate = trend_ok and pullback_ok and momentum_score >= 2 and (volume_ok or band_ok)
+    evidence = {
+        "trend_score": trend_score,
+        "trend_votes": list(trend_votes),
+        "trend_ok": trend_ok,
+        "pullback_ok": pullback_ok,
+        "near_ma20": near_ma20,
+        "orderly_pullback": orderly_pullback,
+        "drawdown_pct_15d": drawdown_pct,
+        "bias20_pct": bias_value,
+        "not_overextended": not_overextended,
+        "macd_trigger": histogram_ok,
+        "rsi_trigger": rsi_ok,
+        "kdj_trigger": kdj_ok,
+        "momentum_score": momentum_score,
+        "volume_ratio20": volume_ratio,
+        "volume_confirmation": volume_ok,
+        "bollinger_band_confirmation": band_ok,
+        "candidate": candidate,
+        "weekly_context": dict(weekly) if isinstance(weekly, Mapping) else {},
+        "valuation_status": str(_context_value(context, "valuation_status", "UNKNOWN")),
+        "mode": mode,
+        "as_of_trading_date": indicator["as_of_trading_date"],
+        "atr14_adjusted": atr,
+    }
+    if candidate and not reasons:
+        state = ShadowState.TECHNICAL_CANDIDATE
+    elif "RANGE_MODE" in reasons:
+        state = ShadowState.RANGE_BLOCKED
+    elif "UNCERTAIN_MODE" in reasons:
+        state = ShadowState.UNCERTAIN
+    else:
+        state = ShadowState.OBSERVE
+    return _decision(
+        ShadowVariant.HYBRID, state, reasons, evidence, context,
+        indicator_version, data_version, strategy_version,
     )
 
 
@@ -214,6 +475,14 @@ def evaluate_shadow(
             variant, ShadowState.DATA_UNAVAILABLE, ("DATA_ERROR",),
             {"error": str(error)}, context, "INDICATORS_V1", "sha256:unknown",
         )
+    return _evaluate_shadow_context(bars, variant=variant, config=config,
+        context=context, indicator=indicator)
+
+
+def _evaluate_shadow_context(bars: Sequence[DailyBar], *, variant: ShadowVariant,
+    config: ShadowConfig, context: ShadowContext | Mapping[str, object],
+    indicator: Mapping[str, object]) -> ShadowDecision:
+    """Shared formulas; replay supplies only a verified prefix's indicator point."""
     data_version = str(_context_value(context, "data_version", "sha256:unknown"))
     if data_version == "sha256:unknown":
         data_version = str(indicator["data_version"])
@@ -292,6 +561,12 @@ def evaluate_shadow(
         reasons.append("RANGE_MODE")
     if variant is ShadowVariant.V2_C and (uncertain or mode == "UNCERTAIN"):
         reasons.append("UNCERTAIN_MODE")
+    opportunity_id = _context_value(context, "opportunity_id", None)
+    opportunity_status = str(_context_value(context, "opportunity_status", ""))
+    if variant is ShadowVariant.V2_A and (
+        not opportunity_id or opportunity_status != "TECHNICAL_CANDIDATE"
+    ):
+        reasons.append("OPPORTUNITY_NOT_CONFIRMED")
     score = 0.0
     if trend_ok:
         score += 40.0
@@ -347,6 +622,6 @@ def evaluate_shadow(
 
 __all__ = [
     "ShadowConfig", "ShadowContext", "ShadowDecision", "ShadowState",
-    "ShadowVariant", "evaluate_shadow", "load_shadow_config",
+    "ShadowVariant", "evaluate_hybrid_shadow", "evaluate_shadow",
+    "infer_shadow_regime", "load_shadow_config",
 ]
-

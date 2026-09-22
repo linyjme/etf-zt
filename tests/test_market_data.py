@@ -216,12 +216,47 @@ def metadata_for_test() -> dict[str, EtfMetadata]:
     return {"510300": metadata}
 
 
+def v3_record(
+    price: float,
+    observed_at: str,
+    *,
+    previous_close: float = 4.691,
+    timestamp: str = "2026-08-28T09:30:00+08:00",
+    source: str = "TEST",
+    name: str = "沪深300ETF",
+    trace: object = None,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "schema_version": 3,
+        "symbol": "510300",
+        "name": name,
+        "trading_date": "2026-08-28",
+        "timestamp": timestamp,
+        "observed_at": observed_at,
+        "is_complete": True,
+        "source": source,
+        "previous_close": previous_close,
+        "open": price,
+        "high": price,
+        "low": price,
+        "price": price,
+        "average_price": price,
+        "volume": 100.0,
+        "amount": price * 100.0 * 100.0,
+    }
+    if trace is not None:
+        record["observation_trace"] = trace
+    return record
+
+
 def history_quote(
     price: float,
     previous_close: float,
     observed_at: str,
     *,
     timestamp: str = "2026-08-28T09:30:00+08:00",
+    source: str = "TEST",
+    name: str = "沪深300ETF",
 ) -> Quote:
     point_timestamp = datetime.fromisoformat(timestamp)
     item = QuotePoint(
@@ -236,14 +271,14 @@ def history_quote(
     )
     return Quote(
         symbol="510300",
-        name="沪深300ETF",
+        name=name,
         price=price,
         average_price=price,
         previous_close=previous_close,
         timestamp=point_timestamp,
         points=(item,),
         observed_at=datetime.fromisoformat(observed_at),
-        source="TEST",
+        source=source,
     )
 
 
@@ -744,6 +779,14 @@ class FinalizedPointTests(unittest.TestCase):
         self.assertIsInstance(result, tuple)
         self.assertEqual([item.timestamp.minute for item in result], [30, 31])
 
+    def test_1500_is_close_snapshot_not_a_completed_minute(self) -> None:
+        points = (point("14:59"), point("15:00"))
+        observed = datetime.fromisoformat("2026-08-28T15:10:00+08:00")
+
+        result = finalized_points(points, observed)
+
+        self.assertEqual([item.timestamp.minute for item in result], [59])
+
     def test_requires_aware_observation_and_point_timestamps(self) -> None:
         aware_observed = datetime.fromisoformat("2026-08-28T09:32:00+08:00")
         naive_point = QuotePoint(
@@ -836,7 +879,48 @@ class CalendarTests(unittest.TestCase):
 
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["source"], "https://www.sse.com.cn/disclosure/dealinstruc/closed/")
-        self.assertEqual(load_closed_dates(CALENDAR_PATH), EXPECTED_CLOSED_DATES)
+        self.assertEqual(
+            {day for day in load_closed_dates(CALENDAR_PATH) if day.year == 2026},
+            EXPECTED_CLOSED_DATES,
+        )
+
+    def test_historical_calendar_matches_official_2023_to_2025_notices(self) -> None:
+        # SSE annual closure notices: 2022/51, 2023/47, 2024/38.
+        ranges = (
+            ("2023-01-02", "2023-01-02"), ("2023-01-21", "2023-01-27"),
+            ("2023-04-05", "2023-04-05"), ("2023-04-29", "2023-05-03"),
+            ("2023-06-22", "2023-06-24"), ("2023-09-29", "2023-10-06"),
+            ("2024-01-01", "2024-01-01"), ("2024-02-09", "2024-02-17"),
+            ("2024-04-04", "2024-04-06"), ("2024-05-01", "2024-05-05"),
+            ("2024-06-10", "2024-06-10"), ("2024-09-15", "2024-09-17"),
+            ("2024-10-01", "2024-10-07"), ("2025-01-01", "2025-01-01"),
+            ("2025-01-28", "2025-02-04"), ("2025-04-04", "2025-04-06"),
+            ("2025-05-01", "2025-05-05"), ("2025-05-31", "2025-06-02"),
+            ("2025-10-01", "2025-10-08"),
+        )
+        expected = set()
+        for first, last in ranges:
+            day, end = date.fromisoformat(first), date.fromisoformat(last)
+            while day <= end:
+                if day.weekday() < 5:
+                    expected.add(day)
+                day += timedelta(days=1)
+        closed = load_closed_dates(CALENDAR_PATH)
+        self.assertEqual(len(expected), 56)
+        self.assertEqual(closed, expected | EXPECTED_CLOSED_DATES)
+        self.assertTrue(all(day.weekday() < 5 for day in closed))
+
+    def test_756_completed_trading_days_cross_historical_holidays(self) -> None:
+        closed = load_closed_dates(CALENDAR_PATH)
+        for end, first in ((date(2026, 9, 1), date(2023, 7, 21)),
+                           (date(2026, 9, 2), date(2023, 7, 24))):
+            with self.subTest(end=end):
+                day, trading_days = end, []
+                while len(trading_days) < 756:
+                    if day.weekday() < 5 and day not in closed:
+                        trading_days.append(day)
+                    day -= timedelta(days=1)
+                self.assertEqual(trading_days[-1], first)
 
     def test_calendar_loader_requires_schema_one_and_iso_dates(self) -> None:
         from tempfile import TemporaryDirectory
@@ -1152,6 +1236,253 @@ class QuoteObservationTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(MarketDataError, "晚于观测时间"):
             collector.collect((WatchItem("510300", "沪深300ETF", 0.002),))
+
+
+class ObservationTraceTests(unittest.TestCase):
+    def test_trace_must_match_observation_and_finalized_minute(self):
+        store = MinuteHistoryStore(Path("unused-history.jsonl"))
+        base = {"first_seen_at": "2026-08-28T09:31:01+08:00",
+                "tracking_started_at": "2026-08-28T09:31:01+08:00",
+                "last_seen_at": "2026-08-28T09:31:01+08:00",
+                "revision_count_since_tracking": 0}
+        for change in (
+            {"last_seen_at": "2026-08-28T09:32:01+08:00"},
+            {"first_seen_at": "2026-08-28T09:30:00+08:00"},
+        ):
+            with self.subTest(change=change):
+                record = v3_record(4.684, "2026-08-28T09:31:01+08:00", trace={**base, **change})
+                with self.assertRaises(MarketDataError):
+                    store._normalize_record(record, strict=True)
+
+
+    def test_new_record_gets_full_trace_with_first_seen_equal_observed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = MinuteHistoryStore(Path(temporary) / "quotes.jsonl")
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:31:01+08:00",
+            )}, metadata_for_test())
+
+            record = store.query("2026-08-28", "510300")[0]
+            trace = record["observation_trace"]
+
+            self.assertEqual(trace["first_seen_at"], "2026-08-28T09:31:01+08:00")
+            self.assertEqual(trace["tracking_started_at"], "2026-08-28T09:31:01+08:00")
+            self.assertEqual(trace["last_seen_at"], "2026-08-28T09:31:01+08:00")
+            self.assertEqual(trace["revision_count_since_tracking"], 0)
+
+    def test_append_legacy_builds_trace_consistently_with_upsert(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            store.append_legacy({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:31:01+08:00",
+            )})
+
+            record = store.query("2026-08-28", "510300")[0]
+            self.assertEqual(
+                record["observation_trace"]["first_seen_at"],
+                "2026-08-28T09:31:01+08:00",
+            )
+            self.assertEqual(record["observation_trace"]["revision_count_since_tracking"], 0)
+
+            # Older observation of the same key must not overwrite the newer one.
+            store.append_legacy({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:30:01+08:00",
+            )})
+            record = store.query("2026-08-28", "510300")[0]
+            self.assertEqual(record["observed_at"], "2026-08-28T09:31:01+08:00")
+            self.assertEqual(
+                record["observation_trace"]["first_seen_at"],
+                "2026-08-28T09:31:01+08:00",
+            )
+
+    def test_trace_persists_across_real_disk_roundtrip_and_daily_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            first = MinuteHistoryStore(path)
+            first.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:31:01+08:00",
+            )}, metadata_for_test())
+
+            # Fresh instance re-reads from disk (real reload).
+            reloaded = MinuteHistoryStore(path).query("2026-08-28", "510300")[0]
+            self.assertEqual(
+                reloaded["observation_trace"],
+                {
+                    "first_seen_at": "2026-08-28T09:31:01+08:00",
+                    "tracking_started_at": "2026-08-28T09:31:01+08:00",
+                    "last_seen_at": "2026-08-28T09:31:01+08:00",
+                    "revision_count_since_tracking": 0,
+                },
+            )
+            daily = (path.parent / "history" / "2026-08-28" / "quotes.jsonl")
+            daily_records = [
+                json.loads(line)
+                for line in daily.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(daily_records), 1)
+            self.assertEqual(
+                daily_records[0]["observation_trace"]["first_seen_at"],
+                "2026-08-28T09:31:01+08:00",
+            )
+
+    def test_old_history_without_trace_gets_null_first_seen_on_update(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            # Pre-existing v3 history that predates observation_trace.
+            path.write_text(
+                json.dumps(v3_record(4.684, "2026-08-28T09:31:01+08:00")) + "\n",
+                encoding="utf-8",
+            )
+            store = MinuteHistoryStore(path)
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T17:56:09+08:00",
+            )}, metadata_for_test())
+
+            trace = store.query("2026-08-28", "510300")[0]["observation_trace"]
+            self.assertIsNone(trace["first_seen_at"])
+            self.assertEqual(trace["tracking_started_at"], "2026-08-28T17:56:09+08:00")
+            self.assertEqual(trace["last_seen_at"], "2026-08-28T17:56:09+08:00")
+            self.assertEqual(trace["revision_count_since_tracking"], 0)
+
+    def test_reading_trace_less_history_does_not_back_fill_first_seen(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            path.write_text(
+                json.dumps(v3_record(4.684, "2026-08-28T09:31:01+08:00")) + "\n",
+                encoding="utf-8",
+            )
+            store = MinuteHistoryStore(path)
+
+            records = store.query("2026-08-28", "510300")
+            self.assertEqual(len(records), 1)
+            self.assertNotIn("observation_trace", records[0])
+
+    def test_duplicate_same_value_later_observation_does_not_increment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:31:01+08:00",
+            )}, metadata_for_test())
+            # Same value, later observation: only last_seen updates.
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:32:01+08:00",
+            )}, metadata_for_test())
+
+            trace = store.query("2026-08-28", "510300")[0]["observation_trace"]
+            self.assertEqual(trace["first_seen_at"], "2026-08-28T09:31:01+08:00")
+            self.assertEqual(trace["last_seen_at"], "2026-08-28T09:32:01+08:00")
+            self.assertEqual(trace["revision_count_since_tracking"], 0)
+
+    def test_revision_count_increments_only_on_tracked_field_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            store = MinuteHistoryStore(path)
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T09:31:01+08:00",
+            )}, metadata_for_test())
+            # price change -> revision 1
+            store.upsert({"510300": history_quote(
+                4.685, 4.691, "2026-08-28T09:32:01+08:00",
+            )}, metadata_for_test())
+            trace = store.query("2026-08-28", "510300")[0]["observation_trace"]
+            self.assertEqual(trace["revision_count_since_tracking"], 1)
+            # source change (tracked) -> revision 2
+            store.upsert({"510300": history_quote(
+                4.685, 4.691, "2026-08-28T09:33:01+08:00", source="OTHER",
+            )}, metadata_for_test())
+            record = store.query("2026-08-28", "510300")[0]
+            self.assertEqual(record["source"], "OTHER")
+            self.assertEqual(record["observation_trace"]["revision_count_since_tracking"], 2)
+            # name change (not tracked) -> no increment; keep source stable so
+            # only the name differs from the previous observation.
+            store.upsert({"510300": history_quote(
+                4.685, 4.691, "2026-08-28T09:34:01+08:00", source="OTHER", name="沪深300ETF改名",
+            )}, metadata_for_test())
+            record = store.query("2026-08-28", "510300")[0]
+            self.assertEqual(record["name"], "沪深300ETF改名")
+            self.assertEqual(record["observation_trace"]["revision_count_since_tracking"], 2)
+
+    def test_old_history_updated_then_revised_counts_only_after_tracking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            path.write_text(
+                json.dumps(v3_record(4.684, "2026-08-28T09:31:01+08:00")) + "\n",
+                encoding="utf-8",
+            )
+            store = MinuteHistoryStore(path)
+            # First update: tracking starts here, baseline price 4.684, count 0.
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T17:56:09+08:00",
+            )}, metadata_for_test())
+            self.assertEqual(
+                store.query("2026-08-28", "510300")[0]["observation_trace"]["revision_count_since_tracking"],
+                0,
+            )
+            # Actual revision after tracking started.
+            store.upsert({"510300": history_quote(
+                4.685, 4.691, "2026-08-28T17:57:09+08:00",
+            )}, metadata_for_test())
+            trace = store.query("2026-08-28", "510300")[0]["observation_trace"]
+            self.assertIsNone(trace["first_seen_at"])
+            self.assertEqual(trace["tracking_started_at"], "2026-08-28T17:56:09+08:00")
+            self.assertEqual(trace["revision_count_since_tracking"], 1)
+
+    def test_illegal_trace_rejected_on_read(self) -> None:
+        cases = [
+            # negative count
+            {"first_seen_at": None, "tracking_started_at": "2026-08-28T09:31:01+08:00",
+             "last_seen_at": "2026-08-28T09:31:01+08:00", "revision_count_since_tracking": -1},
+            # bool count
+            {"first_seen_at": None, "tracking_started_at": "2026-08-28T09:31:01+08:00",
+             "last_seen_at": "2026-08-28T09:31:01+08:00", "revision_count_since_tracking": True},
+            # last_seen before tracking
+            {"first_seen_at": None, "tracking_started_at": "2026-08-28T09:32:01+08:00",
+             "last_seen_at": "2026-08-28T09:31:01+08:00", "revision_count_since_tracking": 0},
+            # first_seen after tracking
+            {"first_seen_at": "2026-08-28T09:33:01+08:00",
+             "tracking_started_at": "2026-08-28T09:31:01+08:00",
+             "last_seen_at": "2026-08-28T09:31:01+08:00", "revision_count_since_tracking": 0},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            for trace in cases:
+                with self.subTest(trace=trace):
+                    path = Path(temporary) / "quotes.jsonl"
+                    path.write_text(
+                        json.dumps(v3_record(4.684, "2026-08-28T09:31:01+08:00", trace=trace)) + "\n",
+                        encoding="utf-8",
+                    )
+                    store = MinuteHistoryStore(path)
+                    with self.assertRaises(MarketDataError):
+                        store.query("2026-08-28", "510300")
+
+    def test_valid_trace_round_trips_through_normalize(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "quotes.jsonl"
+            trace = {
+                "first_seen_at": "2026-08-28T09:31:01+08:00",
+                "tracking_started_at": "2026-08-28T09:31:01+08:00",
+                "last_seen_at": "2026-08-28T17:56:09+08:00",
+                "revision_count_since_tracking": 3,
+            }
+            path.write_text(
+                json.dumps(v3_record(4.684, "2026-08-28T17:56:09+08:00", trace=trace)) + "\n",
+                encoding="utf-8",
+            )
+            store = MinuteHistoryStore(path)
+            record = store.query("2026-08-28", "510300")[0]
+            self.assertEqual(record["observation_trace"], trace)
+            # A newer observation that does not change tracked fields keeps the
+            # count but advances last_seen_at.
+            store.upsert({"510300": history_quote(
+                4.684, 4.691, "2026-08-28T17:57:09+08:00",
+            )}, metadata_for_test())
+            trace = store.query("2026-08-28", "510300")[0]["observation_trace"]
+            self.assertEqual(trace["revision_count_since_tracking"], 3)
+            self.assertEqual(trace["last_seen_at"], "2026-08-28T17:57:09+08:00")
+            self.assertEqual(trace["first_seen_at"], "2026-08-28T09:31:01+08:00")
 
 
 if __name__ == "__main__":

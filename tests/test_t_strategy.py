@@ -74,3 +74,34 @@ class TStrategyTests(unittest.TestCase):
         self.assertEqual(decision.action, "SELL_CANDIDATE")
         self.assertEqual(decision.label, "做T候选")
         self.assertEqual(decision.blocked_reasons, ())
+
+    def test_confirmed_range_two_grid_narrowing_is_a_candidate(self) -> None:
+        quote = confirmed_range_quote(previous_deviation=-0.005, current_deviation=-0.0045)
+        decision = TStrategy().evaluate(CandidateContext(
+            quote, "RANGE", MarketHealth("REALTIME", 10, "行情实时"), 0.002,
+        ))
+        self.assertEqual(decision.action, "BUY_CANDIDATE")
+        self.assertEqual(decision.blocked_reasons, ())
+        self.assertNotIn("DEVIATION_BELOW_2_GRIDS", decision.blocked_reasons)
+        self.assertNotIn("DEVIATION_BELOW_3_GRIDS", decision.blocked_reasons)
+
+    def test_confirmed_range_does_not_require_five_grids_from_previous_close(self) -> None:
+        quote = confirmed_range_quote(
+            previous_deviation=-0.008,
+            current_deviation=-0.007,
+            previous_close_distance=0.006,
+        )
+        decision = TStrategy().evaluate(CandidateContext(
+            quote, "RANGE", MarketHealth("REALTIME", 10, "行情实时"), 0.002,
+        ))
+        self.assertEqual(decision.action, "BUY_CANDIDATE")
+        self.assertNotIn("PREVIOUS_CLOSE_DISTANCE_BELOW_5_GRIDS", decision.blocked_reasons)
+
+    def test_non_range_two_grids_stay_wait_not_candidate(self) -> None:
+        quote = confirmed_range_quote(previous_deviation=-0.005, current_deviation=-0.0045)
+        decision = TStrategy().evaluate(CandidateContext(
+            quote, "UNCERTAIN", MarketHealth("REALTIME", 10, "行情实时"), 0.002,
+        ))
+        self.assertEqual(decision.action, "WAIT")
+        self.assertIn("REGIME_NOT_RANGE", decision.blocked_reasons)
+        self.assertIn("DEVIATION_BELOW_3_GRIDS", decision.blocked_reasons)

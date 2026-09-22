@@ -84,8 +84,8 @@ def test_short_history_is_not_a_walk_forward_sample():
 Run:
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_research -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_research -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'etf_rotation.swing_research'`.
@@ -176,8 +176,8 @@ def test_manifest_contains_every_enabled_symbol_without_promoting_wind_archive(t
 Run:
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_research.ResearchManifestTests.test_manifest_contains_every_enabled_symbol_without_promoting_wind_archive -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_research.ResearchManifestTests.test_manifest_contains_every_enabled_symbol_without_promoting_wind_archive -v
 ```
 
 Expected: FAIL because `build_manifest` is not defined.
@@ -193,8 +193,8 @@ Wind receipts are read from `var/swing/wind/<batch>/manifest.json` when present.
 Run:
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' scripts/build_swing_research_manifest.py --end-date 2026-09-18 --output data/swing/research_manifest.json
+$env:PYTHONPATH='<repo>\\src'
+python scripts/build_swing_research_manifest.py --end-date 2026-09-18 --output data/swing/research_manifest.json
 ```
 
 Expected: exit code 0, 33 enabled symbols in the manifest, no changes to `var/swing/daily_quotes.jsonl`, and explicit short-sample/warning statuses.
@@ -236,8 +236,8 @@ def test_indicator_context_changes_when_only_the_last_completed_bar_changes():
 Run:
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_indicator_reference -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_indicator_reference -v
 ```
 
 Expected: FAIL with an undefined `calculate_indicator_context`.
@@ -260,8 +260,8 @@ Reuse the existing formula functions, calculate all series from the full complet
 Record the Wind 2026-09-18 `512170.SH` MACD/KDJ values in a test fixture with source and period labels. Do not compare Wind RSI6/RSI12 to internal RSI14. Run:
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_indicators tests.test_swing_indicator_reference -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_indicators tests.test_swing_indicator_reference -v
 ```
 
 Expected: all existing indicator tests and new direction tests PASS.
@@ -306,8 +306,8 @@ def test_event_does_not_read_future_bars():
 Run:
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_opportunities -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_opportunities -v
 ```
 
 Expected: FAIL because the opportunity module and statuses do not exist.
@@ -387,8 +387,8 @@ def test_snapshot_only_and_unknown_quality_are_never_executable():
 - [ ] **Step 2: Run focused tests and verify failure**
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_shadow -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_shadow -v
 ```
 
 Expected: FAIL because `swing_shadow.py` and `shadow_strategy.json` do not exist.
@@ -466,8 +466,8 @@ def test_short_history_is_inconclusive_not_profitable():
 - [ ] **Step 2: Run the tests and verify failure**
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_shadow_backtest -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_shadow_backtest -v
 ```
 
 Expected: FAIL because the shadow replay API does not exist.
@@ -506,8 +506,8 @@ The script must write a new `outputs/swing-research/<run_id>/shadow-report.json`
 Run:
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' scripts/run_swing_shadow.py --manifest data/swing/research_manifest.json --end-date 2026-09-18
+$env:PYTHONPATH='<repo>\\src'
+python scripts/run_swing_shadow.py --manifest data/swing/research_manifest.json --end-date 2026-09-18
 ```
 
 Expected: exit code 0; each short-history result says `INSUFFICIENT_SAMPLE`; no strategy switch occurs.
@@ -515,8 +515,8 @@ Expected: exit code 0; each short-history result says `INSUFFICIENT_SAMPLE`; no 
 - [ ] **Step 6: Run focused backtest tests and commit**
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_shadow_backtest tests.test_swing_backtest -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_shadow_backtest tests.test_swing_backtest -v
 git add src/etf_rotation/swing_shadow_backtest.py scripts/run_swing_shadow.py tests/test_swing_shadow_backtest.py src/etf_rotation/swing_backtest.py
 git commit -m "feat: replay swing shadow variants with costs"
 ```
@@ -548,8 +548,8 @@ def test_snapshot_only_blocks_shadow_execution(service):
 - [ ] **Step 2: Run focused service tests and verify failure**
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_service tests.test_swing_web -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_service tests.test_swing_web -v
 ```
 
 Expected: FAIL because `formal` and `shadow` fields are absent.
@@ -604,8 +604,8 @@ def test_page_does_not_render_shadow_candidate_as_buy():
 - [ ] **Step 2: Run page tests and verify failure**
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_page tests.test_swing_account_layout -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_page tests.test_swing_account_layout -v
 ```
 
 Expected: FAIL because the new section labels are absent.
@@ -636,8 +636,8 @@ Expected: all three labels appear, and the page still shows the current formal V
 - [ ] **Step 5: Run page tests and commit**
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_page tests.test_swing_account_layout -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_page tests.test_swing_account_layout -v
 git add src/etf_rotation/swing_page.py tests/test_swing_page.py tests/test_swing_account_layout.py
 git commit -m "feat: show swing shadow candidates separately"
 ```
@@ -668,8 +668,8 @@ def test_unknown_data_suppresses_shadow_notification():
 - [ ] **Step 2: Run focused notification tests and verify failure**
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest tests.test_swing_shadow_notifications -v
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest tests.test_swing_shadow_notifications -v
 ```
 
 Expected: FAIL until shadow notifications are separated.
@@ -683,9 +683,9 @@ Shadow notifications must include `kind=SHADOW_RESEARCH`, `strategy_version`, `o
 Run:
 
 ```powershell
-$env:PYTHONPATH='F:\plan\money\zt\src'
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m unittest discover -s tests -v
-& 'C:\Users\linyongjie\.workbuddy\binaries\python\envs\default\Scripts\python.exe' -m compileall -q src tests scripts
+$env:PYTHONPATH='<repo>\\src'
+python -m unittest discover -s tests -v
+python -m compileall -q src tests scripts
 git diff --check
 ```
 

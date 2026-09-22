@@ -195,8 +195,29 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
         self.assertIn("secid=0.159915", requests[1][0])
         self.assertEqual(payload["source"]["endpoint"], TRENDS2_ENDPOINT)
         self.assertTrue(all(url.startswith(TRENDS2_ENDPOINT) for url in payload["source"]["urls"]))
+        self.assertEqual(payload["coverage"]["coverage_pct"], 100.0)
+        self.assertEqual(payload["coverage"]["missing_symbols"], [])
+        self.assertEqual(payload["coverage"]["completed_minute_counts"]["510300"], 1)
 
-    def test_retries_entire_batch_on_fallback_after_primary_transport_failure(self) -> None:
+    def test_separates_1500_close_snapshot_from_completed_minute_points(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            secid = parse_qs(urlsplit(request.full_url).query)["secid"][0]
+            market, symbol = secid.split(".")
+            payload = json.loads(self.response(symbol, int(market)))
+            payload["data"]["trends"].append(
+                "2026-08-28 15:00,10.3,10.4,10.4,10.3,300,3000,10.35"
+            )
+            return json.dumps(payload).encode("utf-8")
+
+        result = Trends2QuoteCollector(
+            transport=transport,
+            now=lambda: datetime.fromisoformat("2026-08-28T15:05:00+08:00"),
+        ).collect((WatchItem("510300", "沪深300ETF", 0.002),))
+        quote = result["quotes"][0]
+        assert quote["completed_minute_count"] == 2
+        assert quote["close_snapshot"]["timestamp"] == "2026-08-28T15:00:00+08:00"
+
+    def test_retries_only_failed_symbol_on_fallback_after_primary_transport_failure(self) -> None:
         requests = []
 
         def transport(request: Request, timeout: float) -> bytes:
@@ -216,14 +237,13 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
             now=lambda: datetime.fromisoformat(NOW),
         ).collect(watchlist)
 
-        self.assertEqual(payload["source"]["endpoint"], TRENDS2_FALLBACK_ENDPOINT)
-        self.assertTrue(all(url.startswith(TRENDS2_FALLBACK_ENDPOINT) for url in payload["source"]["urls"]))
+        self.assertIn("push2his.eastmoney.com", payload["quotes"][0]["source"])
+        self.assertIn("push2delay.eastmoney.com", payload["quotes"][1]["source"])
         self.assertEqual(
             [(urlsplit(url).netloc, parse_qs(urlsplit(url).query)["secid"][0]) for url in requests],
             [
                 (urlsplit(TRENDS2_ENDPOINT).netloc, "1.510300"),
                 (urlsplit(TRENDS2_ENDPOINT).netloc, "0.159915"),
-                (urlsplit(TRENDS2_FALLBACK_ENDPOINT).netloc, "1.510300"),
                 (urlsplit(TRENDS2_FALLBACK_ENDPOINT).netloc, "0.159915"),
             ],
         )
@@ -347,8 +367,14 @@ class Trends2QuoteCollectorTests(unittest.TestCase):
         ).collect(watchlist)
         self.assertEqual(requested, [
             "510300", "510500", "563360", "512100", "159915", "588000", "515180",
+            "159307", "159792", "513050", "159781", "159201", "159263", "159259",
+            "159209", "512480", "515880", "159995", "562500", "512880", "516160",
+            "512170", "515120", "159928", "512400", "159819", "159516", "159611",
+            "159206", "512070", "159326",
+            "159967", "588020", "512010",
         ])
-        self.assertEqual(len(payload["quotes"]), 7)
+        self.assertEqual(len(payload["quotes"]), 34)
+        self.assertEqual([item["symbol"] for item in payload["quotes"]], requested)
 
     def test_rejects_incomplete_response_and_preserves_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -415,6 +441,36 @@ class QuoteHistoryStoreTests(unittest.TestCase):
 
 
 class WatchlistTests(unittest.TestCase):
+    def test_repository_enables_159781_with_default_grid_and_no_position_overrides(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "watchlist.json"
+        items = {item.symbol: item for item in load_watchlist(path)}
+
+        self.assertIn("159781", items)
+        item = items["159781"]
+        self.assertTrue(item.enabled)
+        self.assertEqual(item.grid_width_pct, 0.002)
+        self.assertIsNone(item.base_shares)
+        self.assertIsNone(item.t_capacity_shares)
+        self.assertIsNone(item.base_notional_cny)
+        self.assertIsNone(item.t_capacity_ratio)
+
+    def test_t_watchlist_drops_relocation_labels_and_enables_growth_etfs(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "watchlist.json"
+        items = {item.symbol: item for item in load_watchlist(path)}
+
+        self.assertEqual(items["159915"].name, "创业板")
+        self.assertEqual(items["588000"].name, "科创50")
+        self.assertEqual(items["515180"].name, "中证红利")
+        self.assertNotIn("迁出观察", items["159915"].name)
+        self.assertNotIn("迁出观察", items["588000"].name)
+        self.assertNotIn("待迁出", items["515180"].name)
+        for symbol, name in (("159967", "创成长"), ("588020", "科创成长")):
+            with self.subTest(symbol=symbol):
+                self.assertIn(symbol, items)
+                self.assertEqual(items[symbol].name, name)
+                self.assertTrue(items[symbol].enabled)
+                self.assertEqual(items[symbol].grid_width_pct, 0.002)
+
     def test_loads_configurable_grid_width_and_default(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "watchlist.json"
@@ -461,7 +517,7 @@ class AlertHistoryStoreTests(unittest.TestCase):
             })
             self.assertEqual(
                 [item["action"] for item in store.query()],
-                ["BUY_CANDIDATE"],
+                ["DEVIATION_OBSERVE", "BUY_CANDIDATE"],
             )
 
     def test_preexisting_legacy_records_are_filtered_without_rewriting_canonical(self) -> None:
@@ -497,13 +553,43 @@ class AlertHistoryStoreTests(unittest.TestCase):
 
             self.assertEqual(
                 [item["symbol"] for item in store.query()],
-                ["current-sell", "current-buy"],
+                ["current-sell", "current-buy", "deviation"],
             )
             self.assertEqual(
                 [item["symbol"] for item in store._read_path(daily)],
-                ["current-buy", "current-sell"],
+                ["deviation", "current-buy", "current-sell"],
             )
             self.assertEqual(path.read_bytes(), canonical_before)
+
+    def test_records_first_deviation_observe_once_per_symbol_and_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = AlertHistoryStore(Path(temporary) / "alerts.jsonl")
+            store.append({
+                "generated_at": NOW,
+                "items": [{
+                    "symbol": "510300", "timestamp": NOW,
+                    "action": "DEVIATION_OBSERVE", "strategy_version": "T_V3",
+                }],
+            })
+            store.append({
+                "generated_at": "2026-08-28T10:02:00+08:00",
+                "items": [{
+                    "symbol": "510300",
+                    "timestamp": "2026-08-28T10:02:00+08:00",
+                    "action": "DEVIATION_OBSERVE", "strategy_version": "T_V3",
+                }],
+            })
+            store.append({
+                "generated_at": NOW,
+                "items": [{
+                    "symbol": "510500", "timestamp": NOW,
+                    "action": "DEVIATION_OBSERVE", "strategy_version": "T_V3",
+                }],
+            })
+            self.assertEqual(
+                [(item["symbol"], item["action"]) for item in store.query()],
+                [("510500", "DEVIATION_OBSERVE"), ("510300", "DEVIATION_OBSERVE")],
+            )
 
 
 class MonitorSignalCompatibilityTests(unittest.TestCase):
@@ -624,8 +710,8 @@ class TMonitorEngineTests(unittest.TestCase):
             live_quote.observed_at,
         ).signals[0]
         self.assertEqual(signal.action, "BUY_CANDIDATE")
-        self.assertEqual(signal.price, market_quote.points[-1].price)
-        self.assertEqual(signal.timestamp, market_quote.points[-1].timestamp)
+        self.assertEqual(signal.price, in_progress.price)
+        self.assertEqual(signal.timestamp, in_progress.timestamp)
         self.assertEqual(signal.regime_state, "RANGE")
 
     def test_generated_at_takes_priority_when_classifying_health(self) -> None:
@@ -861,7 +947,34 @@ class EtfMetadataTests(unittest.TestCase):
         self.assertEqual(metadata["510300"].index.code, "000300")
         self.assertEqual(metadata["159915"].index.code, "399006")
         self.assertEqual(metadata["515180"].index.code, "000922")
-        self.assertEqual(len(metadata), 7)
+        self.assertEqual(metadata["159792"].index.code, "931637")
+        self.assertEqual(metadata["513050"].index.code, "H30533")
+        self.assertEqual(metadata["159201"].index.code, "980092")
+        self.assertEqual(metadata["159263"].index.code, "980081")
+        self.assertEqual(metadata["159259"].index.code, "980080")
+        self.assertEqual(metadata["159967"].index.code, "399296")
+        self.assertEqual(metadata["588020"].index.code, "000690")
+        self.assertGreaterEqual(len(metadata), 16)
+
+    def test_repository_recognizes_159781_as_efund_star_chinext_50_etf(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "etf_metadata.json"
+        items = EtfMetadataStore(path).load()
+
+        self.assertIn("159781", items)
+        item = items["159781"]
+        self.assertEqual(item.name, "易方达中证科创创业50ETF")
+        self.assertEqual(item.index.to_dict(), {
+            "code": "931643",
+            "name": "中证科创创业50指数",
+            "provider": "中证指数",
+        })
+        self.assertEqual(item.trading.exchange, "SZSE")
+        self.assertEqual(item.trading.asset_type, "DOMESTIC_EQUITY_ETF")
+        self.assertFalse(item.trading.intraday_turnaround)
+        self.assertEqual(item.trading.sellable_delay_days, 1)
+        self.assertEqual(item.trading.lot_size, 100)
+        self.assertEqual(item.trading.price_tick, 0.001)
+        self.assertEqual(item.trading.price_limit_pct, 0.20)
 
     def test_initial_mapping_contains_exact_trading_attributes(self) -> None:
         path = Path(__file__).resolve().parents[1] / "data" / "monitor" / "etf_metadata.json"
@@ -874,8 +987,28 @@ class EtfMetadataTests(unittest.TestCase):
             "159915": ("SZSE", 0.20),
             "588000": ("SSE", 0.20),
             "515180": ("SSE", 0.10),
+            "159792": ("SZSE", 0.10),
+            "513050": ("SSE", 0.10),
+            "159781": ("SZSE", 0.20),
+            "159201": ("SZSE", 0.10),
+            "159263": ("SZSE", 0.10),
+            "159259": ("SZSE", 0.10),
+            "159967": ("SZSE", 0.20),
+            "588020": ("SSE", 0.20),
         }
-        self.assertEqual(set(items), set(expected))
+        cross_border_attributes = {
+            "159792": {
+                "asset_type": "CROSS_BORDER_EQUITY_ETF",
+                "intraday_turnaround": True,
+                "sellable_delay_days": 0,
+            },
+            "513050": {
+                "asset_type": "QDII_EQUITY_ETF",
+                "intraday_turnaround": True,
+                "sellable_delay_days": 0,
+            },
+        }
+        self.assertLessEqual(set(expected), set(items))
         for symbol, (exchange, price_limit_pct) in expected.items():
             trading = {
                 "exchange": exchange,
@@ -887,6 +1020,7 @@ class EtfMetadataTests(unittest.TestCase):
                 "price_limit_pct": price_limit_pct,
                 "volume_unit_shares": 100,
             }
+            trading.update(cross_border_attributes.get(symbol, {}))
             self.assertEqual(items[symbol].trading.to_dict(), trading)
             self.assertEqual(items[symbol].to_dict()["trading"], trading)
 
@@ -953,7 +1087,7 @@ class MonitorWebTests(unittest.TestCase):
         self.assertIn('href="/swing"', PAGE)
         self.assertIn("本地做T监控", PAGE)
         self.assertIn("候选观察 · 增量行情 · 只读交易", PAGE)
-        self.assertIn('nav[aria-label="监控模式"]{display:flex;gap:8px', PAGE)
+        self.assertIn('nav[aria-label="监控模式"]{display:flex;flex-wrap:wrap;gap:8px', PAGE)
         self.assertIn('nav[aria-label="监控模式"] a[aria-current=page]', PAGE)
         self.assertNotIn('</a> · <a href="/swing">', PAGE)
 
@@ -1151,8 +1285,8 @@ console.log(JSON.stringify([
             "candidateAlert": "",
         })
         self.assertEqual(states[2], states[0])
-        self.assertIn("marketPresentation(item,Date.now(),feedState)", PAGE)
-        self.assertIn("marketPresentation(item,refreshedAt.getTime(),feedState)", PAGE)
+        self.assertIn("currentMarketPresentation(item,Date.now(),feedState)", PAGE)
+        self.assertIn("currentMarketPresentation(item,refreshedAt.getTime(),feedState)", PAGE)
 
     def test_page_feed_recovery_requires_summary_and_quotes_or_successful_poll(self) -> None:
         transitions = run_page_helpers(r"""
@@ -1205,6 +1339,7 @@ console.log(JSON.stringify({failedState,quotesOnly,summarized,sseRecovered,pollR
         self.assertIn("source.addEventListener('summary'", PAGE)
         self.assertIn("source.addEventListener('delta'", PAGE)
         self.assertIn("source.addEventListener('reset'", PAGE)
+        self.assertIn("震荡两格 0.40%", PAGE)
         self.assertIn("三格 0.60%", PAGE)
         self.assertIn("五格 1.00%", PAGE)
 

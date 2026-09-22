@@ -1417,6 +1417,8 @@ with _SiblingFileLock(history, shared=False):
             alias.symlink_to(self.path.name)
         except OSError as error:
             self.skipTest(f"symlinks unavailable: {error}")
+        if not alias.is_symlink() or not alias.exists():
+            self.skipTest("symlink creation reported success but produced no usable link")
 
         alias_store = DailyHistoryStore(alias, self.metadata, ())
         self.assertEqual(alias_store.path, self.path.resolve(strict=False))

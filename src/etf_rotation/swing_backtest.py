@@ -1926,10 +1926,16 @@ class SwingBacktester:
             )
         return replace(decision, evidence=evidence)
 
+    def _evaluate_signal(self, bars: Sequence[DailyBar], context: PortfolioContext) -> SwingDecision:
+        """Default V1 path; research subclasses may supply entry decisions."""
+        return evaluate_swing(bars[-strategy_lookback(self.config):], self.config, context)
+
     def run_symbol(
         self,
         bars: Sequence[DailyBar],
         initial_cash: float,
+        *,
+        start_date: date | None = None,
     ) -> SwingBacktestResult:
         cash = _finite(initial_cash, "initial_cash", positive=True)
         try:
@@ -1938,27 +1944,28 @@ class SwingBacktester:
             return self._unavailable_result(error.bars, cash)
         account = BacktestAccount(cash, self.trading, self.config, **self.costs)
         first_execution_index = self.config.minimum_daily_bars
+        if start_date is not None:
+            first_execution_index = next((i for i, bar in enumerate(normalized)
+                if i >= first_execution_index and bar.trading_date >= start_date), len(normalized))
+            if first_execution_index >= len(normalized):
+                raise SwingBacktestError("no executable session on or after start_date")
         first_execution = normalized[first_execution_index]
         account._last_mark_price = normalized[first_execution_index - 1].close
         account._last_adjusted_close = normalized[
             first_execution_index - 1
         ].adjusted_close
         account._last_index = first_execution_index - 1
-        lookback = strategy_lookback(self.config)
         trading_date_indices = {
             bar.trading_date: index for index, bar in enumerate(normalized)
         }
-        for index in range(self.config.minimum_daily_bars - 1, len(normalized) - 1):
+        for index in range(first_execution_index - 1, len(normalized) - 1):
             execution_index = index + 1
             execution_bar = normalized[execution_index]
             context = account.context(
                 next_trading_date=execution_bar.trading_date,
                 execution_index=execution_index,
             )
-            signal_start = max(0, index + 1 - lookback)
-            decision = evaluate_swing(
-                normalized[signal_start: index + 1], self.config, context,
-            )
+            decision = self._evaluate_signal(normalized[:index + 1], context)
             decision = self._restore_full_history_evidence(
                 decision,
                 full_bar_count=index + 1,

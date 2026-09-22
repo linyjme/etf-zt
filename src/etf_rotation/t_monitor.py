@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 import json
 import math
 import os
@@ -22,6 +22,8 @@ from .t_strategy import (
 
 
 _CURRENT_CANDIDATE_ACTIONS = frozenset({"BUY_CANDIDATE", "SELL_CANDIDATE"})
+_WEAK_OBSERVE_ACTIONS = frozenset({"DEVIATION_OBSERVE"})
+_PERSISTED_ACTIONS = _CURRENT_CANDIDATE_ACTIONS | _WEAK_OBSERVE_ACTIONS
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
@@ -31,6 +33,33 @@ def _is_current_candidate(item: object) -> bool:
         and item.get("action") in _CURRENT_CANDIDATE_ACTIONS
         and item.get("strategy_version") == CURRENT_STRATEGY_VERSION
     )
+
+
+def _is_persisted_signal(item: object) -> bool:
+    if not (
+        isinstance(item, dict)
+        and item.get("action") in _PERSISTED_ACTIONS
+        and item.get("strategy_version") == CURRENT_STRATEGY_VERSION
+    ):
+        return False
+    # A deviation observation is useful only when the underlying minute
+    # sample passed validation.  Keeping an observation created from a bad
+    # minute makes the alert history look actionable after the quality lock
+    # has already blocked that symbol.  Older records do not carry health or
+    # blocked-reason fields, so absence remains backward-compatible.
+    if item.get("action") == "DEVIATION_OBSERVE":
+        health_status = item.get("health_status")
+        if health_status is not None and health_status != "REALTIME":
+            return False
+        blocked_reasons = item.get("blocked_reasons")
+        if isinstance(blocked_reasons, (list, tuple, set)) and "MARKET_DATA_INVALID" in blocked_reasons:
+            return False
+    return True
+
+
+def _observe_day_key(item: Mapping[str, Any]) -> tuple[object, str]:
+    trading_date = str(item.get("trading_date") or item.get("timestamp") or "")[:10]
+    return (item.get("symbol"), trading_date)
 
 
 class QuoteHistoryStore:
@@ -82,20 +111,31 @@ class AlertHistoryStore:
         with self._lock:
             existing = self._read()
             self._write_daily(existing)
-            keys = {(item.get("symbol"), item.get("timestamp"), item.get("action"), item.get("strategy_version")) for item in existing}
+            keys = {(item.get("symbol"), item.get("timestamp"), item.get("action"), item.get("strategy_version")) for item in existing if _is_current_candidate(item)}
+            observe_days = {
+                _observe_day_key(item)
+                for item in existing
+                if isinstance(item, dict) and item.get("action") in _WEAK_OBSERVE_ACTIONS
+            }
             pending = []
             for item in records:
-                if not _is_current_candidate(item):
+                if not _is_persisted_signal(item):
                     continue
-                key = (item.get("symbol"), item.get("timestamp"), item.get("action"), item.get("strategy_version"))
-                if key in keys:
-                    continue
+                if item.get("action") in _WEAK_OBSERVE_ACTIONS:
+                    day_key = _observe_day_key(item)
+                    if not day_key[1] or day_key in observe_days:
+                        continue
+                    observe_days.add(day_key)
+                else:
+                    key = (item.get("symbol"), item.get("timestamp"), item.get("action"), item.get("strategy_version"))
+                    if key in keys:
+                        continue
+                    keys.add(key)
                 event = dict(item)
                 event["event_type"] = "MONITOR_SIGNAL"
                 event["recorded_at"] = payload.get("generated_at")
                 event["trading_date"] = str(item.get("timestamp", ""))[:10]
                 pending.append(event)
-                keys.add(key)
             if not pending:
                 return
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,7 +152,7 @@ class AlertHistoryStore:
     def _write_daily(self, records: Sequence[Mapping[str, Any]]) -> None:
         grouped: dict[str, list[Mapping[str, Any]]] = {}
         for item in records:
-            if not _is_current_candidate(item):
+            if not _is_persisted_signal(item):
                 continue
             trading_date = str(item.get("trading_date") or "")
             if trading_date:
@@ -140,7 +180,7 @@ class AlertHistoryStore:
                 for line in path.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
-            return [item for item in records if _is_current_candidate(item)]
+            return [item for item in records if _is_persisted_signal(item)]
         except (OSError, json.JSONDecodeError, TypeError) as error:
             raise MarketDataError(f"提示历史读取失败: {error}") from error
 
@@ -517,6 +557,7 @@ class TMonitorEngine:
             if item_health is None:
                 item_health = self.health_classifier.classify(
                     current, completed[-1].timestamp if completed else None, None,
+                    completed_minute=True,
                 )
             regime = RegimeDetector().evaluate(completed)
             decision_quote = self._decision_quote(quote, completed)
@@ -535,7 +576,10 @@ class TMonitorEngine:
                 strategy_quote, regime.state, item_health, item.grid_width_pct,
             ))
 
-            latest = completed[-1] if completed else None
+            # Decisions and health use completed minutes; displayed market data
+            # uses the newest observed minute so the monitor is not one minute late.
+            latest = quote.points[-1] if quote.points else None
+            latest_completed = completed[-1] if completed else None
             market_values_valid = (
                 latest is not None
                 and self._finite_positive(latest.price)
@@ -703,11 +747,64 @@ class TMonitorEngine:
         return round(latest / (sum(volumes) / len(volumes)), 6)
 
 def snapshot_to_dict(snapshot: MonitorSnapshot) -> dict[str, Any]:
+    def completed_points(quote: Quote) -> list[QuotePoint]:
+        return [
+            point for point in quote.points
+            if quote.observed_at >= point.timestamp + timedelta(minutes=1)
+            and point.timestamp.astimezone(_SHANGHAI).time().replace(tzinfo=None)
+            != time(15, 0)
+        ]
+
+    def close_snapshot(quote: Quote) -> dict[str, Any] | None:
+        for point in reversed(quote.points):
+            if point.timestamp.astimezone(_SHANGHAI).time().replace(tzinfo=None) == time(15, 0):
+                return {
+                    "schema_version": 3,
+                    "trading_date": point.timestamp.astimezone(_SHANGHAI).date().isoformat(),
+                    "timestamp": point.timestamp.astimezone(_SHANGHAI).isoformat(),
+                    "observed_at": quote.observed_at.astimezone(_SHANGHAI).isoformat(),
+                    "is_close_snapshot": True,
+                    "source": quote.source,
+                    "previous_close": quote.previous_close,
+                    "price": point.price,
+                    "average_price": point.average_price,
+                    "open": point.open,
+                    "high": point.high,
+                    "low": point.low,
+                    "volume": point.volume,
+                    "amount": point.amount,
+                }
+        return None
+
+    expected_symbols = [signal.symbol for signal in snapshot.signals]
+    received_symbols = sorted(
+        symbol for symbol in expected_symbols if symbol in snapshot.quotes
+    )
+    completed_counts = {
+        symbol: len(completed_points(snapshot.quotes[symbol]))
+        for symbol in received_symbols
+    }
+    close_symbols = [
+        symbol for symbol in received_symbols
+        if close_snapshot(snapshot.quotes[symbol]) is not None
+    ]
     return {
         "generated_at": snapshot.generated_at.isoformat(),
         "mode": "MONITOR_ONLY",
         "auto_trade": False,
         "errors": list(snapshot.errors),
+        "intraday_coverage": {
+            "expected_symbols": expected_symbols,
+            "received_symbols": received_symbols,
+            "missing_symbols": [
+                symbol for symbol in expected_symbols if symbol not in snapshot.quotes
+            ],
+            "coverage_pct": round(
+                len(received_symbols) / len(expected_symbols) * 100.0, 2
+            ) if expected_symbols else 0.0,
+            "completed_minute_counts": completed_counts,
+            "close_snapshot_symbols": close_symbols,
+        },
         "items": [
             {
                 "symbol": signal.symbol,
@@ -726,6 +823,21 @@ def snapshot_to_dict(snapshot: MonitorSnapshot) -> dict[str, Any]:
                 "previous_close_distance_grids": signal.previous_close_distance_grids,
                 "fast_rise_grids": signal.fast_rise_grids,
                 "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
+                "timestamp_basis": (
+                    "CLOSE_SNAPSHOT"
+                    if signal.symbol in snapshot.quotes
+                    and snapshot.quotes[signal.symbol].points
+                    and snapshot.quotes[signal.symbol].points[-1].timestamp.astimezone(_SHANGHAI).time().replace(tzinfo=None) == time(15, 0)
+                    else "MINUTE_START"
+                ),
+                "completed_minute_count": (
+                    len(completed_points(snapshot.quotes[signal.symbol]))
+                    if signal.symbol in snapshot.quotes else 0
+                ),
+                "close_snapshot": (
+                    close_snapshot(snapshot.quotes[signal.symbol])
+                    if signal.symbol in snapshot.quotes else None
+                ),
                 "health_status": signal.health_status,
                 "health_reason": signal.health_reason,
                 "expected_gross_edge_pct": signal.expected_gross_edge_pct,
@@ -772,9 +884,7 @@ def snapshot_to_dict(snapshot: MonitorSnapshot) -> dict[str, Any]:
                         "volume": point.volume,
                         "amount": point.amount,
                     }
-                    for point in snapshot.quotes[signal.symbol].points
-                    if snapshot.quotes[signal.symbol].observed_at
-                    >= point.timestamp + timedelta(minutes=1)
+                    for point in completed_points(snapshot.quotes[signal.symbol])
                 ] if signal.symbol in snapshot.quotes else [],
             }
             for signal in snapshot.signals

@@ -55,6 +55,13 @@ def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values) if values else math.nan
 
 
+def _stddev(values: Sequence[float]) -> float:
+    if not values:
+        return math.nan
+    average = _mean(values)
+    return math.sqrt(_mean([(value - average) ** 2 for value in values]))
+
+
 def _latest_average(values: Sequence[float], period: int) -> float | None:
     if len(values) < period:
         return None
@@ -104,6 +111,34 @@ def _none_sections() -> dict[str, dict[str, None]]:
         "kdj": {"k": None, "d": None, "j": None},
         "rsi": {"rsi14": None},
         "moving_averages": {"ma5": None, "ma10": None, "ma20": None, "ma60": None},
+        "bias20": {"value": None},
+        "bollinger": {"middle": None, "upper": None, "lower": None, "stddev": None},
+        "volume": {"ma20": None, "ratio20": None, "contraction": None},
+    }
+
+
+def _weekly_context(
+    bars: Sequence[DailyBar], closes: Sequence[float],
+) -> dict[str, object]:
+    weekly: list[tuple[date, float]] = []
+    for bar, close in zip(bars, closes):
+        week = bar.trading_date.isocalendar()
+        key = (week.year, week.week)
+        if weekly and weekly[-1][0].isocalendar()[:2] == key:
+            weekly[-1] = (bar.trading_date, close)
+        else:
+            weekly.append((bar.trading_date, close))
+    values = [value for _, value in weekly]
+    status = "DATA_UNAVAILABLE" if not values else (
+        "READY" if len(values) >= 20 else "WARMUP"
+    )
+    return {
+        "status": status,
+        "bar_count": len(values),
+        "close": values[-1] if values else None,
+        "ma10": _latest_average(values, 10),
+        "ma20": _latest_average(values, 20),
+        "as_of_trading_date": weekly[-1][0].isoformat() if weekly else None,
     }
 
 
@@ -184,6 +219,31 @@ def calculate_indicator_snapshot(
             "ma20": _latest_average(closes, 20),
             "ma60": _latest_average(closes, 60),
         }
+        ma20 = sections["moving_averages"]["ma20"]
+        if ma20 is not None:
+            sections["bias20"] = {"value": (closes[-1] / ma20 - 1.0) * 100.0}
+        window = closes[-20:]
+        middle = _mean(window) if len(window) == 20 else None
+        stddev = _stddev(window) if middle is not None else None
+        sections["bollinger"] = {
+            "middle": middle,
+            "upper": middle + 2.0 * stddev
+            if middle is not None and stddev is not None else None,
+            "lower": middle - 2.0 * stddev
+            if middle is not None and stddev is not None else None,
+            "stddev": stddev,
+        }
+        volumes = [float(bar.volume) for bar in materialized]
+        volume_ma20 = _latest_average(volumes, 20)
+        sections["volume"] = {
+            "ma20": volume_ma20,
+            "ratio20": volumes[-1] / volume_ma20
+            if volume_ma20 is not None and volume_ma20 > 0.0 else None,
+            "contraction": (
+                volumes[-1] < volume_ma20
+                if volume_ma20 is not None and volume_ma20 > 0.0 else None
+            ),
+        }
 
     return {
         "schema_version": INDICATOR_SCHEMA_VERSION,
@@ -193,6 +253,7 @@ def calculate_indicator_snapshot(
         "minimum_bars": minimum_bars,
         "status": status,
         "reason": reason,
+        "weekly": _weekly_context(materialized, closes),
         **sections,
     }
 
@@ -268,17 +329,25 @@ def _histogram_rising_days(histograms: Sequence[float], index: int) -> int:
 def _kdj_cross_age(
     highs: Sequence[float], lows: Sequence[float], closes: Sequence[float],
 ) -> int | None:
-    values: list[tuple[float, float] | None] = []
-    for index in range(len(closes)):
-        current = _kdj(highs[:index + 1], lows[:index + 1], closes[:index + 1])
-        values.append(
-            None if current is None else (current["k"], current["d"])
-        )
+    if len(closes) < 9:
+        return None
+    # Build the same 9/3/3 stream once.  Re-slicing and re-running _kdj for
+    # every prefix made a three-point context quadratic in history length.
+    values: list[tuple[float, float]] = []
+    k = 50.0
+    d = 50.0
+    for index, close in enumerate(closes):
+        start = max(0, index - 8)
+        window_high = max(highs[start:index + 1])
+        window_low = min(lows[start:index + 1])
+        span = window_high - window_low
+        rsv = 50.0 if span <= 0.0 else (close - window_low) / span * 100.0
+        k = (2.0 * k + rsv) / 3.0
+        d = (2.0 * d + k) / 3.0
+        values.append((k, d))
     for index in range(len(values) - 1, 0, -1):
         current = values[index]
         previous = values[index - 1]
-        if current is None or previous is None:
-            continue
         prior_diff = previous[0] - previous[1]
         current_diff = current[0] - current[1]
         if prior_diff <= 0.0 < current_diff or prior_diff >= 0.0 > current_diff:
@@ -380,6 +449,10 @@ def calculate_indicator_context(
             "kdj": kdj,
             "rsi": rsi_section,
             "moving_averages": ma,
+            "bias20": prefix_snapshot["bias20"],
+            "bollinger": prefix_snapshot["bollinger"],
+            "volume": prefix_snapshot["volume"],
+            "weekly": prefix_snapshot["weekly"],
             "macd_cross": cross,
             "macd_cross_age": cross_age,
             "macd_histogram_rising_days": _histogram_rising_days(histograms, index),

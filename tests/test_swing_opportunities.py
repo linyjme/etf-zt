@@ -70,7 +70,15 @@ class SwingOpportunityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             update_opportunity(previous=None, observation=unfinished)
 
+    def test_expiry_counts_completed_trading_sessions_not_weekdays(self):
+        event = update_opportunity(
+            previous=None,
+            observation=observation("2026-09-10", pullback=True),
+            recovery_window_sessions=2,
+            closed_dates={date(2026, 9, 11)},
+        )
+        self.assertEqual(event.expiry_date, date(2026, 9, 15))
+
 
 if __name__ == "__main__":
     unittest.main()
-

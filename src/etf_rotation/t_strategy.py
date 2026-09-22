@@ -9,6 +9,9 @@ from .constants import BUY_COMMISSION_RATE, SELL_COMMISSION_RATE, SLIPPAGE_RATE
 
 CURRENT_STRATEGY_VERSION = "T_V3"
 _NARROWING_ABS_TOLERANCE = 1e-12
+_RANGE_DEVIATION_GRIDS = 2
+_OBSERVE_DEVIATION_GRIDS = 3
+_PREVIOUS_CLOSE_GRIDS = 5
 
 if TYPE_CHECKING:
     from .market_data import MarketHealth
@@ -68,9 +71,13 @@ class TStrategy:
         close_grids = abs(latest.price - context.quote.previous_close) / grid_size
         gross = abs(latest.price - latest.average_price) / latest.price
         reasons = base_reasons
-        if deviation_grids + 1e-9 < 3:
-            reasons.append("DEVIATION_BELOW_3_GRIDS")
-        if close_grids + 1e-9 < 5:
+        is_range = context.regime_state == "RANGE"
+        min_grids = _RANGE_DEVIATION_GRIDS if is_range else _OBSERVE_DEVIATION_GRIDS
+        if deviation_grids + 1e-9 < min_grids:
+            reasons.append(
+                "DEVIATION_BELOW_2_GRIDS" if is_range else "DEVIATION_BELOW_3_GRIDS",
+            )
+        if not is_range and close_grids + 1e-9 < _PREVIOUS_CLOSE_GRIDS:
             reasons.append("PREVIOUS_CLOSE_DISTANCE_BELOW_5_GRIDS")
         if (
             current_deviation * previous_deviation <= 0
@@ -85,7 +92,9 @@ class TStrategy:
 
         net = gross - cost
         if reasons:
-            action = "DEVIATION_OBSERVE" if deviation_grids + 1e-9 >= 3 else "WAIT"
+            action = (
+                "DEVIATION_OBSERVE" if deviation_grids + 1e-9 >= min_grids else "WAIT"
+            )
             label = "偏离观察" if action == "DEVIATION_OBSERVE" else "等待"
             return CandidateDecision(action, label, gross, cost, net, tuple(reasons))
 

@@ -701,6 +701,8 @@ print(ledger.record_trade(trade, 'subprocess-same-key').event_id, flush=True)
         except OSError:
             pass
         else:
+            if not symlink.is_symlink() or not symlink.exists():
+                return
             with self.assertRaisesRegex(PortfolioLedgerError, "alias"):
                 self.ledger.load_or_rebuild_projection(
                     symlink, self.wednesday.date(), {},

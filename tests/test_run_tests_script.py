@@ -274,11 +274,76 @@ class RunTestsScriptTests(unittest.TestCase):
         self.assertNotIn("-3.14", script)
         self.assertIn("sys.version_info < (3, 12)", script)
         self.assertIn("Python 3.12 or newer runtime not found", script)
+        self.assertIn("$env:VIRTUAL_ENV", script)
+        self.assertIn(".workbuddy\\binaries\\python\\envs\\default\\Scripts\\python.exe", script)
+        self.assertIn("[IO.Path]::IsPathRooted($candidate.Command)", script)
+        self.assertIn("function Test-CompatiblePythonRuntime", script)
+        self.assertIn("System.Diagnostics.ProcessStartInfo", script)
         self.assertIn("if ($process.HasExited)", script)
         self.assertLess(
             script.index("if ($process.HasExited)"),
             script.index("Write-MonitorPidSafely -Process $process"),
         )
+
+    def test_start_monitor_ignores_stale_pid_and_rejects_foreign_listener(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1] / "scripts" / "start-monitor.ps1"
+        ).read_text(encoding="utf-8")
+        stale_check = "if (Test-Path -LiteralPath $pidPath -PathType Leaf)"
+        listener_check = "$listeners = @(Get-NetTCPConnection -LocalPort 8765"
+        runtime_probe = "$probeMarker = \"__ETF_ROTATION_MONITOR_PYTHON_312_"
+        self.assertIn(stale_check, script)
+        self.assertIn("Ignoring stale monitor PID record", script)
+        self.assertNotIn("Remove-Item -LiteralPath $pidPath", script)
+        self.assertIn("Monitor service is already running", script)
+        self.assertIn("Port 8765 is already in use by another process", script)
+        self.assertLess(script.index(stale_check), script.index(runtime_probe))
+        self.assertLess(script.index(listener_check), script.index(runtime_probe))
+
+    def test_run_tests_prefers_virtual_and_workbuddy_python_candidates(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1] / "scripts" / "run-tests.ps1"
+        ).read_text(encoding="utf-8")
+        virtual_candidate = "Command = Join-Path $env:VIRTUAL_ENV 'Scripts\\python.exe'"
+        workbuddy_candidate = "Command = Join-Path $HOME '.workbuddy\\binaries\\python\\envs\\default\\Scripts\\python.exe'"
+        path_candidate = "[pscustomobject]@{ Command = 'python'; Arguments = @() }"
+        self.assertIn(virtual_candidate, script)
+        self.assertIn(workbuddy_candidate, script)
+        self.assertIn("[IO.Path]::IsPathRooted($candidate.Command)", script)
+        self.assertIn("function Test-CompatiblePythonRuntime", script)
+        self.assertIn("System.Diagnostics.ProcessStartInfo", script)
+        self.assertLess(script.index(virtual_candidate), script.index(workbuddy_candidate))
+        self.assertLess(script.index(workbuddy_candidate), script.index(path_candidate))
+
+    def test_runtime_probe_accepts_real_python_and_rejects_wrong_marker(self) -> None:
+        import base64
+
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        self.assertIsNotNone(powershell)
+        root = Path(__file__).resolve().parents[1]
+        for filename in ("run-tests.ps1", "start-monitor.ps1"):
+            with self.subTest(script=filename):
+                source = str(root / "scripts" / filename).replace("'", "''")
+                executable = str(Path(sys.executable).resolve()).replace("'", "''")
+                command = (
+                    "$ErrorActionPreference='Stop'; $tokens=$null; $errors=$null; "
+                    f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{source}',[ref]$tokens,[ref]$errors); "
+                    "if ($errors.Count -gt 0) { throw 'parse error' }; "
+                    "$fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-CompatiblePythonRuntime'},$true); "
+                    ". ([scriptblock]::Create($fn.Extent.Text)); "
+                    f"$exe='{executable}'; "
+                    "$code=\"import sys; print('probe marker with spaces')\"; "
+                    "if (-not (Test-CompatiblePythonRuntime -Command $exe -ProbeCode $code -ExpectedOutput 'probe marker with spaces')) { throw 'real runtime rejected' }; "
+                    "if (Test-CompatiblePythonRuntime -Command $exe -ProbeCode $code -ExpectedOutput 'wrong marker') { throw 'wrong marker accepted' }; "
+                    "if (Test-CompatiblePythonRuntime -Command $exe -ProbeCode 'import sys; sys.exit(1)' -ExpectedOutput 'anything') { throw 'failure accepted' }"
+                )
+                encoded = base64.b64encode(command.encode("utf-16le")).decode("ascii")
+                result = subprocess.run(
+                    [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=20, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_rejects_noop_application_as_python_runtime(self) -> None:
         powershell = shutil.which("pwsh") or shutil.which("powershell")
@@ -309,15 +374,20 @@ class RunTestsScriptTests(unittest.TestCase):
             noop_application.write_text("@exit /b 0\n", encoding="ascii")
             environment = os.environ.copy()
             environment["PATH"] = str(fake_bin)
+            environment["HOME"] = str(root)
+            environment["USERPROFILE"] = str(root)
+            environment.pop("VIRTUAL_ENV", None)
             result = subprocess.run(
                 [powershell_path, "-NoProfile", "-NonInteractive", "-File", script],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
                 check=False,
                 env=environment,
             )
-            output = result.stdout + result.stderr
+            output = (result.stdout or "") + (result.stderr or "")
             self.assertNotEqual(result.returncode, 0, output)
             self.assertIn("Python 3.12 or newer runtime not found", output)
 

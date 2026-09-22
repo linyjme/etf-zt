@@ -4,6 +4,8 @@ import unittest
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from dataclasses import replace
+from unittest.mock import patch
 
 from etf_rotation.swing_shadow import ShadowVariant
 from etf_rotation.swing_shadow_backtest import (
@@ -25,6 +27,94 @@ class SwingShadowBacktestTests(unittest.TestCase):
         }, config)
         self.assertIsNotNone(result["decision"]["evidence"].get("ma20_slope_pct_10d"))
 
+    def test_shadow_candidate_can_enter_without_v1_technical_candidate(self):
+        from types import SimpleNamespace
+        from etf_rotation import swing_shadow_backtest as module
+        from etf_rotation.swing_strategy import PortfolioContext, SwingState
+        from etf_rotation.swing_shadow import ShadowState, load_shadow_config
+        from etf_rotation.swing_config import load_strategy
+        from etf_rotation.etf_metadata import EtfMetadataStore
+        bars = swing_strategy_bars(140, pattern="rising", raw_scale=0.03)
+        config = load_strategy(module.ROOT / "data/swing/strategy.json")
+        context = PortfolioContext.empty(100000, next_trading_date=bars[-1].trading_date.replace(day=bars[-1].trading_date.day + 1))
+        formal = module.evaluate_swing(bars, config, context)
+        self.assertEqual(formal.planned_shares, 0)
+        self.assertTrue(formal.evidence["entry_hard_gates_ok"])
+        runner = module._ResearchRunner(config,
+            EtfMetadataStore(module.ROOT / "data/monitor/etf_metadata.json").load()["510300"].trading,
+            variant=ShadowVariant.V2_B, costs=ExecutionCosts(),
+            shadow_config=load_shadow_config(module.ROOT / "data/swing/shadow_strategy.json"), prepared={})
+        with patch.object(module, "_evaluate_shadow_context", return_value=SimpleNamespace(
+                state=ShadowState.TECHNICAL_CANDIDATE, blocked_reasons=())):
+            decision = runner._evaluate_signal(bars, context)
+        self.assertEqual(decision.state, SwingState.TRIAL_ENTRY_CANDIDATE)
+        self.assertGreater(decision.planned_shares, 0)
+
+    def test_missing_metadata_fails_closed(self):
+        result = replay_variant({"510300": swing_strategy_bars(756)},
+            variant=ShadowVariant.V1, costs=ExecutionCosts(), trading_by_symbol={})
+        self.assertEqual(result.validation_status, "BLOCKED_METADATA")
+        self.assertFalse(result.trades)
+
+    def test_v1_uses_formal_evaluator_and_folds_do_not_cross_their_end(self):
+        from etf_rotation import swing_shadow_backtest as module
+        bars = swing_strategy_bars(756, raw_scale=0.03)
+        with patch.object(module, "evaluate_swing", wraps=module.evaluate_swing) as evaluator:
+            result = replay_variant({"510300": bars}, variant=ShadowVariant.V1, costs=ExecutionCosts())
+        self.assertTrue(evaluator.called)
+        for fold in result.folds:
+            for trade in fold["trades"]:
+                self.assertGreaterEqual(trade["execution_date"], fold["test_start_date"])
+                self.assertLessEqual(trade["execution_date"], fold["test_end_date"])
+                self.assertLess(trade["signal_date"], trade["execution_date"])
+                if trade["side"] == "BUY":
+                    self.assertLessEqual(trade["shares"] * trade["execution_price"], 5000)
+        self.assertFalse(result.performance_claim_allowed)
+
+    def test_end_price_changes_cannot_change_first_test_window(self):
+        bars = swing_strategy_bars(756, raw_scale=0.03)
+        first = replay_variant({"510300": bars}, variant=ShadowVariant.V1, costs=ExecutionCosts())
+        changed_list = list(bars)
+        for index in range(630, len(changed_list)):
+            bar = changed_list[index]
+            scale = 1.001
+            changed_list[index] = replace(bar, close=bar.close * scale,
+                high=bar.high * scale, low=bar.low * scale,
+                adjusted_close=bar.adjusted_close * scale,
+                adjusted_high=bar.adjusted_high * scale,
+                adjusted_low=bar.adjusted_low * scale,
+                previous_close=changed_list[index - 1].close)
+        changed = tuple(changed_list)
+        second = replay_variant({"510300": changed}, variant=ShadowVariant.V1, costs=ExecutionCosts())
+        self.assertEqual(first.folds[0], second.folds[0])
+
+    def test_different_symbol_calendars_cannot_be_aligned_by_row_number(self):
+        first = swing_strategy_bars(756)
+        other = swing_strategy_bars(756, symbol="510500")[1:]
+        result = replay_variant({"510300": first, "510500": other},
+            variant=ShadowVariant.V1, costs=ExecutionCosts())
+        self.assertEqual(len(result.folds), 1)
+
+    def test_execution_costs_model_waives_minimum_commission(self):
+        self.assertEqual(ExecutionCosts().minimum_fee, 0.0)
+
+    def test_replay_exposes_fixed_walk_forward_folds_and_marked_metrics(self):
+        bars = swing_strategy_bars(756)
+        result = replay_variant(
+            {"510300": bars}, variant=ShadowVariant.V1, costs=ExecutionCosts(),
+        )
+        self.assertEqual(len(result.folds), 2)
+        self.assertEqual(result.folds[0]["train_bar_count"], 504)
+        self.assertEqual(result.folds[0]["test_bar_count"], 126)
+        self.assertEqual(
+            result.folds[0]["test_start_date"], bars[504].trading_date.isoformat(),
+        )
+        for key in (
+            "completed_round_trips", "uncompleted_leg_count", "fees",
+            "spread_cost", "slippage", "average_holding_days", "baseline_policy",
+        ):
+            self.assertIn(key, result.metrics)
+
     def test_shadow_replay_uses_next_trading_day_execution(self):
         result = replay_variant(
             {"510300": swing_strategy_bars(700)},
@@ -44,6 +134,8 @@ class SwingShadowBacktestTests(unittest.TestCase):
             {result.execution_assumptions for result in results.values()},
             {results["V1"].execution_assumptions},
         )
+        self.assertIn("HYBRID", results)
+        self.assertFalse(results["HYBRID"].performance_claim_allowed)
 
     def test_short_history_is_inconclusive_not_profitable(self):
         result = replay_variant(
@@ -102,4 +194,3 @@ class SwingShadowBacktestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

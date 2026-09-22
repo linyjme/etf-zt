@@ -1,11 +1,141 @@
 {
   "schema_version": 1,
   "items": [
-    {"symbol": "510300", "enabled": true},
-    {"symbol": "510500", "enabled": true},
-    {"symbol": "563360", "enabled": true},
-    {"symbol": "512100", "enabled": true},
-    {"symbol": "159915", "enabled": true},
-    {"symbol": "588000", "enabled": true}
+    {
+      "symbol": "510300",
+      "enabled": true
+    },
+    {
+      "symbol": "510500",
+      "enabled": true
+    },
+    {
+      "symbol": "563360",
+      "enabled": true
+    },
+    {
+      "symbol": "512100",
+      "enabled": true
+    },
+    {
+      "symbol": "159915",
+      "enabled": true
+    },
+    {
+      "symbol": "588000",
+      "enabled": true
+    },
+    {
+      "symbol": "515180",
+      "enabled": true
+    },
+    {
+      "symbol": "159307",
+      "enabled": true
+    },
+    {
+      "symbol": "159792",
+      "enabled": true
+    },
+    {
+      "symbol": "513050",
+      "enabled": true
+    },
+    {
+      "symbol": "159781",
+      "enabled": true
+    },
+    {
+      "symbol": "159201",
+      "enabled": true
+    },
+    {
+      "symbol": "159263",
+      "enabled": true
+    },
+    {
+      "symbol": "159259",
+      "enabled": true
+    },
+    {
+      "symbol": "159209",
+      "enabled": true
+    },
+    {
+      "symbol": "512480",
+      "enabled": true
+    },
+    {
+      "symbol": "515880",
+      "enabled": true
+    },
+    {
+      "symbol": "159995",
+      "enabled": true
+    },
+    {
+      "symbol": "562500",
+      "enabled": true
+    },
+    {
+      "symbol": "512880",
+      "enabled": true
+    },
+    {
+      "symbol": "516160",
+      "enabled": true
+    },
+    {
+      "symbol": "512170",
+      "enabled": true
+    },
+    {
+      "symbol": "515120",
+      "enabled": true
+    },
+    {
+      "symbol": "159928",
+      "enabled": true
+    },
+    {
+      "symbol": "512400",
+      "enabled": true
+    },
+    {
+      "symbol": "159819",
+      "enabled": true
+    },
+    {
+      "symbol": "159516",
+      "enabled": true
+    },
+    {
+      "symbol": "159611",
+      "enabled": true
+    },
+    {
+      "symbol": "159206",
+      "enabled": true
+    },
+    {
+      "symbol": "512070",
+      "enabled": true
+    },
+    {
+      "symbol": "159967",
+      "enabled": true
+    },
+    {
+      "symbol": "159326",
+      "enabled": true
+    },
+    {
+      "symbol": "588020",
+      "enabled": true
+    },
+    {
+      "symbol": "512010",
+      "enabled": true
+    }
   ]
 }

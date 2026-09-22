@@ -41,6 +41,168 @@
       "name": "中证红利",
       "grid_width_pct": 0.002,
       "enabled": true
+    },
+    {
+      "symbol": "159307",
+      "name": "红利低波100（目标25%）",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159792",
+      "name": "港股通互联网",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "513050",
+      "name": "中概互联",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159781",
+      "name": "科创创业50",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159201",
+      "name": "自由现金流（目标10%）",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159263",
+      "name": "价值100（目标10%）",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159259",
+      "name": "成长100（目标5%）",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159209",
+      "name": "红利质量ETF招商",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "512480",
+      "name": "半导体ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "515880",
+      "name": "通信ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159995",
+      "name": "芯片ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "562500",
+      "name": "机器人ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "512880",
+      "name": "证券ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "516160",
+      "name": "新能源ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "512170",
+      "name": "医疗ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "515120",
+      "name": "创新药ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159928",
+      "name": "消费ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "512400",
+      "name": "有色金属ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159819",
+      "name": "人工智能ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159516",
+      "name": "半导体材料设备ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159611",
+      "name": "电力ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159206",
+      "name": "卫星通信ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "512070",
+      "name": "非银ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159326",
+      "name": "电网设备ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "159967",
+      "name": "创成长",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "588020",
+      "name": "科创成长",
+      "grid_width_pct": 0.002,
+      "enabled": true
+    },
+    {
+      "symbol": "512010",
+      "name": "医药ETF",
+      "grid_width_pct": 0.002,
+      "enabled": true
     }
   ]
 }
