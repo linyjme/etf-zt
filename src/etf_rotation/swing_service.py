@@ -94,16 +94,25 @@ from .swing_strategy import (
     evaluate_swing,
 )
 from .swing_v11 import (
+    V11_F2_CONSECUTIVE_LOSSES,
     V11Context,
+    V11Position,
     calculate_relative_strength_20,
     calculate_v11_environment,
     calculate_v11_indicators,
     classify_v11_environment,
     evaluate_v11,
+    evaluate_v11_position,
     load_v11_config,
     normalize_v11_indicators,
     parse_v11_observed_at,
     validate_v11_metadata,
+)
+from .swing_v11_state import (
+    V11StateStore,
+    advance_environment_state,
+    normalize_environment_state,
+    normalize_position_state,
 )
 
 
@@ -243,6 +252,9 @@ class SwingService:
         self._watchlist: tuple[SwingWatchItem, ...] = ()
         self._strategy: SwingStrategyConfig | None = None
         self._v11_config = None
+        self._v11_state: dict[str, object] = {
+            "positions": {}, "environment": normalize_environment_state(None),
+        }
         self._metadata: Mapping[str, EtfMetadata] = {}
         self._pending_instruments: dict[str, object] = {}
         self._holdings_snapshot: dict[str, object] = {
@@ -278,7 +290,9 @@ class SwingService:
         self._published_alerts_history: dict[str, object] = {}
         self._backtest_registry_lock = threading.Lock()
         self._backtest_key_locks: dict[str, threading.Lock] = {}
-        self._install_published(self._bootstrap(), revision=0)
+        bootstrap = self._bootstrap()
+        self._install_published(bootstrap, revision=0)
+        self._persist_v11_state(bootstrap)
 
     # ---- Public read and lifecycle API ---------------------------------
 
@@ -2605,6 +2619,15 @@ class SwingService:
             self._errors["v11"] = self._safe_error(error)
 
         try:
+            self._v11_state = self._v11_state_store().load()
+            self._errors.pop("v11_state", None)
+        except Exception as error:
+            self._v11_state = {
+                "positions": {}, "environment": normalize_environment_state(None),
+            }
+            self._errors["v11_state"] = self._safe_error(error)
+
+        try:
             self._closed_dates = frozenset(load_closed_dates(self.paths.calendar))
             self._health["calendar"] = "OK"
         except Exception as error:
@@ -3763,6 +3786,13 @@ class SwingService:
         # again here: doing so can make a staged failure consume a new clock
         # value and can produce a partially advanced quality timestamp.
         quality_reference = now if quality_now is None else quality_now
+        v11_shared: dict[str, object] | None = None
+        if self._v11_config is not None:
+            try:
+                v11_shared = self._v11_shared_context()
+            except Exception:
+                # Each symbol recomputes and reports V11_DATA_ERROR itself.
+                v11_shared = None
         items: list[dict[str, object]] = []
         for watch in self._watchlist:
             if not watch.enabled:
@@ -3805,6 +3835,7 @@ class SwingService:
                 previous,
                 data_quality=quality,
                 valuation=valuation,
+                shared=v11_shared,
             )
             items.append({
                 "symbol": watch.symbol,
@@ -3867,6 +3898,7 @@ class SwingService:
         v11_state_counts: dict[str, int] = {}
         v11_candidate_count = 0
         v11_data_unavailable = 0
+        v11_position_actions: dict[str, int] = {}
         for item in items:
             decision = item.get("v11", {}).get("decision") or {}
             state = str(decision.get("state") or item.get("v11", {}).get("status") or "UNKNOWN")
@@ -3875,12 +3907,31 @@ class SwingService:
                 v11_candidate_count += 1
             if state == "DATA_UNAVAILABLE":
                 v11_data_unavailable += 1
+            if state == "POSITION_ACTION":
+                action = str(decision.get("action") or "UNKNOWN")
+                v11_position_actions[action] = v11_position_actions.get(action, 0) + 1
+        v11_environment_history = (
+            dict(v11_shared["environment_history"])
+            if v11_shared is not None
+            and isinstance(v11_shared.get("environment_history"), Mapping)
+            else normalize_environment_state(self._v11_state.get("environment"))
+        )
         v11_summary = {
             "strategy_version": "SWING_V11_SHADOW",
             "enabled_count": len(items),
             "state_counts": v11_state_counts,
             "candidate_count": v11_candidate_count,
+            "position_action_counts": v11_position_actions,
             "data_unavailable_count": v11_data_unavailable,
+            "environment": (
+                dict(v11_shared["environment"])
+                if v11_shared is not None and isinstance(v11_shared.get("environment"), Mapping)
+                else None
+            ),
+            "environment_history": copy.deepcopy(v11_environment_history),
+            "defense_recovery_sessions": (
+                v11_shared.get("defense_recovery_sessions") if v11_shared is not None else None
+            ),
             "executable": False,
         }
         watchlist_view = {
@@ -3962,6 +4013,7 @@ class SwingService:
             "alerts": copy.deepcopy(active_alerts),
             "active_alerts": active_alerts,
             "v11_summary": v11_summary,
+            "v11_environment_history": copy.deepcopy(v11_environment_history),
             "alert_counts": {
                 "active": len(active_alerts),
                 "current": len(alert_items),
@@ -4022,6 +4074,7 @@ class SwingService:
         previous: Mapping[str, object],
         data_quality: Mapping[str, object] | None = None,
         valuation: Mapping[str, object] | None = None,
+        shared: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         quasi_close_available = False
         raw_time = previous.get("current_price_time")
@@ -4076,6 +4129,8 @@ class SwingService:
         try:
             indicators = calculate_v11_indicators(
                 bars, closed_dates=self._closed_dates,
+                pullback_window_max=config.pullback_window_max,
+                box_days=config.box_days,
             )
             indicator = normalize_v11_indicators(indicators)
             latest = bars[-1]
@@ -4090,12 +4145,50 @@ class SwingService:
                     "quasi_close_price": float(previous["current_price"]),
                     "price_source": "QUASI_CLOSE_1445",
                 }
-            environment, environment_bars = self._v11_environment_context()
+            if shared is None:
+                shared = self._v11_shared_context()
+            environment = shared["environment"]
+            environment_bars = shared["environment_bars"]
             rs = None
             if metadata is not None and metadata.environment_index:
-                rs = calculate_relative_strength_20(
-                    bars, environment_bars.get(metadata.environment_index, ()),
+                # Brokerage ETFs may use either index; CSI 300 is the
+                # relative-strength benchmark in that case.
+                rs_index = (
+                    "000300" if metadata.environment_index == "ANY"
+                    else metadata.environment_index
                 )
+                rs = calculate_relative_strength_20(
+                    bars, environment_bars.get(rs_index, ()),
+                )
+            as_of_date = (
+                date.fromisoformat(quasi_close_date)
+                if quasi_close_available and quasi_close_date
+                else latest.trading_date
+            )
+            projection = shared.get("projection")
+            held = shared.get("held") if isinstance(shared.get("held"), Mapping) else {}
+            projected = held.get(symbol)
+            held_groups = shared.get("held_groups")
+            other_groups = tuple(sorted({
+                group for other, group in held_groups.items() if other != symbol
+            })) if isinstance(held_groups, Mapping) else ()
+            ledger_summary = shared.get("ledger_summary")
+            if not isinstance(ledger_summary, Mapping):
+                ledger_summary = {}
+            consecutive_losses = int(ledger_summary.get("consecutive_losses", 0) or 0)
+            last_loss_date = ledger_summary.get("last_loss_date")
+            entry_pause = 0
+            if consecutive_losses >= V11_F2_CONSECUTIVE_LOSSES and isinstance(last_loss_date, date):
+                entry_pause = self._v11_remaining_sessions(
+                    last_loss_date, as_of_date, V11_F2_CONSECUTIVE_LOSSES,
+                )
+            last_stop_date = (
+                self._last_stop_trading_date(symbol, bars)
+                if shared.get("ledger_healthy") else None
+            )
+            reentry_cooldown = self._v11_remaining_sessions(
+                last_stop_date, as_of_date, config.cooldown_sessions,
+            )
             metadata_errors = validate_v11_metadata(
                 {symbol: metadata} if metadata is not None else {}, (symbol,),
             )
@@ -4128,6 +4221,30 @@ class SwingService:
                     float(self._portfolio_projection.cash)
                     if self._portfolio_projection is not None else 0.0
                 ),
+                has_position=projected is not None,
+                sellable_shares=(
+                    int(projected.sellable_shares) if projected is not None else 0
+                ),
+                environment_index=(
+                    metadata.environment_index if metadata is not None else None
+                ),
+                environment_states=dict(environment.get("latest_states") or {}),
+                defense_recovery_sessions=shared.get("defense_recovery_sessions"),
+                open_position_count=len(held),
+                etf_market_value_cny=(
+                    float(projection.etf_market_value)
+                    if isinstance(projection, PortfolioProjection) else 0.0
+                ),
+                symbol_market_value_cny=(
+                    float(projected.market_value) if projected is not None else 0.0
+                ),
+                held_correlation_groups=other_groups,
+                reentry_cooldown_sessions=reentry_cooldown,
+                consecutive_losses=consecutive_losses,
+                entry_pause_sessions=entry_pause,
+                long_holiday_sessions_ahead=self._v11_long_holiday_sessions_ahead(as_of_date),
+                ex_dividend_window=self._v11_ex_dividend_window(metadata, as_of_date),
+                premium_pct=None,
                 indicator=indicator,
                 as_of_kind=str(base["as_of_kind"]),
                 as_of_trading_date=(
@@ -4152,8 +4269,23 @@ class SwingService:
                 "relative_strength_20": rs,
                 "data_quality_reasons": quality_reasons,
                 "valuation": dict(valuation) if isinstance(valuation, Mapping) else {},
+                "ledger_error": shared.get("ledger_error"),
             })
             decision = evaluate_v11(bars, config=config, context=context)
+            raw_scale = latest.close / latest.adjusted_close
+            current_price_adjusted = (
+                float(previous["current_price"]) / raw_scale
+                if quasi_close_available and previous.get("current_price") is not None
+                and math.isfinite(raw_scale) and raw_scale > 0.0
+                else latest.adjusted_close
+            )
+            position_snapshot = self._v11_position_snapshot(
+                symbol, bars, metadata,
+                config=config, context=context, shared=shared,
+                indicator=indicator, previous=previous,
+                current_price_adjusted=current_price_adjusted,
+                as_of=as_of_date,
+            )
             base.update({
                 "status": "AVAILABLE",
                 "data_quality_status": context.data_quality,
@@ -4162,9 +4294,21 @@ class SwingService:
                     else latest.trading_date.isoformat()
                 ),
                 "decision": decision.to_dict(),
+                "entry_decision": decision.to_dict(),
                 "blocked_reasons": list(decision.blocked_reasons),
                 "evidence": dict(decision.evidence),
+                "position_decision": None,
+                "position_state": None,
             })
+            if position_snapshot is not None:
+                base["position_decision"] = position_snapshot
+                base["position_state"] = position_snapshot.get("state")
+                if position_snapshot.get("status") == "AVAILABLE":
+                    # A held ETF's daily action is the position decision;
+                    # the entry evaluation stays available as evidence.
+                    base["decision"] = position_snapshot["decision"]
+                    base["blocked_reasons"] = list(position_snapshot["blocked_reasons"])
+                    base["evidence"] = dict(position_snapshot["evidence"])
             return base
         except Exception as error:
             base["blocked_reasons"] = ["V11_DATA_ERROR"]
@@ -4284,7 +4428,452 @@ class SwingService:
                 bars, closed_dates=self._closed_dates,
             ))
             indicators[code] = (previous, latest)
-        return calculate_v11_environment(indicators), by_code
+        confirmation_days = (
+            self._v11_config.environment_confirmation_days
+            if self._v11_config is not None else 1
+        )
+        return (
+            calculate_v11_environment(indicators, confirmation_days=confirmation_days),
+            by_code,
+        )
+
+    # ---- V11 portfolio / calendar evidence ------------------------------
+
+    def _v11_state_store(self) -> V11StateStore:
+        return V11StateStore(self.paths.strategy.with_name("v11_positions.json"))
+
+    def _v11_sessions_between(self, start: date, end: date) -> int | None:
+        """Count trading sessions in ``[start, end]``; ``None`` without a calendar."""
+        if self._closed_dates is None or end < start:
+            return None
+        count = 0
+        candidate = start
+        for _ in range(400):
+            if candidate > end:
+                break
+            if self._is_trading_date(candidate):
+                count += 1
+            candidate += timedelta(days=1)
+        return count
+
+    def _v11_remaining_sessions(
+        self, anchor: date | None, as_of: date | None, total: int,
+    ) -> int:
+        """Sessions of a ``total``-session pause that remain after ``as_of``.
+
+        The anchor session itself does not count; the pause covers the next
+        ``total`` sessions after it.
+        """
+        if anchor is None or as_of is None or total <= 0 or as_of <= anchor:
+            return total if anchor is not None and as_of is not None else 0
+        elapsed = self._v11_sessions_between(anchor + timedelta(days=1), as_of)
+        if elapsed is None:
+            return 0
+        return max(0, total - elapsed)
+
+    def _v11_long_holiday_sessions_ahead(self, as_of: date | None) -> int | None:
+        """1 on the last session before a long holiday, 2 the session before."""
+        if as_of is None:
+            return None
+        first = self._next_trading_date(as_of)
+        if first is None:
+            return None
+        if (first - as_of).days - 1 >= 4:
+            return 1
+        second = self._next_trading_date(first)
+        if second is not None and (second - first).days - 1 >= 4:
+            return 2
+        return None
+
+    def _v11_ex_dividend_window(
+        self, metadata: EtfMetadata | None, as_of: date | None,
+    ) -> bool:
+        if metadata is None or as_of is None or not metadata.dividend_dates:
+            return False
+        window = {as_of}
+        first = self._next_trading_date(as_of)
+        if first is not None:
+            window.add(first)
+            second = self._next_trading_date(first)
+            if second is not None:
+                window.add(second)
+        for raw in metadata.dividend_dates:
+            try:
+                if date.fromisoformat(raw) in window:
+                    return True
+            except ValueError:
+                continue
+        return False
+
+    def _v11_ledger_summary(self) -> dict[str, object]:
+        """Derive closed-cycle results from the ledger for handbook F1/F2.
+
+        Average-cost accounting per symbol; a cycle closes when shares reach
+        zero.  Consecutive losses count trailing closed cycles across the
+        whole account ordered by closing time.
+        """
+        result: dict[str, object] = {
+            "consecutive_losses": 0,
+            "last_loss_date": None,
+            "open_cycle_buys": {},
+        }
+        if self._ledger is None:
+            return result
+        events = self._ledger.load_events()
+        reversed_ids = {
+            str(event.payload["target_event_id"])
+            for event in events
+            if event.event_type is PortfolioEventType.TRADE_REVERSED
+        }
+        shares: dict[str, int] = {}
+        cost: dict[str, float] = {}
+        cycle_pnl: dict[str, float] = {}
+        cycle_buys: dict[str, int] = {}
+        closed: list[tuple[datetime, float]] = []
+        if events:
+            initial = events[0].payload.get("initial_positions", {})
+            if isinstance(initial, Mapping):
+                for symbol, raw in initial.items():
+                    if not isinstance(raw, Mapping) or type(raw.get("shares")) is not int:
+                        continue
+                    count = int(raw["shares"])
+                    average = raw.get("average_cost")
+                    if count <= 0 or type(average) not in (int, float):
+                        continue
+                    shares[str(symbol)] = count
+                    cost[str(symbol)] = float(average) * count
+                    cycle_buys[str(symbol)] = 1
+        trades: list[tuple[datetime, Any]] = []
+        for event in events:
+            if event.event_type not in {
+                PortfolioEventType.BUY_CONFIRMED, PortfolioEventType.SELL_CONFIRMED,
+            } or event.event_id in reversed_ids:
+                continue
+            payload = event.payload
+            raw_time = payload.get("executed_at")
+            if type(raw_time) is not str:
+                continue
+            try:
+                executed_at = datetime.fromisoformat(raw_time)
+            except ValueError:
+                continue
+            trades.append((executed_at, event))
+        trades.sort(key=lambda item: item[0])
+        for executed_at, event in trades:
+            payload = event.payload
+            symbol = str(payload.get("symbol"))
+            count = payload.get("shares")
+            price = payload.get("price")
+            fee = payload.get("fee", 0.0)
+            if type(count) is not int or type(price) not in (int, float):
+                continue
+            fee_value = float(fee) if type(fee) in (int, float) else 0.0
+            held = shares.get(symbol, 0)
+            if event.event_type is PortfolioEventType.BUY_CONFIRMED:
+                if held == 0:
+                    cost[symbol] = 0.0
+                    cycle_pnl[symbol] = 0.0
+                    cycle_buys[symbol] = 0
+                shares[symbol] = held + count
+                cost[symbol] = cost.get(symbol, 0.0) + float(price) * count + fee_value
+                cycle_buys[symbol] = cycle_buys.get(symbol, 0) + 1
+                continue
+            if held <= 0:
+                continue
+            average = cost.get(symbol, 0.0) / held
+            sold = min(count, held)
+            cycle_pnl[symbol] = (
+                cycle_pnl.get(symbol, 0.0) + (float(price) - average) * sold - fee_value
+            )
+            shares[symbol] = held - sold
+            cost[symbol] = average * shares[symbol]
+            if shares[symbol] == 0:
+                closed.append((executed_at, cycle_pnl.pop(symbol, 0.0)))
+                cycle_buys.pop(symbol, None)
+        closed.sort(key=lambda item: item[0])
+        losses = 0
+        last_loss: date | None = None
+        for executed_at, pnl in reversed(closed):
+            if pnl >= 0.0:
+                break
+            losses += 1
+            if last_loss is None:
+                last_loss = executed_at.astimezone(SHANGHAI).date()
+        result["consecutive_losses"] = losses
+        result["last_loss_date"] = last_loss
+        result["open_cycle_buys"] = {
+            symbol: count for symbol, count in cycle_buys.items()
+            if shares.get(symbol, 0) > 0
+        }
+        return result
+
+    def _v11_shared_context(self) -> dict[str, object]:
+        """Evidence shared by every symbol in one snapshot."""
+        environment, environment_bars = self._v11_environment_context()
+        environment_as_of: str | None = None
+        for bars in environment_bars.values():
+            if bars:
+                latest = bars[-1].trading_date.isoformat()
+                if environment_as_of is None or latest > environment_as_of:
+                    environment_as_of = latest
+        environment_history = advance_environment_state(
+            self._v11_state.get("environment"),
+            state=environment.get("state"),
+            as_of_trading_date=environment_as_of,
+        )
+        recovery_sessions: int | None = None
+        started = environment_history.get("defense_recovery_started")
+        if (
+            isinstance(started, str) and environment_history.get("state") == "NEUTRAL"
+            and environment_as_of is not None
+        ):
+            recovery_sessions = self._v11_sessions_between(
+                date.fromisoformat(started), date.fromisoformat(environment_as_of),
+            )
+        ledger_healthy = (
+            self._health.get("portfolio") == "OK"
+            and self._portfolio_projection is not None
+        )
+        projection = self._portfolio_projection if ledger_healthy else None
+        held: dict[str, PortfolioPosition] = {}
+        if projection is not None:
+            held = {
+                symbol: position for symbol, position in projection.positions.items()
+                if position.shares > 0
+            }
+        held_groups: dict[str, str] = {}
+        for symbol in held:
+            metadata = self._metadata.get(symbol)
+            if metadata is not None and metadata.correlation_group:
+                held_groups[symbol] = metadata.correlation_group
+        ledger_summary: dict[str, object] = {
+            "consecutive_losses": 0, "last_loss_date": None, "open_cycle_buys": {},
+        }
+        ledger_error: str | None = None
+        if ledger_healthy:
+            try:
+                ledger_summary = self._v11_ledger_summary()
+            except Exception as error:
+                ledger_error = self._safe_error(error)
+        return {
+            "environment": environment,
+            "environment_bars": environment_bars,
+            "environment_history": environment_history,
+            "defense_recovery_sessions": recovery_sessions,
+            "ledger_healthy": ledger_healthy,
+            "projection": projection,
+            "held": held,
+            "held_groups": held_groups,
+            "ledger_summary": ledger_summary,
+            "ledger_error": ledger_error,
+        }
+
+    def _v11_position_snapshot(
+        self,
+        symbol: str,
+        bars: Sequence[DailyBar],
+        metadata: EtfMetadata | None,
+        *,
+        config: Any,
+        context: V11Context,
+        shared: Mapping[str, object],
+        indicator: Mapping[str, object],
+        previous: Mapping[str, object],
+        current_price_adjusted: float,
+        as_of: date | None,
+    ) -> dict[str, object] | None:
+        """Evaluate the held position and project its next persisted state."""
+        held = shared.get("held")
+        projected = held.get(symbol) if isinstance(held, Mapping) else None
+        if projected is None or not bars:
+            return None
+        latest = bars[-1]
+        raw_scale = latest.close / latest.adjusted_close
+        if not math.isfinite(raw_scale) or raw_scale <= 0.0:
+            return {"status": "UNAVAILABLE", "blocked_reasons": ["ADJUSTMENT_SCALE_INVALID"]}
+        try:
+            position_context = self._position_context(symbol, projected, bars)
+        except PortfolioLedgerError as error:
+            return {
+                "status": "UNAVAILABLE",
+                "blocked_reasons": ["POSITION_LIFECYCLE_INVALID"],
+                "error": self._safe_error(error),
+            }
+        if position_context is None:
+            return {"status": "UNAVAILABLE", "blocked_reasons": ["POSITION_RISK_UNKNOWN"]}
+        entry_date = position_context.entry_trading_date
+        stored_positions = self._v11_state.get("positions")
+        stored = (
+            normalize_position_state(stored_positions.get(symbol))
+            if isinstance(stored_positions, Mapping) else None
+        )
+        if stored is not None and stored.get("entry_trading_date") != entry_date.isoformat():
+            stored = None
+        since_entry = [bar for bar in bars if bar.trading_date >= entry_date]
+        holding_session = len(since_entry)
+        if as_of is not None and as_of > latest.trading_date:
+            holding_session += 1
+        holding_session = max(1, holding_session)
+        entry_session_high = (
+            since_entry[0].adjusted_high if since_entry else latest.adjusted_high
+        )
+        later_closes = [bar.adjusted_close for bar in since_entry[1:]]
+        peak_price = max(
+            position_context.highest_completed_adjusted_close, current_price_adjusted,
+        )
+        new_high = bool(
+            (later_closes and max(later_closes) > entry_session_high)
+            or (as_of is not None and as_of > latest.trading_date
+                and current_price_adjusted > entry_session_high)
+        )
+        reduced = position_context.first_reduction_completed
+        stop_price = position_context.hard_stop_adjusted
+        if stored is not None and stored.get("stop_price_raw") is not None:
+            stop_price = max(stop_price, float(stored["stop_price_raw"]) / raw_scale)
+        if reduced:
+            stop_price = max(stop_price, position_context.average_cost_adjusted)
+        tracking_price = None
+        if stored is not None and stored.get("tracking_price_raw") is not None:
+            tracking_price = float(stored["tracking_price_raw"]) / raw_scale
+        tracking_started = bool(reduced or (stored is not None and stored.get("tracking_started")))
+        environment = str(context.environment_state)
+        entry_environment = (
+            stored.get("entry_environment") if stored is not None else None
+        ) or (environment if environment in {"ATTACK", "NEUTRAL", "DEFENSE"} else None)
+        setup = stored.get("setup") if stored is not None else None
+        if not setup:
+            previous_decision = (
+                previous.get("v11", {}).get("entry_decision")
+                if isinstance(previous.get("v11"), Mapping) else None
+            )
+            if isinstance(previous_decision, Mapping):
+                candidate = previous_decision.get("setup")
+                if isinstance(candidate, str) and candidate != "NONE":
+                    setup = candidate
+        setup = setup or "NONE"
+        open_cycle_buys = shared.get("ledger_summary", {}).get("open_cycle_buys", {})
+        topup_done = bool(
+            (stored is not None and stored.get("topup_done"))
+            or (isinstance(open_cycle_buys, Mapping) and open_cycle_buys.get(symbol, 0) > 1)
+        )
+        try:
+            position = V11Position(
+                shares=projected.shares,
+                sellable_shares=projected.sellable_shares,
+                entry_price=position_context.average_cost_adjusted,
+                stop_price=stop_price,
+                current_price=current_price_adjusted,
+                initial_risk_per_share=position_context.initial_risk_per_share_adjusted,
+                reduced=reduced,
+                tracking_price=tracking_price,
+                holding_session=holding_session,
+                setup=setup,
+                peak_price=peak_price,
+                new_high=new_high,
+                topup_done=topup_done,
+                tracking_started=tracking_started,
+                entry_environment=entry_environment,
+            )
+        except ValueError as error:
+            return {
+                "status": "UNAVAILABLE",
+                "blocked_reasons": ["POSITION_STATE_INVALID"],
+                "error": self._safe_error(error),
+            }
+        position_indicator = {
+            **indicator,
+            "close": current_price_adjusted,
+            "long_holiday_preclose": context.long_holiday_sessions_ahead == 1,
+            "reentry_cooldown_sessions": 0,
+        }
+        if metadata is not None and metadata.fund_size_cny is not None:
+            position_indicator["fund_size_cny"] = metadata.fund_size_cny
+        turnover = indicator.get("avg_amount20_cny")
+        if turnover is None and metadata is not None:
+            turnover = metadata.avg_amount20_cny
+        if turnover is not None:
+            position_indicator["avg_turnover_20d_cny"] = turnover
+        position_context_v11 = replace(
+            context, indicator=position_indicator, has_position=True,
+            sellable_shares=projected.sellable_shares,
+        )
+        decision = evaluate_v11_position(
+            position, config=config, context=position_context_v11,
+        )
+        next_stop = stop_price
+        if decision.action in {"TRACK", "MOVE_STOP"} and decision.stop_price is not None:
+            next_stop = max(next_stop, float(decision.stop_price))
+        next_tracking_price = tracking_price
+        if decision.action == "TRACK":
+            entered = decision.evidence.get("tracking_price")
+            if type(entered) in (int, float) and math.isfinite(float(entered)) and entered > 0:
+                next_tracking_price = float(entered)
+        next_state = {
+            "entry_trading_date": entry_date.isoformat(),
+            "as_of_trading_date": as_of.isoformat() if as_of is not None else None,
+            "stop_price_raw": next_stop * raw_scale,
+            "tracking_price_raw": (
+                next_tracking_price * raw_scale if next_tracking_price is not None else None
+            ),
+            "peak_price_raw": peak_price * raw_scale,
+            "tracking_started": bool(tracking_started or decision.action == "TRACK"),
+            "topup_done": topup_done,
+            "entry_environment": entry_environment,
+            "setup": setup,
+            "last_action": decision.action,
+        }
+        return {
+            "status": "AVAILABLE",
+            "decision": decision.to_dict(),
+            "blocked_reasons": list(decision.blocked_reasons),
+            "evidence": dict(decision.evidence),
+            "position": {
+                "shares": position.shares,
+                "sellable_shares": position.sellable_shares,
+                "entry_price": position.entry_price,
+                "stop_price": position.stop_price,
+                "current_price": position.current_price,
+                "initial_risk_per_share": position.initial_risk_per_share,
+                "holding_session": holding_session,
+                "reduced": reduced,
+                "tracking_started": tracking_started,
+                "tracking_price": tracking_price,
+                "peak_price": peak_price,
+                "new_high": new_high,
+                "entry_environment": entry_environment,
+                "setup": setup,
+                "topup_done": topup_done,
+                "raw_scale": raw_scale,
+            },
+            "state": next_state,
+        }
+
+    def _persist_v11_state(self, snapshot: Mapping[str, object]) -> None:
+        """Persist projected V11 position/environment state after publishing."""
+        positions: dict[str, dict[str, object]] = {}
+        items = snapshot.get("items")
+        if isinstance(items, Sequence):
+            for item in items:
+                if not isinstance(item, Mapping):
+                    continue
+                v11 = item.get("v11")
+                if not isinstance(v11, Mapping):
+                    continue
+                state = normalize_position_state(v11.get("position_state"))
+                symbol = item.get("symbol")
+                if state is not None and isinstance(symbol, str):
+                    positions[symbol] = state
+        environment = normalize_environment_state(snapshot.get("v11_environment_history"))
+        if environment.get("state") is None:
+            environment = normalize_environment_state(self._v11_state.get("environment"))
+        if positions == self._v11_state.get("positions") and environment == self._v11_state.get("environment"):
+            return
+        try:
+            self._v11_state_store().save(positions=positions, environment=environment)
+            self._v11_state = {"positions": positions, "environment": environment}
+            self._errors.pop("v11_state", None)
+        except Exception as error:
+            self._errors["v11_state"] = self._safe_error(error)
 
     def _shadow_snapshot(
         self,
@@ -4557,6 +5146,7 @@ class SwingService:
         next_revision = self.revision + 1
         self._install_published(value, revision=next_revision)
         self.revision = next_revision
+        self._persist_v11_state(snapshot)
         event = copy.deepcopy(self.published)
         event.update({
             "event": "reset" if force_reset else "update",
