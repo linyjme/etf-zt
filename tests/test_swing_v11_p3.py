@@ -102,6 +102,7 @@ class SwingV11P3Tests(unittest.TestCase):
             "A4_EVIDENCE_UNAVAILABLE", "A6_EVIDENCE_UNAVAILABLE",
         ):
             self.assertIn(marker, decision.blocked_reasons)
+        self.assertFalse(decision.evidence["t4_return_60d"])
 
     def test_shadow_replay_keeps_full_v11_evidence(self) -> None:
         bars = swing_strategy_bars(300)

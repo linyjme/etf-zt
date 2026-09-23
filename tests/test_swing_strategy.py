@@ -560,13 +560,16 @@ class SwingStrategyTests(unittest.TestCase):
                 "equity", "cash", "current_etf_market_value",
                 "current_planned_risk_amount",
                 "current_symbol_planned_risk_amount", "lot_size", "data_healthy",
-                "metadata_complete", "ledger_healthy", "tradable",
+                "metadata_complete", "ledger_healthy", "risk_known", "tradable",
                 "next_trading_date", "last_stop_trading_date", "position",
             ),
         )
 
     def test_health_gates_suppress_entry_with_named_reason(self) -> None:
-        for field in ("data_healthy", "metadata_complete", "ledger_healthy", "tradable"):
+        for field in (
+            "data_healthy", "metadata_complete", "ledger_healthy", "risk_known",
+            "tradable",
+        ):
             with self.subTest(field=field):
                 result = evaluate_swing(
                     swing_strategy_bars(), self.config, self.portfolio(**{field: False}),
@@ -576,7 +579,10 @@ class SwingStrategyTests(unittest.TestCase):
 
     def test_each_health_gate_suppresses_reduce_and_add(self) -> None:
         bars = swing_strategy_bars()
-        for field in ("data_healthy", "metadata_complete", "ledger_healthy", "tradable"):
+        for field in (
+            "data_healthy", "metadata_complete", "ledger_healthy", "risk_known",
+            "tradable",
+        ):
             with self.subTest(field=field, action="reduce"):
                 result = evaluate_swing(
                     bars,

@@ -115,7 +115,7 @@ class SwingV11ContractTests(unittest.TestCase):
         return value
 
     def test_a_setup_accepts_one_macd_or_rsi_or_volume_confirmation(self) -> None:
-        context = V11Context(indicator=self._indicator(), environment_state="ATTACK")
+        context = V11Context(indicator=self._indicator(), environment_state="ATTACK", category="BROAD")
         config = load_v11_config(PROJECT_ROOT / "data" / "swing" / "v11_strategy.json")
         decision = evaluate_v11(swing_strategy_bars(260), config=config, context=context)
         self.assertEqual(decision.setup.value, "A_PULLBACK")
@@ -129,7 +129,7 @@ class SwingV11ContractTests(unittest.TestCase):
                 pullback_window_sessions=0, pullback_depth_pct=0.0,
                 pullback_low=None, pullback_recovery_within_3d=False,
                 volume_contraction_majority=False,
-            ), environment_state="ATTACK",
+            ), environment_state="ATTACK", category="BROAD",
         )
         config = load_v11_config(PROJECT_ROOT / "data" / "swing" / "v11_strategy.json")
         decision = evaluate_v11(swing_strategy_bars(260), config=config, context=context)
@@ -146,7 +146,7 @@ class SwingV11ContractTests(unittest.TestCase):
     def test_unverified_data_cannot_display_entry_action(self) -> None:
         config = load_v11_config(PROJECT_ROOT / "data/swing/v11_strategy.json")
         decision = evaluate_v11(swing_strategy_bars(260), config=config, context=V11Context(
-            indicator=self._indicator(), environment_state="ATTACK", data_quality="UNVERIFIED",
+            indicator=self._indicator(), environment_state="ATTACK", category="BROAD", data_quality="UNVERIFIED",
         ))
         self.assertEqual(decision.action, "OBSERVE")
 
@@ -161,7 +161,7 @@ class SwingV11ContractTests(unittest.TestCase):
                 volume_contraction_majority=False,
                 box_ok=True, box_breakout_ok=True, volume_ratio20=1.6,
                 weekly_ma20=102.0,
-            ), environment_state="ATTACK",
+            ), environment_state="ATTACK", category="BROAD",
         ))
         self.assertEqual(decision.setup.value, "B_BREAKOUT")
         self.assertEqual(decision.state, V11State.TECHNICAL_CANDIDATE)

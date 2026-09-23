@@ -24,6 +24,7 @@ from .swing_indicators import (
     calculate_indicator_context,
     calculate_indicator_snapshot,
 )
+from .valuation import ValuationStage
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -82,6 +83,8 @@ class V11Context:
     quasi_close: Mapping[str, object] = field(default_factory=dict)
     metadata: Mapping[str, object] = field(default_factory=dict)
     indicator: Mapping[str, object] = field(default_factory=dict)
+    valuation_stage: Mapping[str, object] | ValuationStage | None = None
+    valuation_stage_enforcement: bool = False
 
 
 @dataclass(frozen=True)
@@ -139,6 +142,7 @@ class V11Position:
     tracking_started: bool = False
     cooldown_sessions: int = 0
     standard_shares: int | None = None
+    entry_environment: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.shares) is not int or self.shares < 0:
@@ -304,9 +308,16 @@ def evaluate_v11(
             evidence={"bar_count": count}, context=context,
         )
     if int(indicator.get("bar_count", count)) < config.minimum_daily_bars:
+        early_reasons = ["INSUFFICIENT_COMPLETED_BARS"]
+        if context.data_quality != "VERIFIED":
+            early_reasons.append("DATA_QUALITY_UNVERIFIED")
+            early_reasons.extend(
+                reason for reason in context.metadata.get("data_quality_reasons", ())
+                if isinstance(reason, str)
+            )
         return _decision(
             V11State.OBSERVE, config,
-            reasons=("INSUFFICIENT_COMPLETED_BARS",),
+            reasons=early_reasons,
             evidence=indicator, context=context,
         )
     reasons: list[str] = []
@@ -345,6 +356,9 @@ def evaluate_v11(
         reasons.append("METADATA_INCOMPLETE")
     if context.data_quality != "VERIFIED":
         reasons.append("DATA_QUALITY_UNVERIFIED")
+        for quality_reason in context.metadata.get("data_quality_reasons", ()):
+            if isinstance(quality_reason, str):
+                reasons.append(quality_reason)
     if context.snapshot_only:
         reasons.append("SNAPSHOT_ONLY")
     environment = context.environment_state.upper()
@@ -381,6 +395,8 @@ def evaluate_v11(
     )
     a_week_ok = t3_week_ok
     category = (context.category or "UNVERIFIED").upper()
+    if context.category is None or not context.category.strip() or category == "UNVERIFIED":
+        reasons.append("CATEGORY_UNVERIFIED")
     # T5 is intentionally explicit and category-aware.  Missing environment
     # evidence is handled as UNKNOWN above; once a category is supplied,
     # neutral only permits broad/gold and defense only permits defensive
@@ -390,9 +406,9 @@ def evaluate_v11(
         if environment == "ATTACK":
             t5_allowed = True
         elif environment == "NEUTRAL":
-            t5_allowed = category in {"UNVERIFIED", "BROAD", "GOLD", "CROSS_BORDER"}
+            t5_allowed = category in {"BROAD", "GOLD", "CROSS_BORDER"}
         elif environment == "DEFENSE":
-            t5_allowed = category in {"UNVERIFIED", "CROSS_BORDER", "GOLD"}
+            t5_allowed = category in {"CROSS_BORDER", "GOLD"}
         else:
             t5_allowed = False
     else:
@@ -442,20 +458,20 @@ def evaluate_v11(
     macd_dea = _number_or_none(indicator.get("macd_dea"))
     macd_evidence_available = (
         type(indicator.get("macd_histogram_improving_2d")) is bool
-        and macd_dif is not None and macd_dea is not None
     )
     macd_exact = bool(
         macd_evidence_available
         and indicator.get("macd_histogram_improving_2d")
-        and macd_dif > macd_dea
     )
     rsi_min = _number_or_none(indicator.get("rsi_pullback_min"))
     rsi_current = _number_or_none(indicator.get("rsi_current"))
-    rsi_evidence_available = rsi_min is not None and rsi_current is not None
+    rsi_previous = _number_or_none(indicator.get("rsi_previous_1"))
+    rsi_evidence_available = (
+        rsi_min is not None and rsi_current is not None and rsi_previous is not None
+    )
     rsi_exact = bool(
-        rsi_evidence_available
-        and rsi_min >= 40.0
-        and rsi_current is not None and rsi_current > 50.0
+        rsi_evidence_available and rsi_min >= 40.0 and rsi_previous is not None
+        and rsi_previous <= 50.0 and rsi_current is not None and rsi_current > 50.0
     )
     volume_evidence_available = (
         type(indicator.get("volume_recovery_trigger")) is bool
@@ -510,6 +526,25 @@ def evaluate_v11(
         and b6_ok and weekly_close is not None and weekly_ma10 is not None
         and weekly_close > weekly_ma10
     )
+    stage_name = None
+    stage_allow_a = True
+    stage_allow_b = True
+    stage_force_half = False
+    if context.valuation_stage_enforcement:
+        if isinstance(context.valuation_stage, ValuationStage):
+            stage_name = context.valuation_stage.stage
+            stage_allow_a = context.valuation_stage.allow_a_pullback
+            stage_allow_b = context.valuation_stage.allow_b_breakout
+            stage_force_half = context.valuation_stage.size_multiplier <= 0.5
+        elif isinstance(context.valuation_stage, Mapping):
+            stage_name = str(context.valuation_stage.get("stage") or "") or None
+            stage_allow_a = context.valuation_stage.get("allow_a_pullback", True) is not False
+            stage_allow_b = context.valuation_stage.get("allow_b_breakout", True) is not False
+            stage_force_half = _number_or_none(context.valuation_stage.get("size_multiplier")) == 0.5
+        if a_ok and not stage_allow_a:
+            reasons.append("VALUATION_EXPENSIVE_NO_PULLBACK")
+        if b_ok and not stage_allow_b:
+            reasons.append("VALUATION_BREAKOUT_NOT_ALLOWED")
     # A and B are alternative entry setups. Do not let failed A evidence
     # block a valid B breakout; report setup-specific blockers only when both
     # alternatives fail.
@@ -555,10 +590,8 @@ def evaluate_v11(
     rs = context.relative_strength_20
     if rs is not None and rs < -3.0:
         reasons.append("RELATIVE_STRENGTH_TOO_WEAK")
-    forced_half = bool(rs is not None and -3.0 <= rs < 0.0)
     if rs is not None and not math.isfinite(float(rs)):
         reasons.append("RELATIVE_STRENGTH_INVALID")
-        forced_half = False
     setup = V11Setup.A_PULLBACK if a_ok else V11Setup.B_BREAKOUT if b_ok else V11Setup.NONE
     hard_reasons_list = list(dict.fromkeys(reasons))
     entry_price = _number_or_none(indicator.get("price")) or context.price
@@ -608,6 +641,7 @@ def evaluate_v11(
     forced_half = bool(
         setup is V11Setup.B_BREAKOUT or macd_below_zero
         or (rs is not None and -3.0 <= rs < 0.0)
+        or stage_force_half
     )
     if setup is not V11Setup.NONE and not hard_reasons_list:
         if entry_price is None or stop_price is None:
@@ -632,15 +666,21 @@ def evaluate_v11(
         state = V11State.OBSERVE
     else:
         state = V11State.TECHNICAL_CANDIDATE
+    if isinstance(context.valuation_stage, ValuationStage):
+        valuation_evidence = context.valuation_stage.to_dict()
+    elif isinstance(context.valuation_stage, Mapping):
+        valuation_evidence = dict(context.valuation_stage)
+    else:
+        valuation_evidence = None
     evidence = {
         **indicator,
         "trend_ok": trend_ok,
         "t1_price_above_ma60": t1_price_above_ma60,
         "t2_ma20_trend": t2_ma20_trend,
         "t3_weekly_trend": t3_week_ok,
-        "t4_return_60d": (
-            _number_or_none(indicator.get("return_60d_pct")) is None
-            or float(indicator["return_60d_pct"]) > 0.0
+        "t4_return_60d": bool(
+            _number_or_none(indicator.get("return_60d_pct")) is not None
+            and float(indicator["return_60d_pct"]) > 0.0
         ),
         "t5_environment_category": t5_allowed,
         "weekly_trend_ok": a_week_ok,
@@ -670,6 +710,8 @@ def evaluate_v11(
         "entry_price": entry_price,
         "stop_price": stop_price,
         "sizing": sizing,
+        "valuation_stage": valuation_evidence,
+        "valuation_stage_enforcement": context.valuation_stage_enforcement,
     }
     return _decision(
         state, config, setup=setup,
@@ -723,7 +765,7 @@ def classify_v11_environment(indicator: Mapping[str, object]) -> str:
     if price > ma60 and slope >= -0.5:
         if weekly_close is None or weekly_ma20 is None or weekly_close >= weekly_ma20:
             return "ATTACK"
-    if price < ma60 and slope <= 0.5:
+    if price < ma60:
         return "DEFENSE"
     if abs(slope) <= 0.8 and abs(price / ma60 - 1.0) <= 0.04:
         return "NEUTRAL"
@@ -806,7 +848,6 @@ def evaluate_v11_position(
         "priority": "STOP_OR_EXIT > ENVIRONMENT > REDUCE > TOP_UP > ENTRY",
         "shares": position.shares,
         "sellable_shares": position.sellable_shares,
-        "profit_r": position.profit_r,
         "holding_session": position.holding_session,
         "reduced": position.reduced,
         "tracking_started": position.tracking_started or position.tracking_price is not None,
@@ -866,7 +907,23 @@ def evaluate_v11_position(
     rsi = number("rsi_current", "rsi")
     volume_ratio = number("volume_ratio20", "volume_ratio")
     daily_return = number("daily_return_pct", "return_1d_pct")
-    s1_limit = 8.0 if category in {"BROAD", "GOLD", "UNVERIFIED"} else 12.0
+    stage = context.valuation_stage
+    stage_name = None
+    stage_allow_topup = True
+    stage_s1_limit: float | None = None
+    stage_reduce_at_r: float | None = None
+    if context.valuation_stage_enforcement:
+        if isinstance(stage, ValuationStage):
+            stage_name = stage.stage
+            stage_allow_topup = stage.allow_topup
+            stage_s1_limit = stage.s1_bias_limit
+            stage_reduce_at_r = stage.reduce_at_r
+        elif isinstance(stage, Mapping):
+            stage_name = str(stage.get("stage") or "") or None
+            stage_allow_topup = stage.get("allow_topup", True) is not False
+            stage_s1_limit = _number_or_none(stage.get("s1_bias_limit"))
+            stage_reduce_at_r = _number_or_none(stage.get("reduce_at_r"))
+    s1_limit = stage_s1_limit or (8.0 if category in {"BROAD", "GOLD", "UNVERIFIED"} else 12.0)
     s2_limit = 75.0 if category in {"BROAD", "GOLD", "UNVERIFIED"} else 80.0
     s1 = bias is not None and bias > s1_limit
     s2 = not s1 and rsi is not None and rsi > s2_limit and upper is not None and close > upper
@@ -893,7 +950,9 @@ def evaluate_v11_position(
     )
     premium = number("premium_pct", "premium_rate")
     s6 = category == "CROSS_BORDER" and premium is not None and premium > 5.0
-    s7 = flag("long_holiday_preclose") and not defense_exempt and position.profit_r < 1.0
+    profit_r = (position.current_price - position.entry_price) / position.initial_risk_per_share
+    evidence["profit_r"] = profit_r
+    s7 = flag("long_holiday_preclose") and not defense_exempt and profit_r < 1.0
     evidence.update({
         "s1_bias20": s1,
         "s1_bias_limit": s1_limit,
@@ -940,6 +999,7 @@ def evaluate_v11_position(
         exit_reasons.append("C7_RULE_VIOLATION")
     setup = str(position.setup).upper()
     box_high = number("box_high")
+    ma10 = number("ma10")
     ma20 = number("ma20")
     if setup.endswith("B_BREAKOUT") and position.holding_session <= 3 and box_high is not None and close < box_high:
         exit_reasons.append("E1_BOX_BREAK")
@@ -947,12 +1007,34 @@ def evaluate_v11_position(
         flag("macd_dead_cross", "macd_histogram_turning_down", "macd_red_to_green")
     ):
         exit_reasons.append("E2_PULLBACK_FAILURE")
-    if position.holding_session == 10 and not position.new_high and position.profit_r < 1.0:
+    stage = context.valuation_stage
+    e3_session = 10
+    if context.valuation_stage_enforcement and isinstance(stage, ValuationStage):
+        e3_session = stage.e3_session
+    elif context.valuation_stage_enforcement and isinstance(stage, Mapping):
+        raw_e3 = _number_or_none(stage.get("e3_session"))
+        if raw_e3 is not None and raw_e3 >= 1:
+            e3_session = int(raw_e3)
+    if position.holding_session >= e3_session and not position.new_high and profit_r < 1.0:
         exit_reasons.append("E3_NO_PROGRESS")
-    if environment == "NEUTRAL" and not defense_exempt and position.profit_r < 0.0:
+    if (
+        position.entry_environment is not None
+        and position.entry_environment.upper() == "ATTACK"
+        and environment == "NEUTRAL" and not defense_exempt and profit_r < 0.0
+    ):
         exit_reasons.append("E4_NEUTRAL_LOSS")
-    if position.holding_session >= 25 and position.profit_r < 1.0:
+    if position.holding_session >= 25 and profit_r < 1.0:
         exit_reasons.append("T25_NO_1R")
+    if (
+        context.valuation_stage_enforcement and stage_name == "EXPENSIVE"
+        and position.holding_session >= 15 and profit_r < 1.0
+    ):
+        exit_reasons.append("VALUATION_EXPENSIVE_TIME_LIMIT")
+    if (
+        context.valuation_stage_enforcement and stage_name == "EXPENSIVE"
+        and ma10 is not None and close < ma10
+    ):
+        exit_reasons.append("VALUATION_EXPENSIVE_MA10_BREAK")
 
     safe_exit_reasons = [
         reason for reason in exit_reasons
@@ -978,7 +1060,7 @@ def evaluate_v11_position(
             reasons.append(exit_reasons[0])
     elif market_gate_reasons:
         reasons.extend(market_gate_reasons)
-    elif environment == "DEFENSE" and not defense_exempt and position.profit_r < 0.0:
+    elif environment == "DEFENSE" and not defense_exempt and profit_r < 0.0:
         action = "EXIT"
         planned = position.sellable_shares
         reasons.append("ENVIRONMENT_DEFENSE_LOSS")
@@ -992,8 +1074,13 @@ def evaluate_v11_position(
         tracking_price = max(position.entry_price, tracking_value or position.entry_price)
         evidence.update({"tracking_ma": tracking_ma, "tracking_price": tracking_price, "tracking_floor": position.entry_price})
         decision_stop = max(position.stop_price, tracking_price)
+    elif not position.reduced and half > 0 and stage_reduce_at_r is not None and profit_r >= stage_reduce_at_r:
+        action = "REDUCE"
+        planned = half
+        reasons.append("S8_VALUATION_STAGE")
+        evidence["reduce_reason"] = "S8_VALUATION_STAGE"
     elif not position.reduced and half > 0 and (
-        ((s1 or s2) and position.profit_r > 1.0) or s3 or s4 or s6 or s7
+        s1 or s2 or s3 or s4 or s6 or s7
     ):
         action = "REDUCE"
         planned = half
@@ -1010,7 +1097,7 @@ def evaluate_v11_position(
         evidence.update({"tracking_ma": tracking_ma, "tracking_price": tracking_price, "tracking_floor": position.entry_price})
         decision_stop = max(position.stop_price, tracking_price)
     elif (
-        position.profit_r >= 2.0
+        profit_r >= 2.0
         and position.tracking_price is None
         and not position.tracking_started
         and not position.reduced
@@ -1024,14 +1111,14 @@ def evaluate_v11_position(
         decision_stop = max(position.stop_price, tracking_price)
         action = "TRACK"
         reasons.append("PROFIT_2R_TRACKING")
-    elif position.holding_session >= 25 and 1.0 <= position.profit_r < 2.0:
+    elif position.holding_session >= 25 and 1.0 <= profit_r < 2.0:
         tracking_value = number("ma20")
         tracking_price = max(position.entry_price, tracking_value or position.entry_price)
         evidence.update({"tracking_ma": "MA20", "tracking_price": tracking_price, "tracking_floor": position.entry_price})
         decision_stop = max(position.stop_price, tracking_price)
         action = "TRACK"
         reasons.extend(("T25_TRACKING", "T25"))
-    elif position.profit_r >= 1.0 and position.stop_price < position.entry_price and position.tracking_price is None and not position.tracking_started:
+    elif profit_r >= 1.0 and position.stop_price < position.entry_price and position.tracking_price is None and not position.tracking_started:
         decision_stop = position.entry_price
         evidence.update({"new_stop": position.entry_price, "breakeven": True})
         action = "MOVE_STOP"
@@ -1054,10 +1141,11 @@ def evaluate_v11_position(
             "topup_pullback_ok", "macd_dif_zero_cross", "half_reason_cleared",
         ))
         topup_ok = (
-            action == "HOLD" and environment == "ATTACK" and position.profit_r >= 0.0
+            action == "HOLD" and environment == "ATTACK" and profit_r >= 0.0
             and position.holding_session <= 15 and not position.topup_done
             and (bias is not None and bias_low <= bias <= bias_high)
             and flag("portfolio_room") and trigger
+            and stage_allow_topup
             and not (cooldown is not None and cooldown > 0)
             and not (related_group_occupied and stronger_related_signal)
             and standard is not None and standard > position.shares
@@ -1320,7 +1408,6 @@ def calculate_v11_indicators(
         and (latest_context.get("macd_cross_age") or 0) <= 3
     ) or bool(
         latest_context.get("macd_histogram_rising_days", 0) >= 2
-        and latest_context.get("macd_dif_above_dea") is True
     )
     rsi = snapshot["rsi"].get("rsi14")
     previous_rsi = latest_context.get("rsi_previous_1")
@@ -1334,10 +1421,8 @@ def calculate_v11_indicators(
         valid_pullback_rsi and rsi_pullback_min >= 40.0
     )
     rsi_trigger = bool(
-        rsi_pullback_never_below_40 and rsi is not None and rsi > 50.0
-    ) or bool(
-        rsi is not None and previous_rsi is not None
-        and rsi > previous_rsi and 35.0 <= rsi <= 60.0
+        rsi_pullback_never_below_40 and rsi is not None and previous_rsi is not None
+        and previous_rsi <= 50.0 and rsi > 50.0
     )
     volume_recovery_trigger = bool(
         current_volume is not None and prior_volume_average is not None
@@ -1428,6 +1513,11 @@ def calculate_v11_indicators(
         "rsi_pullback_min": rsi_pullback_min,
         "rsi_pullback_never_below_40": rsi_pullback_never_below_40,
         "rsi_current": rsi,
+        "rsi_previous_1": previous_rsi,
+        "rsi_crossed_above_50": bool(
+            rsi is not None and previous_rsi is not None
+            and previous_rsi <= 50.0 and rsi > 50.0
+        ),
         "macd_histogram_improving_2d": macd_histogram_improving_2d,
         "weekly": weekly,
         "setups": {
@@ -1539,6 +1629,7 @@ def normalize_v11_indicators(indicators: Mapping[str, object]) -> dict[str, obje
         "rsi_pullback_min": raw.get("rsi_pullback_min", setups.get("rsi_pullback_min")),
         "rsi_pullback_never_below_40": bool(raw.get("rsi_pullback_never_below_40", setups.get("rsi_pullback_never_below_40"))),
         "rsi_current": raw.get("rsi_current", (raw.get("rsi") or {}).get("rsi14") if isinstance(raw.get("rsi"), Mapping) else None),
+        "rsi_previous_1": raw.get("rsi_previous_1", setups.get("rsi_previous_1")),
         "macd_histogram_improving_2d": bool(raw.get("macd_histogram_improving_2d", setups.get("macd_histogram_improving_2d"))),
         "box_first_half_low": raw.get(
             "box_first_half_low", raw.get("box_first_half_close_low", setups.get("box_first_half_low"))

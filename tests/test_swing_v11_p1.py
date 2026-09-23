@@ -157,9 +157,9 @@ class SwingV11P1Tests(unittest.TestCase):
         self.assertTrue(decision.evidence["forced_half_size"])
         self.assertTrue(decision.evidence["sizing"]["forced_half_size"])
 
-    def test_a_macd_histogram_trigger_requires_dif_above_dea(self):
+    def test_a_macd_histogram_recovery_does_not_require_dif_above_dea(self):
         decision = self.evaluate_with_account(self.evidence(
-            macd_dif=-0.2, macd_dea=-0.3,
+            macd_dif=-0.4, macd_dea=-0.3,
             macd_histogram_improving_2d=True,
         ))
         self.assertEqual(decision.setup, V11Setup.A_PULLBACK)

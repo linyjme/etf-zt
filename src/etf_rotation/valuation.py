@@ -65,6 +65,18 @@ class ValuationStage:
     reduce_at_r: float | None
     allow_a_pullback: bool = True
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "stage": self.stage,
+            "size_multiplier": self.size_multiplier,
+            "allow_topup": self.allow_topup,
+            "allow_b_breakout": self.allow_b_breakout,
+            "s1_bias_limit": self.s1_bias_limit,
+            "e3_session": self.e3_session,
+            "reduce_at_r": self.reduce_at_r,
+            "allow_a_pullback": self.allow_a_pullback,
+        }
+
 
 def _stage_defaults(stage: str) -> ValuationStage:
     if stage == "DEEP_VALUE":

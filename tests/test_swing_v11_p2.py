@@ -52,7 +52,7 @@ class SwingV11P2CoreTests(unittest.TestCase):
 
     def test_neutral_loss_is_e4_exit_and_reduction_enters_tracking(self):
         exit_decision = self.evaluate(
-            self.position(current_price=98.0, profit_r=-0.4),
+            self.position(current_price=98.0, entry_environment="ATTACK"),
             environment_state="NEUTRAL",
             category="BROAD",
         )
@@ -105,14 +105,14 @@ class SwingV11P2CoreTests(unittest.TestCase):
         self.assertEqual(decision.planned_shares, 0)
         self.assertEqual(decision.evidence["new_stop"], 100.0)
 
-    def test_one_r_breakeven_beats_s1_reduction(self):
+    def test_one_r_s1_reduction_is_not_gated_by_profit_threshold(self):
         decision = self.evaluate(
             self.position(current_price=105.0, profit_r=1.0),
             category="BROAD",
             indicator={"bias20_pct": 9.0},
         )
-        self.assertEqual(decision.action, "MOVE_STOP")
-        self.assertEqual(decision.planned_shares, 0)
+        self.assertEqual(decision.action, "REDUCE")
+        self.assertEqual(decision.planned_shares, 200)
 
     def test_two_r_starts_category_tracking_without_reducing(self):
         decision = self.evaluate(

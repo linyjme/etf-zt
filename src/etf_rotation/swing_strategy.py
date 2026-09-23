@@ -184,6 +184,7 @@ class PortfolioContext:
     data_healthy: bool = True
     metadata_complete: bool = True
     ledger_healthy: bool = True
+    risk_known: bool = True
     tradable: bool = True
     next_trading_date: date | None = None
     last_stop_trading_date: date | None = None
@@ -229,7 +230,8 @@ class PortfolioContext:
         if type(self.lot_size) is not int or self.lot_size <= 0:
             raise SwingStrategyError("lot_size must be a positive integer")
         for field in (
-            "data_healthy", "metadata_complete", "ledger_healthy", "tradable",
+            "data_healthy", "metadata_complete", "ledger_healthy", "risk_known",
+            "tradable",
         ):
             if type(getattr(self, field)) is not bool:
                 raise SwingStrategyError(f"{field} must be bool")
@@ -250,6 +252,7 @@ class PortfolioContext:
         data_healthy: bool = True,
         metadata_complete: bool = True,
         ledger_healthy: bool = True,
+        risk_known: bool = True,
         tradable: bool = True,
         next_trading_date: date | None = None,
         last_stop_trading_date: date | None = None,
@@ -271,6 +274,7 @@ class PortfolioContext:
             data_healthy=data_healthy,
             metadata_complete=metadata_complete,
             ledger_healthy=ledger_healthy,
+            risk_known=risk_known,
             tradable=tradable,
             next_trading_date=next_trading_date,
             last_stop_trading_date=last_stop_trading_date,
@@ -679,7 +683,8 @@ def _health_reasons(portfolio: PortfolioContext) -> tuple[str, ...]:
     return tuple(
         field
         for field in (
-            "data_healthy", "metadata_complete", "ledger_healthy", "tradable",
+            "data_healthy", "metadata_complete", "ledger_healthy", "risk_known",
+            "tradable",
         )
         if not getattr(portfolio, field)
     )
@@ -861,6 +866,7 @@ def _base_evidence(
         "data_healthy": portfolio.data_healthy,
         "metadata_complete": portfolio.metadata_complete,
         "ledger_healthy": portfolio.ledger_healthy,
+        "risk_known": portfolio.risk_known,
         "tradable": portfolio.tradable,
         "current_planned_risk_amount": portfolio.current_planned_risk_amount,
         "current_symbol_planned_risk_amount": (
