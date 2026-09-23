@@ -34,7 +34,8 @@
       "source": "NeoData/指数估值，交易日2026-09-17；NeoData/指数财务，ROE报告期2026-06-30、发布日期2026-08-31；历史分位为公开第三方汇总快照2026-09-13，非一手，需核实原文",
       "roe_ttm": 9.91,
       "pr_pe_roe": 0.897144,
-      "pr_pe_pb": 0.947549
+      "pr_pe_pb": 0.947549,
+      "roe_period": "TTM"
     },
     {
       "index_code": "932315",
@@ -52,7 +53,8 @@
       "source": "NeoData/指数估值，交易日2026-09-17；NeoData/指数财务，ROE报告期2026-06-30、发布日期2026-08-31；历史分位为A股行情指标同日口径",
       "roe_ttm": 19.48,
       "pr_pe_roe": 0.751576,
-      "pr_pe_pb": 0.7444
+      "pr_pe_pb": 0.7444,
+      "roe_period": "TTM"
     },
     {
       "index_code": "000922",
@@ -70,7 +72,8 @@
       "source": "NeoData/指数估值，交易日2026-09-17；ROE报告期2026-06-30、发布日期2026-08-31；PE 5年/10年分位为A股行情指标同日口径，PB 5年分位为公开第三方汇总快照2026-09-13，非一手，需核实原文",
       "roe_ttm": 8.87,
       "pr_pe_roe": 0.968388,
-      "pr_pe_pb": 0.878453
+      "pr_pe_pb": 0.878453,
+      "roe_period": "TTM"
     },
     {
       "index_code": "H30269",
@@ -88,7 +91,8 @@
       "source": "NeoData/指数估值，交易日2026-09-17；ROE报告期2026-06-30、发布日期2026-08-31；历史分位为公开第三方汇总快照2026-09-13，非一手，需核实原文",
       "roe_ttm": 9.22,
       "pr_pe_roe": 0.919826,
-      "pr_pe_pb": 0.833708
+      "pr_pe_pb": 0.833708,
+      "roe_period": "TTM"
     },
     {
       "index_code": "930955",
@@ -106,7 +110,8 @@
       "source": "NeoData/指数估值，交易日2026-09-17；ROE报告期2026-06-30、发布日期2026-08-31；PE 5年/10年分位为A股行情指标同日口径，PB 5年分位为公开第三方汇总快照2026-09-13，非一手，需核实原文",
       "roe_ttm": 8.61,
       "pr_pe_roe": 1.038804,
-      "pr_pe_pb": 0.94828
+      "pr_pe_pb": 0.94828,
+      "roe_period": "TTM"
     },
     {
       "index_code": "932365",
@@ -124,7 +129,8 @@
       "source": "NeoData/指数估值，交易日2026-09-17；ROE报告期2026-06-30、发布日期2026-08-31；历史分位为公开第三方汇总快照2026-09-13，非一手，需核实原文",
       "roe_ttm": 11.32,
       "pr_pe_roe": 1.069982,
-      "pr_pe_pb": 0.967139
+      "pr_pe_pb": 0.967139,
+      "roe_period": "TTM"
     },
     {
       "index_code": "980092",
@@ -142,7 +148,8 @@
       "source": "NeoData/指数估值，交易日2026-09-17；ROE报告期2026-06-30、发布日期2026-08-31；历史分位为公开第三方汇总快照2026-09-13，非一手，需核实原文",
       "roe_ttm": 10.67,
       "pr_pe_roe": 1.216917,
-      "pr_pe_pb": 1.202462
+      "pr_pe_pb": 1.202462,
+      "roe_period": "TTM"
     },
     {
       "index_code": "931468",
@@ -268,7 +275,8 @@
       "roe_ttm": 6.768,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "931160",
@@ -279,7 +287,8 @@
       "roe_ttm": 11.2834,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "980017",
@@ -290,7 +299,8 @@
       "roe_ttm": 7.7924,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "H30590",
@@ -301,7 +311,8 @@
       "roe_ttm": 4.6529,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "399975",
@@ -312,7 +323,8 @@
       "roe_ttm": 5.3798,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "399808",
@@ -323,7 +335,8 @@
       "roe_ttm": 4.6862,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "399989",
@@ -334,7 +347,8 @@
       "roe_ttm": 6.5444,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "931152",
@@ -345,7 +359,8 @@
       "roe_ttm": 6.5427,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "000932",
@@ -356,7 +371,8 @@
       "roe_ttm": 8.1526,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "000819",
@@ -367,7 +383,8 @@
       "roe_ttm": 12.8016,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "930713",
@@ -378,7 +395,8 @@
       "roe_ttm": 9.1212,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "931743",
@@ -389,7 +407,8 @@
       "roe_ttm": 5.4358,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "H30199",
@@ -400,7 +419,8 @@
       "roe_ttm": 4.1533,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "980018",
@@ -411,7 +431,8 @@
       "roe_ttm": 1.8026,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "931790",
@@ -422,7 +443,8 @@
       "roe_ttm": null,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "MISSING_VALUATION",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "H30035",
@@ -433,7 +455,8 @@
       "roe_ttm": 9.3185,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "399296",
@@ -444,7 +467,8 @@
       "roe_ttm": 14.2943,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "931994",
@@ -455,7 +479,8 @@
       "roe_ttm": 5.185,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind指数口径，财报期2026Q2",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "000690",

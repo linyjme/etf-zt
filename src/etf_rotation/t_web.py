@@ -1245,7 +1245,7 @@ class MonitorApplication:
         items = []
         for r in records:
             code = str(r.get("index_code", "")); v = values.get(code)
-            items.append({"symbol": r.get("symbol"), "name": r.get("name"), "index_code": code, "index_name": r.get("index_name"), "pe": v.pe_ttm if v else None, "pb": v.pb if v else None, "roe": v.roe_ttm if v else None, "pr": v.pr_pe_roe if v else None, "as_of": v.as_of if v else None, "status": "OK" if v and v.pr_pe_roe is not None else "MISSING_VALUATION"})
+            items.append({"symbol": r.get("symbol"), "name": r.get("name"), "index_code": code, "index_name": r.get("index_name"), "pe": v.pe_ttm if v else None, "pb": v.pb if v else None, "roe": v.roe_ttm if v else None, "pr": v.pr_pe_pb if v else None, "as_of": v.as_of if v else None, "status": v.status if v else "MISSING_VALUATION"})
         return {"generated_at": datetime.now(SHANGHAI).isoformat(), "items": items, "read_only": True}
 
     def industry_swing(self) -> dict[str, Any]:

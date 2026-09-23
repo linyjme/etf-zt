@@ -575,7 +575,7 @@ def _evaluate_shadow_context(bars: Sequence[DailyBar], *, variant: ShadowVariant
     if any(triggers):
         score += 25.0
     valuation = str(_context_value(context, "valuation_status", "UNKNOWN"))
-    if valuation in {"ATTRACTIVE", "NEUTRAL"}:
+    if valuation in {"LOW", "NORMAL", "VALUE", "FAIR", "DEEP_VALUE"}:
         score += 10.0
     evidence: dict[str, object] = {
         "trend_ok": trend_ok,
