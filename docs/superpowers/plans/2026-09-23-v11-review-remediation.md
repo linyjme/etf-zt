@@ -82,7 +82,7 @@ python -m unittest tests.test_repository_completeness -v
 
 ~~~powershell
 git ls-files --error-unmatch src/etf_rotation/holdings_snapshot.py src/etf_rotation/swing_minutes.py src/etf_rotation/pr_page.py
-git clone --no-local F:\plan\money\zt $env:TEMP\etf-zt-clean-p0
+git clone --no-local (git rev-parse --show-toplevel) $env:TEMP\etf-zt-clean-p0
 Set-Location $env:TEMP\etf-zt-clean-p0
 python -m unittest tests.test_repository_completeness -v
 python -m unittest discover -s tests -t .
