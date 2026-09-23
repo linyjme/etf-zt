@@ -7,6 +7,7 @@
   "formal_risk_rate": 0.01,
   "minimum_daily_bars": 250,
   "weekly_confirmation_days": 2,
+  "environment_confirmation_days": 1,
   "pullback_window_min": 5,
   "pullback_window_max": 15,
   "box_days": 25,
