@@ -11,6 +11,7 @@ from etf_rotation.swing_v11 import (
     calculate_v11_indicators,
     evaluate_v11,
     load_v11_config,
+    normalize_v11_indicators,
     size_v11_order,
 )
 from tests.swing_helpers import swing_strategy_bars
@@ -250,6 +251,43 @@ class SwingV11HandbookAlignmentTests(unittest.TestCase):
         self.assertIn("ma250_slope_pct_10d", indicators)
         with self.assertRaises(ValueError):
             calculate_v11_indicators(self.bars, box_days=0)
+
+    def test_nested_weekly_ma10_flags_survive_normalization(self) -> None:
+        # The service feeds the nested indicator contract; the weekly MA10
+        # flags must remain explicit booleans or T3 can never be verified.
+        indicators = calculate_v11_indicators(self.bars)
+        normalized = normalize_v11_indicators(indicators)
+        self.assertIs(type(normalized["weekly_ma10_down_3w"]), bool)
+        self.assertIs(type(normalized["weekly_ma10_not_down_3w"]), bool)
+        self.assertEqual(
+            normalized["weekly_ma10_down_3w"], indicators["weekly"]["ma10_down_3w"],
+        )
+        decision = evaluate_v11(
+            self.bars, config=self.config,
+            context=V11Context(environment_state="ATTACK", indicator=indicators),
+        )
+        self.assertNotIn("T3_EVIDENCE_UNAVAILABLE", decision.blocked_reasons)
+
+    def test_nested_box_levels_survive_normalization(self) -> None:
+        # B3 compares the price with the box top; the nested contract keeps
+        # it under ``setups`` and it must reach the evaluator.
+        indicators = calculate_v11_indicators(self.bars)
+        normalized = normalize_v11_indicators(indicators)
+        self.assertEqual(normalized["box_high"], indicators["setups"]["box_high"])
+        self.assertEqual(normalized["box_low"], indicators["setups"]["box_low"])
+        self.assertEqual(normalized["box_width_pct"], indicators["setups"]["box_width_pct"])
+        nested = {
+            **indicators,
+            "setups": {
+                **indicators["setups"],
+                "box_ok": True, "box_breakout_ok": True,
+                "box_high": 98.0, "box_low": 90.0,
+                "box_first_half_low": 90.0, "box_latter_half_low": 91.0,
+            },
+        }
+        flat = normalize_v11_indicators(nested)
+        self.assertEqual(flat["box_high"], 98.0)
+        self.assertTrue(flat["box_breakout_ok"])
 
     def test_pullback_depth_uses_closing_prices(self) -> None:
         indicators = calculate_v11_indicators(self.bars)

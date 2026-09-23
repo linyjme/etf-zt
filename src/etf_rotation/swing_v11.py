@@ -1976,6 +1976,9 @@ def normalize_v11_indicators(indicators: Mapping[str, object]) -> dict[str, obje
             "box_latter_half_low", raw.get("box_second_half_low", setups.get("box_latter_half_low"))
         ),
         "box_days": raw.get("box_days", setups.get("box_days")),
+        "box_high": raw.get("box_high", setups.get("box_high")),
+        "box_low": raw.get("box_low", setups.get("box_low")),
+        "box_width_pct": raw.get("box_width_pct", setups.get("box_width_pct")),
         "pullback_low_close": raw.get("pullback_low_close", setups.get("pullback_low_close")),
         "daily_return_pct": raw.get("daily_return_pct", setups.get("daily_return_pct")),
         "avg_amount20_cny": raw.get("avg_amount20_cny", setups.get("avg_amount20_cny")),
@@ -1986,13 +1989,22 @@ def normalize_v11_indicators(indicators: Mapping[str, object]) -> dict[str, obje
     normalized = {key: value for key, value in flat.items() if value is not None}
     # Preserve absence for required P1 evidence.  The evaluator uses absence
     # to distinguish an unverified contract from an explicit false result.
+    # The nested contract from ``calculate_v11_indicators`` carries the weekly
+    # MA10 flags under ``weekly``; they count as supplied evidence too.
+    weekly_aliases = {
+        "weekly_ma10_down_3w": ("ma10_down_3w",),
+        "weekly_ma10_not_down_3w": ("ma10_not_down_3w",),
+    }
     for key in (
         "weekly_ma10_down_3w", "weekly_ma10_not_down_3w",
         "pullback_recovery_within_3d", "volume_contraction_majority",
         "recovery_long_upper_shadow", "rsi_pullback_never_below_40",
         "macd_histogram_improving_2d",
     ):
-        if key not in raw and key not in setups:
+        supplied = key in raw or key in setups or any(
+            alias in weekly for alias in weekly_aliases.get(key, ())
+        )
+        if not supplied:
             normalized.pop(key, None)
     return normalized
 
