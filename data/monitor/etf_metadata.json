@@ -85,9 +85,9 @@
         "price_limit_pct": 0.1,
         "volume_unit_shares": 100
       },
-      "category": "SECTOR",
+      "category": "BROAD",
       "environment_index": "000852",
-      "correlation_group": "SMALL_CAP_CN"
+      "correlation_group": "BROAD_CN"
     },
     {
       "symbol": "159915",
@@ -373,7 +373,7 @@
       },
       "category": "SECTOR",
       "environment_index": "000852",
-      "correlation_group": "TECH_CN"
+      "correlation_group": "GROWTH_CN"
     },
     {
       "symbol": "515880",
@@ -417,7 +417,7 @@
       },
       "category": "SECTOR",
       "environment_index": "000852",
-      "correlation_group": "TECH_CN"
+      "correlation_group": "GROWTH_CN"
     },
     {
       "symbol": "562500",
@@ -460,7 +460,7 @@
         "volume_unit_shares": 100
       },
       "category": "SECTOR",
-      "environment_index": "000300",
+      "environment_index": "ANY",
       "correlation_group": "FINANCE_CN"
     },
     {
@@ -483,7 +483,7 @@
       },
       "category": "SECTOR",
       "environment_index": "000852",
-      "correlation_group": "NEW_ENERGY_CN"
+      "correlation_group": "ENERGY_RESOURCE_CN"
     },
     {
       "symbol": "512170",
@@ -571,7 +571,7 @@
       },
       "category": "SECTOR",
       "environment_index": "000852",
-      "correlation_group": "RESOURCE_CN"
+      "correlation_group": "ENERGY_RESOURCE_CN"
     },
     {
       "symbol": "159819",
@@ -615,7 +615,7 @@
       },
       "category": "SECTOR",
       "environment_index": "000852",
-      "correlation_group": "TECH_CN"
+      "correlation_group": "GROWTH_CN"
     },
     {
       "symbol": "159611",

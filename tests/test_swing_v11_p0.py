@@ -32,6 +32,30 @@ class SwingV11P0Tests(unittest.TestCase):
             self.assertEqual(by_symbol[symbol]["environment_index"], "000300")
         for symbol in ("159792", "513050"):
             self.assertIsNone(by_symbol[symbol]["environment_index"])
+        # Appendix B: brokerage ETFs open when either index is healthy.
+        self.assertEqual(by_symbol["512880"]["environment_index"], "ANY")
+
+    def test_metadata_correlation_groups_follow_appendix_b(self) -> None:
+        payload = json.loads(
+            (Path(__file__).parents[1] / "data" / "monitor" / "etf_metadata.json").read_text(encoding="utf-8")
+        )
+        by_symbol = {item["symbol"]: item for item in payload["items"]}
+        # Group 1: CSI 300 / CSI 500 / CSI 1000 are one broad-index group.
+        self.assertEqual(by_symbol["512100"]["category"], "BROAD")
+        self.assertEqual(
+            {by_symbol[s]["correlation_group"] for s in ("510300", "510500", "512100")},
+            {"BROAD_CN"},
+        )
+        # Group 2: STAR 50 / ChiNext / semiconductor / chip share one group.
+        self.assertEqual(
+            {by_symbol[s]["correlation_group"] for s in ("588000", "159915", "512480", "159995", "159516")},
+            {"GROWTH_CN"},
+        )
+        # Group 3: new energy and non-ferrous metals share one group.
+        self.assertEqual(
+            by_symbol["516160"]["correlation_group"],
+            by_symbol["512400"]["correlation_group"],
+        )
 
     def test_trailing_holiday_week_is_completed_with_calendar(self) -> None:
         bars = retime_daily_bars(
