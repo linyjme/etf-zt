@@ -24,8 +24,8 @@ var/swing/*
 !var/notifications/
 var/notifications/*
 !var/notifications/events.sqlite3
-!var/notifications/settings.json
 var/notifications/smtp.secret
+var/notifications/settings.json
 /data/monitor/quotes.json
 /data/monitor/quotes.jsonl
 /data/monitor/alerts.jsonl
