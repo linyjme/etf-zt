@@ -80,6 +80,31 @@ class VerifiedQualityGateTests(unittest.TestCase):
         self.assertEqual(result["status"], "UNVERIFIED")
         self.assertIn("DATA_QUALITY_RECEIPT_WARNINGS", result["reasons"])
 
+    def test_environment_history_must_be_long_and_current(self):
+        cases = {
+            "DATA_QUALITY_ENVIRONMENT_INSUFFICIENT_BARS": {
+                "000300": self.bars[-1:], "000852": self.bars,
+            },
+            "DATA_QUALITY_ENVIRONMENT_LATEST_DATE_NOT_CURRENT": {
+                "000300": self.bars[:-1], "000852": self.bars,
+            },
+        }
+        for reason, histories in cases.items():
+            with self.subTest(reason=reason):
+                kwargs = dict(self.kwargs, environment_histories=histories)
+                result = assess_verified_quality(self.bars, **kwargs)
+                self.assertEqual(result["status"], "UNVERIFIED")
+                self.assertIn(reason, result["reasons"])
+
+    def test_environment_history_must_be_ordered_and_unique(self):
+        histories = dict(self.kwargs["environment_histories"])
+        histories["000300"] = (*self.bars[:-2], self.bars[-1], self.bars[-2])
+        result = assess_verified_quality(
+            self.bars, **dict(self.kwargs, environment_histories=histories),
+        )
+        self.assertEqual(result["status"], "UNVERIFIED")
+        self.assertIn("DATA_QUALITY_ENVIRONMENT_INVALID_SEQUENCE", result["reasons"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -119,8 +119,21 @@ def assess_verified_quality(
         if not history:
             environments_ok = False
             continue
-        environment_latest[symbol] = history[-1].trading_date.isoformat()
         if any(type(item) is not DailyBar for item in history):
+            environments_ok = False
+            continue
+        dates = tuple(item.trading_date for item in history)
+        environment_latest[symbol] = dates[-1].isoformat()
+        if len(history) < minimum_daily_bars:
+            reasons.append("DATA_QUALITY_ENVIRONMENT_INSUFFICIENT_BARS")
+            environments_ok = False
+        if len(set(dates)) != len(dates) or any(
+            current <= previous for previous, current in zip(dates, dates[1:])
+        ):
+            reasons.append("DATA_QUALITY_ENVIRONMENT_INVALID_SEQUENCE")
+            environments_ok = False
+        if dates[-1] != expected:
+            reasons.append("DATA_QUALITY_ENVIRONMENT_LATEST_DATE_NOT_CURRENT")
             environments_ok = False
     if not environments_ok:
         reasons.append("DATA_QUALITY_ENVIRONMENT_MISSING")
