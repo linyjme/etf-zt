@@ -178,7 +178,7 @@ class SwingV11P1Tests(unittest.TestCase):
     def test_b_missing_long_trend_box_or_bollinger_evidence_blocks(self):
         decision = self.evaluate(self.evidence(
             return_250d_pct=None,
-            ma250_slope_pct_20d=None,
+            ma250_slope_pct_10d=None,
             box_days=None,
             bollinger_upper=None,
         ))

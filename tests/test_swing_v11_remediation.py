@@ -106,7 +106,10 @@ class SwingV11RemediationTests(unittest.TestCase):
         self.assertEqual(result.action, "REDUCE")
         self.assertIn("S8_VALUATION_STAGE", result.blocked_reasons)
         self.assertEqual(result.evidence["tracking_price"], 108.0)
-        self.assertEqual(result.stop_price, 108.0)
+        self.assertEqual(result.evidence["tracking_line"], 108.0)
+        # Handbook 7.3: the conditional order sits at max(entry, stop); the
+        # MA20 line is tracked separately each session.
+        self.assertEqual(result.stop_price, 100.0)
 
     def test_zero_size_multiplier_blocks_entry_instead_of_halving(self):
         from etf_rotation.swing_v11 import evaluate_v11

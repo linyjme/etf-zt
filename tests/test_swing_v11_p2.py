@@ -66,7 +66,7 @@ class SwingV11P2CoreTests(unittest.TestCase):
         )
         self.assertEqual(reduce_decision.action, "REDUCE")
         self.assertEqual(reduce_decision.evidence["tracking_price"], 106.0)
-        self.assertEqual(reduce_decision.stop_price, 106.0)
+        self.assertEqual(reduce_decision.stop_price, 100.0)
 
     def test_bad_data_blocks_non_exit_position_actions(self):
         decision = self.evaluate(
@@ -125,7 +125,43 @@ class SwingV11P2CoreTests(unittest.TestCase):
         self.assertEqual(decision.planned_shares, 0)
         self.assertEqual(decision.evidence["tracking_ma"], "MA20")
         self.assertEqual(decision.evidence["tracking_price"], 106.0)
-        self.assertEqual(decision.stop_price, 106.0)
+        self.assertEqual(decision.stop_price, 100.0)
+
+    def test_tracking_line_is_the_live_moving_average(self):
+        broken = self.evaluate(
+            self.position(current_price=105.0, tracking_started=True),
+            category="BROAD",
+            indicator={"ma20": 106.0, "close": 105.0},
+        )
+        self.assertEqual(broken.action, "EXIT")
+        self.assertIn("TRACKING_LINE_BROKEN", broken.blocked_reasons)
+        held = self.evaluate(
+            self.position(current_price=107.0, tracking_started=True),
+            category="BROAD",
+            indicator={"ma20": 106.0, "close": 107.0},
+        )
+        self.assertEqual(held.action, "HOLD")
+
+    def test_defense_switches_every_a_share_tracking_line_to_ma10(self):
+        decision = self.evaluate(
+            self.position(current_price=107.0, tracking_started=True, reduced=True),
+            environment_state="DEFENSE",
+            category="BROAD",
+            indicator={"ma20": 104.0, "ma10": 108.0, "close": 107.0},
+        )
+        self.assertEqual(decision.evidence["tracking_ma"], "MA10")
+        self.assertEqual(decision.action, "EXIT")
+        self.assertIn("TRACKING_LINE_BROKEN", decision.blocked_reasons)
+
+    def test_attack_to_neutral_moves_profitable_stop_to_entry(self):
+        decision = self.evaluate(
+            self.position(current_price=102.0, entry_environment="ATTACK"),
+            environment_state="NEUTRAL",
+            category="BROAD",
+        )
+        self.assertEqual(decision.action, "MOVE_STOP")
+        self.assertIn("ENVIRONMENT_NEUTRAL_BREAKEVEN", decision.blocked_reasons)
+        self.assertEqual(decision.stop_price, 100.0)
 
     def test_two_r_tracking_never_lowers_an_existing_tighter_stop(self):
         decision = self.evaluate(

@@ -60,6 +60,22 @@ class V11Config:
     box_days: int
     cooldown_sessions: int
     lot_size: int = 100
+    # The handbook judges the market state on the day itself.  A value above
+    # one requires that many consecutive completed sessions to agree before
+    # the state changes, which is stricter than v1.1.
+    environment_confirmation_days: int = 1
+
+
+# Handbook section three: total exposure allowed per market state.
+V11_EXPOSURE_CAPS = {"ATTACK": 1.0, "NEUTRAL": 0.6, "DEFENSE": 0.3}
+V11_SINGLE_SYMBOL_CAP = 0.30
+V11_MAX_POSITIONS = 4
+# Handbook section one: R budget multipliers relative to the A-share budget.
+V11_CROSS_BORDER_GOLD_RISK_MULTIPLIER = 0.7
+V11_F1_RISK_MULTIPLIER = 0.5
+V11_F1_CONSECUTIVE_LOSSES = 3
+V11_F2_CONSECUTIVE_LOSSES = 5
+V11_DEFENSE_RECOVERY_SESSIONS = 5
 
 
 @dataclass(frozen=True)
@@ -85,6 +101,30 @@ class V11Context:
     indicator: Mapping[str, object] = field(default_factory=dict)
     valuation_stage: Mapping[str, object] | ValuationStage | None = None
     valuation_stage_enforcement: bool = False
+    # Handbook section three: the healthy side of a neutral market.  The
+    # environment index comes from ETF metadata; ``ANY`` means either index
+    # (brokerage ETFs).  ``environment_states`` holds the latest per-index
+    # classification supplied by ``calculate_v11_environment``.
+    environment_index: str | None = None
+    environment_states: Mapping[str, str] = field(default_factory=dict)
+    # Completed sessions since the market recovered from defense to neutral.
+    # ``None`` when no such recovery window is active.
+    defense_recovery_sessions: int | None = None
+    # Portfolio-level evidence for the section 4.4 vetoes and 4.6 caps.
+    open_position_count: int = 0
+    etf_market_value_cny: float = 0.0
+    symbol_market_value_cny: float = 0.0
+    held_correlation_groups: tuple[str, ...] = ()
+    reentry_cooldown_sessions: int = 0
+    consecutive_losses: int = 0
+    entry_pause_sessions: int = 0
+    # Calendar evidence: 1 = last session before a long holiday, 2 = the one
+    # before it.  ``None`` when the next sessions are ordinary.
+    long_holiday_sessions_ahead: int | None = None
+    ex_dividend_window: bool = False
+    # Cross-border premium from the previous close in percent.  Missing
+    # evidence fails closed for cross-border entries.
+    premium_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +226,7 @@ _CONFIG_KEYS = frozenset({
     "weekly_confirmation_days", "pullback_window_min", "pullback_window_max",
     "box_days", "cooldown_sessions", "lot_size",
 })
+_OPTIONAL_CONFIG_KEYS = frozenset({"environment_confirmation_days"})
 
 
 def _finite_positive(payload: Mapping[str, object], key: str) -> float:
@@ -210,7 +251,10 @@ def load_v11_config(path: Path) -> V11Config:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError("V11 config is not valid JSON") from error
-    if not isinstance(payload, dict) or frozenset(payload) != _CONFIG_KEYS:
+    if (
+        not isinstance(payload, dict)
+        or frozenset(payload) - _OPTIONAL_CONFIG_KEYS != _CONFIG_KEYS
+    ):
         raise ValueError("V11 config keys are invalid")
     if payload["schema_version"] != 1 or payload["strategy_version"] != "SWING_V11_SHADOW":
         raise ValueError("V11 config version is invalid")
@@ -231,6 +275,10 @@ def load_v11_config(path: Path) -> V11Config:
     box = _positive_int(payload, "box_days")
     cooldown = _positive_int(payload, "cooldown_sessions")
     lot_size = _positive_int(payload, "lot_size")
+    confirmation = (
+        _positive_int(payload, "environment_confirmation_days")
+        if "environment_confirmation_days" in payload else 1
+    )
     return V11Config(
         schema_version=1,
         strategy_version="SWING_V11_SHADOW",
@@ -245,6 +293,7 @@ def load_v11_config(path: Path) -> V11Config:
         box_days=box,
         cooldown_sessions=cooldown,
         lot_size=lot_size,
+        environment_confirmation_days=confirmation,
     )
 
 
@@ -406,18 +455,29 @@ def evaluate_v11(
     # false environment permission.  Neutral only permits broad/gold and
     # defense only permits defensive categories.
     t5_reported: bool | None
+    healthy_side = _healthy_side_allowed(context)
+    defense_recovery_window = bool(
+        environment == "NEUTRAL"
+        and context.defense_recovery_sessions is not None
+        and 1 <= context.defense_recovery_sessions <= V11_DEFENSE_RECOVERY_SESSIONS
+    )
     if category_unverified:
         t5_allowed = False
         t5_reported = None
     else:
         explicit_t5 = indicator.get("environment_category_allowed")
         if explicit_t5 is None:
-            if environment == "ATTACK":
+            if category in {"CROSS_BORDER", "GOLD"}:
+                # Handbook T5: gold and cross-border skip the market state.
+                t5_allowed = True
+            elif environment == "ATTACK":
                 t5_allowed = True
             elif environment == "NEUTRAL":
-                t5_allowed = category in {"BROAD", "GOLD", "CROSS_BORDER"}
-            elif environment == "DEFENSE":
-                t5_allowed = category in {"CROSS_BORDER", "GOLD"}
+                # Only the healthy side may open; the first five sessions
+                # after a defense recovery admit broad indices alone.
+                t5_allowed = healthy_side and (
+                    not defense_recovery_window or category == "BROAD"
+                )
             else:
                 t5_allowed = False
         else:
@@ -425,6 +485,47 @@ def evaluate_v11(
         t5_reported = t5_allowed
         if not t5_allowed:
             reasons.append("T5_ENVIRONMENT_CATEGORY")
+            if (
+                environment == "NEUTRAL" and defense_recovery_window
+                and healthy_side and category not in {"BROAD", "CROSS_BORDER", "GOLD"}
+            ):
+                reasons.append("DEFENSE_RECOVERY_WINDOW")
+    # Section 4.4 vetoes that depend on account, calendar and pool evidence.
+    if not context.has_position:
+        if context.reentry_cooldown_sessions > 0:
+            reasons.append("REENTRY_COOLDOWN")
+        if (
+            context.correlation_group
+            and context.correlation_group in context.held_correlation_groups
+        ):
+            reasons.append("RELATED_GROUP_OCCUPIED")
+        if context.open_position_count >= V11_MAX_POSITIONS:
+            reasons.append("MAX_POSITIONS")
+    if context.entry_pause_sessions > 0:
+        reasons.append("ACCOUNT_RISK_PAUSE")
+    if context.long_holiday_sessions_ahead in (1, 2):
+        reasons.append("LONG_HOLIDAY_PRECLOSE")
+    if context.ex_dividend_window:
+        reasons.append("EX_DIVIDEND_WINDOW")
+    if category == "CROSS_BORDER":
+        if context.premium_pct is None:
+            reasons.append("PREMIUM_EVIDENCE_UNAVAILABLE")
+        elif context.premium_pct > 2.0:
+            reasons.append("PREMIUM_OVER_2")
+    avg_amount20 = _number_or_none(indicator.get("avg_amount20_cny"))
+    if avg_amount20 is None:
+        avg_amount20 = _number_or_none(context.metadata.get("avg_amount20_cny"))
+    if avg_amount20 is not None and avg_amount20 < 200_000_000.0:
+        reasons.append("LIQUIDITY_TURNOVER")
+    fund_size = _number_or_none(context.metadata.get("fund_size_cny"))
+    if fund_size is not None and fund_size < 1_000_000_000.0:
+        reasons.append("LIQUIDITY_FUND_SIZE")
+    rsi_now = _number_or_none(indicator.get("rsi_current"))
+    if (
+        rsi_now is not None and rsi_now < 30.0
+        and indicator.get("new_low_20d") is True
+    ):
+        reasons.append("RSI_OVERSOLD_NEW_LOW")
 
     ma10 = _number_or_none(indicator.get("ma10"))
     pullback_sessions = _number_or_none(indicator.get("pullback_window_sessions"))
@@ -437,7 +538,8 @@ def evaluate_v11(
     pullback_touch_evidence = pullback_low is not None and ma10 is not None
     pullback_evidence_available = pullback_depth_evidence or pullback_touch_evidence
     pullback_shape_ok = bool(
-        pullback_depth_evidence and 5.0 <= pullback_sessions <= 15.0
+        pullback_depth_evidence
+        and config.pullback_window_min <= pullback_sessions <= config.pullback_window_max
         and pullback_depth >= depth_threshold
     ) or bool(
         pullback_touch_evidence and pullback_low <= ma10 * 1.01
@@ -506,7 +608,7 @@ def evaluate_v11(
         and any(momentum_triggers)
     )
     return_60d = _number_or_none(indicator.get("return_60d_pct"))
-    ma250_slope = _number_or_none(indicator.get("ma250_slope_pct_20d"))
+    ma250_slope = _number_or_none(indicator.get("ma250_slope_pct_10d"))
     return_250 = _number_or_none(indicator.get("return_250d_pct"))
     ma250 = _number_or_none(indicator.get("ma250"))
     b1_ok = bool(
@@ -517,7 +619,7 @@ def evaluate_v11(
     box_latter_low = _number_or_none(indicator.get("box_latter_half_low"))
     box_days = _number_or_none(indicator.get("box_days"))
     b2_ok = bool(
-        box_days is not None and box_days >= 25.0
+        box_days is not None and box_days >= float(config.box_days)
         and box_first_low is not None and box_latter_low is not None
         and box_latter_low >= box_first_low
     )
@@ -612,11 +714,20 @@ def evaluate_v11(
         if not bool(indicator.get("box_breakout_ok")):
             reasons.append("BREAKOUT_NOT_CONFIRMED")
     rs = context.relative_strength_20
-    if rs is not None and rs < -3.0:
-        reasons.append("RELATIVE_STRENGTH_TOO_WEAK")
+    setup = V11Setup.A_PULLBACK if a_ok else V11Setup.B_BREAKOUT if b_ok else V11Setup.NONE
+    # Handbook 4.4: the relative-strength veto applies to the A setup only.
     if rs is not None and not math.isfinite(float(rs)):
         reasons.append("RELATIVE_STRENGTH_INVALID")
-    setup = V11Setup.A_PULLBACK if a_ok else V11Setup.B_BREAKOUT if b_ok else V11Setup.NONE
+    elif rs is not None and rs < -3.0 and setup is not V11Setup.B_BREAKOUT:
+        reasons.append("RELATIVE_STRENGTH_TOO_WEAK")
+    ma250 = _number_or_none(indicator.get("ma250"))
+    ma250_pressure = bool(
+        setup is not V11Setup.B_BREAKOUT
+        and price is not None and ma250 is not None and price > 0.0
+        and ma250 > price and ma250 / price - 1.0 <= 0.03
+    )
+    if ma250_pressure:
+        reasons.append("MA250_PRESSURE")
     hard_reasons_list = list(dict.fromkeys(reasons))
     entry_price = _number_or_none(indicator.get("price")) or context.price
     atr14 = _number_or_none(indicator.get("atr14"))
@@ -662,11 +773,23 @@ def evaluate_v11(
     macd_below_zero = bool(
         setup is V11Setup.A_PULLBACK and macd_dif is not None and macd_dif < 0.0
     )
-    forced_half = bool(
-        setup is V11Setup.B_BREAKOUT or macd_below_zero
-        or (rs is not None and -3.0 <= rs < 0.0)
-        or stage_force_half
+    defense_exempt = category in {"CROSS_BORDER", "GOLD"}
+    sector_wide_stop = bool(
+        category not in {"BROAD", "GOLD"}
+        and stop_width_pct is not None and 0.06 < stop_width_pct <= 0.07
     )
+    f1_active = context.consecutive_losses >= V11_F1_CONSECUTIVE_LOSSES
+    half_reasons = tuple(name for name, active in (
+        ("B_BREAKOUT", setup is V11Setup.B_BREAKOUT),
+        ("A7_MACD_BELOW_ZERO", macd_below_zero),
+        ("RELATIVE_STRENGTH_NEGATIVE", rs is not None and -3.0 <= rs < 0.0),
+        ("VALUATION_STAGE", stage_force_half),
+        ("ENVIRONMENT_NEUTRAL", environment == "NEUTRAL" and not defense_exempt),
+        ("SECTOR_STOP_6_7", sector_wide_stop),
+        ("F1_CONSECUTIVE_LOSSES", f1_active),
+        ("DEFENSE_RECOVERY_WINDOW", defense_recovery_window and not defense_exempt),
+    ) if active)
+    forced_half = bool(half_reasons)
     if setup is not V11Setup.NONE and not hard_reasons_list:
         if entry_price is None or stop_price is None:
             hard_reasons_list.append("STOP_CONTEXT_UNAVAILABLE")
@@ -678,6 +801,8 @@ def evaluate_v11(
                 config=config,
                 context=context,
                 force_half=forced_half,
+                environment_state=environment,
+                f1_active=f1_active,
             )
             planned_notional = planned_shares * entry_price if planned_shares else None
             hard_reasons_list.extend(sizing.get("blocked_reasons", ()))
@@ -726,6 +851,10 @@ def evaluate_v11(
         "volume_recovery_trigger": momentum_triggers[2],
         "kdj_required": False,
         "forced_half_size": forced_half,
+        "half_size_reasons": half_reasons,
+        "healthy_side_allowed": healthy_side,
+        "defense_recovery_window": defense_recovery_window,
+        "ma250_pressure": ma250_pressure,
         "stop_reference": stop_reference,
         "stop_reference_value": stop_reference_value,
         "stop_width_pct": stop_width_pct,
@@ -807,11 +936,58 @@ def _lot_floor(shares: float, lot_size: int) -> int:
     return max(0, math.floor(shares / lot_size) * lot_size)
 
 
+def _enter_tracking(
+    evidence: dict[str, object],
+    position: V11Position,
+    tracking_ma: str,
+    tracking_line: float | None,
+) -> float:
+    """Record the tracking transition and return the bottom conditional stop.
+
+    Handbook 7.3 keeps the conditional order at max(entry, current stop) as
+    gap protection while the moving-average line is checked each session.
+    """
+    tracking_price = max(position.entry_price, tracking_line or position.entry_price)
+    evidence.update({
+        "tracking_ma": tracking_ma,
+        "tracking_line": tracking_line,
+        "tracking_price": tracking_price,
+        "tracking_floor": position.entry_price,
+    })
+    return max(position.stop_price, position.entry_price)
+
+
+def _healthy_side_allowed(context: V11Context) -> bool:
+    """Return whether the ETF's environment index is currently healthy.
+
+    ``ANY`` accepts either index (handbook: brokerage ETFs).  A missing
+    environment index or missing per-index state fails closed.
+    """
+    states = {
+        str(code): str(state).upper()
+        for code, state in (context.environment_states or {}).items()
+    }
+    if not states:
+        return False
+    environment_index = (context.environment_index or "").upper()
+    if environment_index == "ANY":
+        return any(state == "ATTACK" for state in states.values())
+    return states.get(environment_index) == "ATTACK"
+
+
 def size_v11_order(
     *, entry_price: float, stop_price: float, config: V11Config,
     context: V11Context, force_half: bool = False,
+    environment_state: str | None = None, f1_active: bool = False,
 ) -> tuple[int, dict[str, object]]:
-    """Size a manual candidate without ever exceeding the configured notional."""
+    """Size a manual candidate without ever exceeding the configured notional.
+
+    The R budget follows handbook section one: cross-border and gold use
+    0.7x of the A-share budget and an active F1 halves it again, taking the
+    smallest applicable value.  Section 4.6 caps (30% per symbol, total
+    exposure per market state) shrink the share count rather than moving
+    the stop.
+    """
     evidence: dict[str, object] = {"blocked_reasons": []}
     reasons: list[str] = []
     if entry_price <= 0.0 or stop_price <= 0.0 or entry_price <= stop_price:
@@ -827,7 +1003,13 @@ def size_v11_order(
         reasons.append("STOP_WIDTH_OVER_CAP")
     equity = max(0.0, context.equity_cny)
     cash = max(0.0, context.cash_cny)
-    risk_budget = equity * config.shadow_risk_rate
+    risk_multiplier = 1.0
+    if category in {"CROSS_BORDER", "GOLD"}:
+        risk_multiplier = min(risk_multiplier, V11_CROSS_BORDER_GOLD_RISK_MULTIPLIER)
+    if f1_active:
+        risk_multiplier = min(risk_multiplier, V11_F1_RISK_MULTIPLIER)
+    risk_rate = config.shadow_risk_rate * risk_multiplier
+    risk_budget = equity * risk_rate
     risk_shares = risk_budget / distance if distance > 0.0 else 0.0
     cash_shares = cash / entry_price if entry_price > 0.0 else 0.0
     target_notional = config.target_order_cny * (0.5 if force_half else 1.0)
@@ -836,20 +1018,48 @@ def size_v11_order(
     if force_half:
         risk_shares *= 0.5
         evidence["forced_half_size"] = True
+    symbol_room = max(
+        0.0, equity * V11_SINGLE_SYMBOL_CAP - max(0.0, context.symbol_market_value_cny),
+    )
+    single_cap_shares = symbol_room / entry_price if entry_price > 0.0 else 0.0
+    exposure_cap = V11_EXPOSURE_CAPS.get(
+        (environment_state or context.environment_state or "").upper(),
+    )
+    if exposure_cap is None:
+        # Unknown market state is already blocked upstream; keep the sizing
+        # arithmetic readable instead of reporting a zero cap.
+        exposure_cap_shares = math.inf
+    else:
+        exposure_room = max(
+            0.0, equity * exposure_cap - max(0.0, context.etf_market_value_cny),
+        )
+        exposure_cap_shares = exposure_room / entry_price if entry_price > 0.0 else 0.0
     selected = _lot_floor(min(
         risk_shares, cash_shares, target_notional_shares, hard_notional_shares,
+        single_cap_shares, exposure_cap_shares,
     ), config.lot_size)
     if selected < config.lot_size:
         reasons.append("MINIMUM_LOT")
+        if single_cap_shares < config.lot_size:
+            reasons.append("SINGLE_SYMBOL_CAP")
+        if exposure_cap_shares < config.lot_size:
+            reasons.append("TOTAL_EXPOSURE_CAP")
         selected = 0
     if reasons and "STOP_WIDTH_OVER_CAP" in reasons:
         selected = 0
     evidence.update({
+        "risk_rate_applied": risk_rate,
+        "risk_rate_multiplier": risk_multiplier,
         "risk_budget_cny": risk_budget,
         "risk_cap_shares": risk_shares,
         "cash_cap_shares": cash_shares,
         "target_cap_shares": target_notional_shares,
         "max_order_cap_shares": hard_notional_shares,
+        "single_symbol_cap_shares": single_cap_shares,
+        "total_exposure_cap_shares": (
+            exposure_cap_shares if math.isfinite(exposure_cap_shares) else None
+        ),
+        "total_exposure_cap_pct": exposure_cap,
         "selected_shares": selected,
         "selected_notional_cny": selected * entry_price,
         "target_order_cny": config.target_order_cny,
@@ -956,10 +1166,15 @@ def evaluate_v11_position(
     s2_limit = 75.0 if category in {"BROAD", "GOLD", "UNVERIFIED"} else 80.0
     s1 = bias is not None and bias > s1_limit
     s2 = not s1 and rsi is not None and rsi > s2_limit and upper is not None and close > upper
+    # Handbook S3 asks for a bullish candle (close above open).  When the
+    # caller does not supply the candle, a positive daily return stands in.
+    bullish_candle = value("bullish_candle")
+    if type(bullish_candle) is not bool:
+        bullish_candle = daily_return is not None and daily_return > 0.0
     s3_volume = (
         position.holding_session >= 2
         and volume_ratio is not None and volume_ratio >= 2.5
-        and daily_return is not None and daily_return > 0.0
+        and bullish_candle
     )
     day_move_limit = 4.0 if category in {"BROAD", "GOLD", "UNVERIFIED"} else 6.0
     s3_move = (
@@ -995,15 +1210,35 @@ def evaluate_v11_position(
         "s7_holiday": s7,
     })
 
+    # Handbook 7.3: the tracking line is the live MA20 (broad, gold) or MA10
+    # (sector, cross-border).  After the market turns to defense every
+    # A-share ETF tracks MA10.  The bottom conditional order stays at
+    # max(entry, current stop) and is handled by STOP_TRIGGERED.
+    tracking_ma = "MA20" if category in {"BROAD", "GOLD", "UNVERIFIED"} else "MA10"
+    if environment == "DEFENSE" and not defense_exempt:
+        tracking_ma = "MA10"
+    tracking_line = number("ma20" if tracking_ma == "MA20" else "ma10")
+    tracking_active = bool(
+        position.tracking_started or position.reduced
+        or position.tracking_price is not None
+    )
+    evidence.update({
+        "tracking_ma": tracking_ma,
+        "tracking_line": tracking_line,
+        "tracking_active": tracking_active,
+    })
+
     # All exit rules are evaluated before environmental, reduction and top-up
     # rules.  Missing evidence is false, never an inferred trigger.
     exit_reasons: list[str] = []
     if position.current_price <= position.stop_price:
         exit_reasons.append("STOP_TRIGGERED")
-    if position.tracking_price is not None and position.current_price < max(
-        position.entry_price, position.tracking_price,
-    ):
-        exit_reasons.append("TRACKING_LINE_BROKEN")
+    if tracking_active:
+        reference = tracking_line
+        if reference is None and position.tracking_price is not None:
+            reference = position.tracking_price
+        if reference is not None and close < reference:
+            exit_reasons.append("TRACKING_LINE_BROKEN")
     ma60 = number("ma60")
     ma60_break_days = number("close_below_ma60_days")
     if flag("ma60_break_confirmed") or (ma60 is not None and close < ma60 * 0.98) or (ma60_break_days is not None and ma60_break_days >= 2):
@@ -1098,21 +1333,13 @@ def evaluate_v11_position(
         planned = half
         reasons.append("S5_ENVIRONMENT_DEFENSE")
         evidence["reduce_reason"] = "S5_ENVIRONMENT_DEFENSE"
-        tracking_ma = "MA20" if category in {"BROAD", "GOLD", "UNVERIFIED"} else "MA10"
-        tracking_value = number("ma20" if tracking_ma == "MA20" else "ma10")
-        tracking_price = max(position.entry_price, tracking_value or position.entry_price)
-        evidence.update({"tracking_ma": tracking_ma, "tracking_price": tracking_price, "tracking_floor": position.entry_price})
-        decision_stop = max(position.stop_price, tracking_price)
+        decision_stop = _enter_tracking(evidence, position, tracking_ma, tracking_line)
     elif not position.reduced and half > 0 and stage_reduce_at_r is not None and profit_r >= stage_reduce_at_r:
         action = "REDUCE"
         planned = half
         reasons.append("S8_VALUATION_STAGE")
         evidence["reduce_reason"] = "S8_VALUATION_STAGE"
-        tracking_ma = "MA20" if category in {"BROAD", "GOLD", "UNVERIFIED"} else "MA10"
-        tracking_value = number("ma20" if tracking_ma == "MA20" else "ma10")
-        tracking_price = max(position.entry_price, tracking_value or position.entry_price)
-        evidence.update({"tracking_ma": tracking_ma, "tracking_price": tracking_price, "tracking_floor": position.entry_price})
-        decision_stop = max(position.stop_price, tracking_price)
+        decision_stop = _enter_tracking(evidence, position, tracking_ma, tracking_line)
     elif not position.reduced and half > 0 and (
         s1 or s2 or s3 or s4 or s6 or s7
     ):
@@ -1125,33 +1352,38 @@ def evaluate_v11_position(
         )
         evidence["reduce_reason"] = reduce_reason
         reasons.append(reduce_reason)
-        tracking_ma = "MA20" if category in {"BROAD", "GOLD", "UNVERIFIED"} else "MA10"
-        tracking_value = number("ma20" if tracking_ma == "MA20" else "ma10")
-        tracking_price = max(position.entry_price, tracking_value or position.entry_price)
-        evidence.update({"tracking_ma": tracking_ma, "tracking_price": tracking_price, "tracking_floor": position.entry_price})
-        decision_stop = max(position.stop_price, tracking_price)
+        decision_stop = _enter_tracking(evidence, position, tracking_ma, tracking_line)
     elif (
         profit_r >= 2.0
         and position.tracking_price is None
         and not position.tracking_started
         and not position.reduced
     ):
-        tracking_ma = "MA20" if category in {"BROAD", "GOLD", "UNVERIFIED"} else "MA10"
-        tracking_value = number("ma20" if tracking_ma == "MA20" else "ma10")
-        tracking_price = max(position.entry_price, tracking_value or position.entry_price)
-        evidence.update({"tracking_ma": tracking_ma, "tracking_price": tracking_price, "tracking_floor": position.entry_price})
         # A tracking transition may only raise the protective stop; it never
         # moves an already tighter stop lower.
-        decision_stop = max(position.stop_price, tracking_price)
+        decision_stop = _enter_tracking(evidence, position, tracking_ma, tracking_line)
         action = "TRACK"
         reasons.append("PROFIT_2R_TRACKING")
-    elif position.holding_session >= 25 and 1.0 <= profit_r < 2.0:
-        tracking_value = number("ma20")
-        tracking_price = max(position.entry_price, tracking_value or position.entry_price)
-        evidence.update({"tracking_ma": "MA20", "tracking_price": tracking_price, "tracking_floor": position.entry_price})
-        decision_stop = max(position.stop_price, tracking_price)
+    elif (
+        position.holding_session >= 25 and 1.0 <= profit_r < 2.0
+        and not tracking_active
+    ):
+        # Handbook T25: 1R-2R positions move to MA20 tracking without reducing.
+        decision_stop = _enter_tracking(evidence, position, "MA20", number("ma20"))
         action = "TRACK"
         reasons.extend(("T25_TRACKING", "T25"))
+    elif (
+        position.entry_environment is not None
+        and position.entry_environment.upper() == "ATTACK"
+        and environment == "NEUTRAL" and not defense_exempt
+        and profit_r >= 0.0 and position.stop_price < position.entry_price
+    ):
+        # Handbook section three, attack -> neutral: profitable positions
+        # move the conditional order to the entry price.
+        decision_stop = position.entry_price
+        evidence.update({"new_stop": position.entry_price, "breakeven": True})
+        action = "MOVE_STOP"
+        reasons.append("ENVIRONMENT_NEUTRAL_BREAKEVEN")
     elif profit_r >= 1.0 and position.stop_price < position.entry_price and position.tracking_price is None and not position.tracking_started:
         decision_stop = position.entry_price
         evidence.update({"new_stop": position.entry_price, "breakeven": True})
@@ -1160,7 +1392,9 @@ def evaluate_v11_position(
     else:
         cooldown = number("reentry_cooldown_sessions")
         if cooldown is None:
-            cooldown = float(position.cooldown_sessions)
+            cooldown = float(max(
+                position.cooldown_sessions, context.reentry_cooldown_sessions,
+            ))
         if cooldown is not None and cooldown > 0:
             reasons.append("REENTRY_COOLDOWN")
         related_group_occupied = flag("related_group_occupied") or bool(context.metadata.get("related_group_occupied"))
@@ -1286,13 +1520,27 @@ def calculate_v11_indicators(
     bars: Sequence[DailyBar],
     *,
     closed_dates: Iterable[date] | None = None,
+    pullback_window_max: int = 15,
+    box_days: int = 25,
+    stage_high_window: int = 30,
 ) -> dict[str, object]:
     """Calculate V11 evidence from completed daily bars only.
 
     The function intentionally ignores a trailing partial ISO week.  Volume
     expansion compares the latest completed day with the *previous* 20 days,
-    so the candidate day cannot dilute its own denominator.
+    so the candidate day cannot dilute its own denominator.  The pullback
+    depth follows handbook section one: the stage high is the highest close
+    of the trailing ``stage_high_window`` sessions and the depth is measured
+    to the lowest close after it, while the intraday low remains available
+    for the A2 touch test and the initial stop.
     """
+    for name, value in (
+        ("pullback_window_max", pullback_window_max),
+        ("box_days", box_days),
+        ("stage_high_window", stage_high_window),
+    ):
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
     materialized = tuple(bars)
     if any(type(bar) is not DailyBar or bar.is_final is not True for bar in materialized):
         raise ValueError("V11 indicators require completed DailyBar values")
@@ -1341,7 +1589,9 @@ def calculate_v11_indicators(
         ),
     }
     latest_ma20 = moving.get("ma20")
-    prior_closes = closes[-26:-1] if len(closes) >= 26 else ()
+    prior_closes = (
+        closes[-(box_days + 1):-1] if len(closes) >= box_days + 1 else ()
+    )
     box_high = max(prior_closes) if prior_closes else None
     box_low = min(prior_closes) if prior_closes else None
     box_width_pct = (
@@ -1352,25 +1602,32 @@ def calculate_v11_indicators(
     current_volume = volumes[-1] if volumes else None
     recovery_volume_avg = _average(volumes[-6:-1], 5)
 
-    # Pullback evidence is measured from the latest prior swing high to the
-    # lowest close/low in the trailing fifteen completed sessions.  Keep the
-    # raw reference values so the evaluator can apply the category threshold.
-    search_start = max(0, len(closes) - 15)
+    # Pullback evidence: the stage high is the highest close in the trailing
+    # window, the pullback low is the lowest close after it, and the depth is
+    # measured between those closes.  The intraday low of the same session
+    # remains the A2 touch reference and the initial stop anchor.
     recovery_index = len(closes) - 1
-    low_index = min(range(search_start, len(lows)), key=lows.__getitem__) if lows else None
-    start_index = None
-    if low_index is not None:
-        before_low = range(search_start, low_index + 1)
-        start_index = max(before_low, key=highs.__getitem__) if before_low else low_index
-    pullback_start_high = highs[start_index] if start_index is not None else None
+    stage_start = max(0, len(closes) - stage_high_window)
+    start_index = (
+        max(range(stage_start, len(closes)), key=closes.__getitem__)
+        if closes else None
+    )
+    search_start = max(0, len(closes) - pullback_window_max)
+    low_index = None
+    if start_index is not None:
+        after_high = range(start_index, len(closes))
+        low_index = min(after_high, key=closes.__getitem__) if after_high else None
+    pullback_start_high = closes[start_index] if start_index is not None else None
+    pullback_low_close = closes[low_index] if low_index is not None else None
     pullback_low = lows[low_index] if low_index is not None else None
     pullback_sessions = (
         recovery_index - start_index + 1
         if start_index is not None else None
     )
     pullback_depth_pct = (
-        (pullback_start_high - pullback_low) / pullback_start_high * 100.0
-        if pullback_start_high and pullback_low is not None and pullback_start_high > 0.0
+        (pullback_start_high - pullback_low_close) / pullback_start_high * 100.0
+        if pullback_start_high and pullback_low_close is not None
+        and pullback_start_high > 0.0
         else None
     )
     ma10_series = [
@@ -1413,7 +1670,7 @@ def calculate_v11_indicators(
         and recovery_upper_shadow > max(recovery_body * 2.0, (recovery_high - recovery_low_price) * 0.5)
     )
     pullback_days = (
-        range(max(search_start, start_index or search_start), (low_index or recovery_index) + 1)
+        range(start_index, low_index + 1)
         if start_index is not None and low_index is not None else range(0)
     )
     contraction_flags: list[bool] = []
@@ -1425,7 +1682,8 @@ def calculate_v11_indicators(
         contraction_flags and sum(contraction_flags) > len(contraction_flags) / 2.0
     )
     pullback_window_ok = bool(
-        pullback_sessions is not None and 5 <= pullback_sessions <= 15
+        pullback_sessions is not None
+        and 5 <= pullback_sessions <= pullback_window_max
         and pullback_depth_pct is not None and pullback_depth_pct >= 3.0
     ) or bool(
         pullback_low is not None and moving.get("ma10") is not None
@@ -1447,7 +1705,7 @@ def calculate_v11_indicators(
     previous_rsi = latest_context.get("rsi_previous_1")
     rsi_values = [
         _rsi_wilder(closes[:index + 1])
-        for index in range(max(0, (low_index or max(0, len(closes) - 15)) - 1), len(closes))
+        for index in range(max(0, (low_index or search_start) - 1), len(closes))
     ]
     valid_pullback_rsi = [value for value in rsi_values[:-1] if value is not None]
     rsi_pullback_min = min(valid_pullback_rsi) if valid_pullback_rsi else None
@@ -1467,11 +1725,30 @@ def calculate_v11_indicators(
         and not isinstance(macd_dea_value, bool)
         and macd_dif_value > macd_dea_value
     )
-    volume_recovery_trigger = bool(
-        current_volume is not None and prior_volume_average is not None
-        and current_volume >= prior_volume_average * 1.2
-        and (len(closes) < 2 or closes[-1] > closes[-2])
+    # Handbook A6(3): the recovery day itself is a bullish candle whose volume
+    # is at least 1.2x the twenty sessions before it.
+    recovery_volume_prior = (
+        _average(volumes[:recovery_day_index], 20)
+        if recovery_day_index is not None else None
     )
+    volume_recovery_trigger = bool(
+        recovery_day_index is not None
+        and recovery_close is not None and recovery_open is not None
+        and recovery_close > recovery_open
+        and recovery_volume_prior is not None and recovery_volume_prior > 0.0
+        and volumes[recovery_day_index] >= recovery_volume_prior * 1.2
+    )
+    latest_bullish_candle = bool(
+        materialized and materialized[-1].adjusted_close > materialized[-1].adjusted_open
+    )
+    daily_return_pct = (
+        (closes[-1] / closes[-2] - 1.0) * 100.0 if len(closes) >= 2 else None
+    )
+    new_low_20d = bool(
+        len(lows) >= 21 and lows[-1] < min(lows[-21:-1])
+    )
+    amounts = [float(bar.amount) for bar in materialized]
+    avg_amount20_cny = _average(amounts, 20)
     box_size = len(prior_closes)
     box_half = box_size // 2
     box_first_half = prior_closes[:box_half]
@@ -1479,7 +1756,7 @@ def calculate_v11_indicators(
     box_first_half_low = min(box_first_half) if box_first_half else None
     box_latter_half_low = min(box_latter_half) if box_latter_half else None
     box_ok = bool(
-        len(prior_closes) >= 25
+        len(prior_closes) >= box_days
         and box_first_half_low is not None and box_latter_half_low is not None
         and box_latter_half_low >= box_first_half_low
     )
@@ -1499,9 +1776,12 @@ def calculate_v11_indicators(
         (closes[-1] / closes[-251] - 1.0) * 100.0
         if len(closes) >= 251 else None
     )
-    ma250_prior = _average(closes[:-20], 250) if len(closes) >= 270 else None
+    # Handbook section one: a moving average is rising when it is above its
+    # value ten sessions earlier.  The key keeps its historical name so the
+    # flat evaluator contract does not change.
+    ma250_prior = _average(closes[:-10], 250) if len(closes) >= 260 else None
     ma250 = moving.get("ma250")
-    ma250_slope_pct_20d = (
+    ma250_slope_pct_10d = (
         (ma250 / ma250_prior - 1.0) * 100.0
         if ma250 is not None and ma250_prior not in (None, 0.0) else None
     )
@@ -1532,7 +1812,7 @@ def calculate_v11_indicators(
         "atr14": atr,
         "return_60d_pct": return_60d_pct,
         "return_250d_pct": return_250d_pct,
-        "ma250_slope_pct_20d": ma250_slope_pct_20d,
+        "ma250_slope_pct_10d": ma250_slope_pct_10d,
         "bollinger_upper": bollinger.get("upper"),
         "pullback_start_high": pullback_start_high,
         "pullback_start_date": (
@@ -1540,11 +1820,16 @@ def calculate_v11_indicators(
             if start_index is not None else None
         ),
         "pullback_low": pullback_low,
+        "pullback_low_close": pullback_low_close,
         "pullback_low_date": (
             materialized[low_index].trading_date.isoformat()
             if low_index is not None else None
         ),
         "pullback_window_sessions": pullback_sessions,
+        "bullish_candle": latest_bullish_candle,
+        "daily_return_pct": daily_return_pct,
+        "new_low_20d": new_low_20d,
+        "avg_amount20_cny": avg_amount20_cny,
         "pullback_depth_pct": pullback_depth_pct,
         "pullback_recovery_within_3d": pullback_recovery_ok,
         "recovery_long_upper_shadow": recovery_long_upper_shadow,
@@ -1660,8 +1945,10 @@ def normalize_v11_indicators(indicators: Mapping[str, object]) -> dict[str, obje
         "return_250d_pct": raw.get(
             "return_250d_pct", raw.get("return250d_pct", raw.get("return_250d"))
         ),
-        "ma250_slope_pct_20d": raw.get(
-            "ma250_slope_pct_20d", raw.get("ma250_rising_pct", moving.get("ma250_slope_pct_20d"))
+        "ma250_slope_pct_10d": raw.get(
+            "ma250_slope_pct_10d", raw.get(
+                "ma250_slope_pct_20d", raw.get("ma250_rising_pct", moving.get("ma250_slope_pct_10d")),
+            ),
         ),
         "bollinger_upper": raw.get("bollinger_upper", (raw.get("bollinger") or {}).get("upper") if isinstance(raw.get("bollinger"), Mapping) else None),
         "pullback_start_high": raw.get("pullback_start_high", setups.get("pullback_start_high")),
@@ -1689,7 +1976,13 @@ def normalize_v11_indicators(indicators: Mapping[str, object]) -> dict[str, obje
             "box_latter_half_low", raw.get("box_second_half_low", setups.get("box_latter_half_low"))
         ),
         "box_days": raw.get("box_days", setups.get("box_days")),
+        "pullback_low_close": raw.get("pullback_low_close", setups.get("pullback_low_close")),
+        "daily_return_pct": raw.get("daily_return_pct", setups.get("daily_return_pct")),
+        "avg_amount20_cny": raw.get("avg_amount20_cny", setups.get("avg_amount20_cny")),
     })
+    for key in ("bullish_candle", "new_low_20d"):
+        if key in raw or key in setups:
+            flat[key] = bool(raw.get(key, setups.get(key)))
     normalized = {key: value for key, value in flat.items() if value is not None}
     # Preserve absence for required P1 evidence.  The evaluator uses absence
     # to distinguish an unverified contract from an explicit false result.
@@ -1723,8 +2016,16 @@ def calculate_relative_strength_20(
 
 def calculate_v11_environment(
     index_indicators: Mapping[str, Sequence[Mapping[str, object]]],
+    *,
+    confirmation_days: int = 1,
 ) -> dict[str, object]:
-    """Combine CSI 300/1000 evidence with two-day confirmation."""
+    """Combine CSI 300/1000 evidence into the handbook market state.
+
+    ``confirmation_days`` is the number of trailing completed sessions that
+    must agree.  The handbook judges the state on the day itself (one).
+    """
+    if type(confirmation_days) is not int or confirmation_days <= 0:
+        raise ValueError("confirmation_days must be a positive integer")
     required = ("000300", "000852")
     if any(code not in index_indicators for code in required):
         csi300 = index_indicators.get("000300", ())
@@ -1751,9 +2052,11 @@ def calculate_v11_environment(
     states: dict[str, tuple[str, ...]] = {}
     for code in required:
         values = tuple(index_indicators[code])
-        if len(values) < 2:
+        if len(values) < confirmation_days:
             return {"state": "UNKNOWN", "health": "STALE", "hard_defense": False}
-        states[code] = tuple(classify_v11_environment(value) for value in values[-2:])
+        states[code] = tuple(
+            classify_v11_environment(value) for value in values[-confirmation_days:]
+        )
     csi300_latest = index_indicators["000300"][-1]
     weekly_ma20_prev = _number_or_none(csi300_latest.get("weekly_ma20_prev"))
     weekly_slope = _number_or_none(csi300_latest.get("weekly_ma20_slope_pct_10d"))
@@ -1783,6 +2086,9 @@ def calculate_v11_environment(
         "hard_defense": hard_defense,
         "hard_defense_reason": "CSI300_WEEKLY_BREAK" if hard_defense else None,
         "states": states,
+        # Latest per-index classification for the neutral "healthy side" test.
+        "latest_states": {code: values[-1] for code, values in states.items()},
+        "confirmation_days": confirmation_days,
     }
 
 
@@ -1790,6 +2096,8 @@ _V11_CATEGORIES = frozenset({
     "BROAD", "SECTOR", "CROSS_BORDER", "GOLD",
 })
 _V11_ENVIRONMENT_INDICES = frozenset({"000300", "000852"})
+# Handbook: brokerage ETFs may open when either index is healthy.
+_V11_ENVIRONMENT_ANY = "ANY"
 
 
 def validate_v11_metadata(
@@ -1813,7 +2121,10 @@ def validate_v11_metadata(
                     and environment_index not in _V11_ENVIRONMENT_INDICES
                 ):
                     reasons.append("environment_index")
-            elif environment_index not in _V11_ENVIRONMENT_INDICES:
+            elif (
+                environment_index not in _V11_ENVIRONMENT_INDICES
+                and environment_index != _V11_ENVIRONMENT_ANY
+            ):
                 reasons.append("environment_index")
             if not getattr(item, "correlation_group", None):
                 reasons.append("correlation_group")

@@ -73,7 +73,7 @@ class SwingV11ContractTests(unittest.TestCase):
             "ma20": 98.0,
             "ma60": 95.0,
             "ma250": 90.0,
-            "ma250_slope_pct_20d": 1.0,
+            "ma250_slope_pct_10d": 1.0,
             "return_60d_pct": 5.0,
             "return_250d_pct": 12.0,
             "ma20_slope_pct_10d": 0.5,
