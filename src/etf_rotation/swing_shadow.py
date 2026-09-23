@@ -52,6 +52,7 @@ class ShadowConfig:
 class ShadowContext:
     snapshot_only: bool = False
     data_quality: str = "VERIFIED"
+    quality_reasons: tuple[str, ...] = ()
     data_healthy: bool = True
     account_known: bool = True
     cost_ok: bool = True
@@ -234,6 +235,21 @@ def _context_value(context: ShadowContext | Mapping[str, object], key: str, defa
     raise ValueError("context must be ShadowContext or mapping")
 
 
+def _quality_reasons(context: ShadowContext | Mapping[str, object]) -> tuple[str, ...]:
+    quality = str(_context_value(context, "data_quality", "UNKNOWN"))
+    if quality == "VERIFIED":
+        return ()
+    generic = (
+        "DATA_QUALITY_UNKNOWN"
+        if quality in {"UNKNOWN", "MIXED"} else "DATA_QUALITY_UNVERIFIED"
+    )
+    specific = tuple(
+        reason for reason in _context_value(context, "quality_reasons", ())
+        if isinstance(reason, str)
+    )
+    return (generic, *specific)
+
+
 def _atr(bars: Sequence[DailyBar], period: int = 14) -> float | None:
     if len(bars) < 2:
         return None
@@ -303,13 +319,15 @@ def evaluate_hybrid_shadow(
     if not isinstance(latest, Mapping):
         return _decision(
             ShadowVariant.HYBRID, ShadowState.DATA_UNAVAILABLE,
-            ("NO_COMPLETED_BARS",), {}, context, indicator_version, data_version,
+            ("NO_COMPLETED_BARS", *_quality_reasons(context)),
+            {}, context, indicator_version, data_version,
             strategy_version,
         )
     if indicator["status"] != "READY":
+        quality_reasons = _quality_reasons(context)
         return _decision(
             ShadowVariant.HYBRID, ShadowState.OBSERVE,
-            ("INSUFFICIENT_COMPLETED_BARS",),
+            ("INSUFFICIENT_COMPLETED_BARS", *quality_reasons),
             {"bar_count": indicator["bar_count"], "status": indicator["status"]},
             context, indicator_version, data_version, strategy_version,
         )
@@ -399,10 +417,7 @@ def evaluate_hybrid_shadow(
         reasons.append("SNAPSHOT_ONLY")
     quality = str(_context_value(context, "data_quality", "UNKNOWN"))
     if quality != "VERIFIED":
-        reasons.append(
-            "DATA_QUALITY_UNKNOWN"
-            if quality in {"UNKNOWN", "MIXED"} else "DATA_QUALITY_UNVERIFIED"
-        )
+        reasons.extend(_quality_reasons(context))
     mode = str(_context_value(context, "trend_state", "TREND"))
     if mode == "RANGE" or _context_value(context, "range_confirmed", False) is True:
         reasons.append("RANGE_MODE")
@@ -492,13 +507,15 @@ def _evaluate_shadow_context(bars: Sequence[DailyBar], *, variant: ShadowVariant
     latest = indicator["latest"]
     if not isinstance(latest, Mapping):
         return _decision(
-            variant, ShadowState.DATA_UNAVAILABLE, ("NO_COMPLETED_BARS",),
+            variant, ShadowState.DATA_UNAVAILABLE,
+            ("NO_COMPLETED_BARS", *_quality_reasons(context)),
             {}, context, indicator_version, data_version,
         )
     if indicator["status"] != "READY":
+        quality_reasons = _quality_reasons(context)
         return _decision(
             variant, ShadowState.OBSERVE,
-            ("INSUFFICIENT_COMPLETED_BARS",),
+            ("INSUFFICIENT_COMPLETED_BARS", *quality_reasons),
             {"bar_count": indicator["bar_count"], "status": indicator["status"]},
             context, indicator_version, data_version,
         )
@@ -553,7 +570,7 @@ def _evaluate_shadow_context(bars: Sequence[DailyBar], *, variant: ShadowVariant
         reasons.append("SNAPSHOT_ONLY")
     quality = str(_context_value(context, "data_quality", "UNKNOWN"))
     if quality != "VERIFIED":
-        reasons.append("DATA_QUALITY_UNKNOWN" if quality in {"UNKNOWN", "MIXED"} else "DATA_QUALITY_UNVERIFIED")
+        reasons.extend(_quality_reasons(context))
     mode = str(_context_value(context, "trend_state", "TREND"))
     range_confirmed = bool(_context_value(context, "range_confirmed", False))
     uncertain = bool(_context_value(context, "uncertain", False))

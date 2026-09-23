@@ -167,6 +167,7 @@ class SwingServiceTests(unittest.TestCase):
         self.assertIn(item["v11"]["as_of_kind"], {"COMPLETED_DAILY", "QUASI_CLOSE_1445"})
         self.assertIn(item["v11"]["status"], {"AVAILABLE", "DATA_UNAVAILABLE"})
         self.assertNotEqual(item["v11"]["data_quality_status"], "VERIFIED")
+        self.assertIn("DATA_QUALITY_INSUFFICIENT_BARS", item["v11"]["blocked_reasons"])
 
     def test_v11_completed_daily_evidence_is_not_relabelled_as_intraday(self) -> None:
         service = self.make_service()
@@ -285,6 +286,12 @@ class SwingServiceTests(unittest.TestCase):
         self.assertEqual(quality["bar_count"], 70)
         self.assertEqual(quality["amount_quality"], "UNKNOWN")
         self.assertEqual(quality["crosscheck_status"], "NOT_RECORDED")
+        self.assertEqual(
+            snapshot["items"][0]["shadow"]["data_quality_status"],
+            quality["status"],
+        )
+        for reason in quality["reasons"]:
+            self.assertIn(reason, snapshot["items"][0]["shadow"]["blocked_reasons"])
         self.assertEqual(snapshot["history_coverage"]["common_bar_count"], 70)
         self.assertEqual(snapshot["history_coverage"]["walk_forward_fold_count"], 0)
         self.assertFalse(snapshot["history_coverage"]["performance_validated"])

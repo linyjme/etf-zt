@@ -46,7 +46,7 @@ from .swing_data import (
     _SiblingFileLock,
 )
 from .swing_minutes import expected_complete_minutes, parse_minute_payload
-from .valuation import ValuationStore
+from .valuation import ValuationStore, classify_valuation_stage
 from .swing_indicators import (
     DEFAULT_MINIMUM_BARS,
     INDICATOR_SCHEMA_VERSION,
@@ -66,6 +66,7 @@ from .swing_shadow import (
     load_shadow_config,
 )
 from .swing_quality import (
+    assess_verified_quality,
     summarize_common_history,
     summarize_history_quality,
     summarize_strategy_diagnostics,
@@ -2904,6 +2905,7 @@ class SwingService:
         market_value = projection.etf_market_value if ledger_healthy else 0.0
         planned_risk = projection.planned_risk if ledger_healthy else 0.0
         symbol_planned_risk = 0.0
+        risk_known = True
         position = None
         last_stop_trading_date = (
             self._last_stop_trading_date(symbol, bars) if ledger_healthy else None
@@ -2912,7 +2914,13 @@ class SwingService:
             projected = projection.positions.get(symbol)
             if projected is not None:
                 symbol_planned_risk = projected.planned_risk
-            if projected is not None and projected.shares > 0 and bars:
+                risk_known = projected.shares <= 0 or projected.planned_risk > 0.0
+            if (
+                projected is not None
+                and projected.shares > 0
+                and bars
+                and risk_known
+            ):
                 position = self._position_context(symbol, projected, bars)
         return PortfolioContext(
             equity=equity,
@@ -2924,6 +2932,7 @@ class SwingService:
             data_healthy=data_healthy,
             metadata_complete=metadata is not None,
             ledger_healthy=ledger_healthy,
+            risk_known=risk_known,
             tradable=True,
             next_trading_date=next_trading_date,
             last_stop_trading_date=last_stop_trading_date,
@@ -2943,7 +2952,7 @@ class SwingService:
         average = position.average_cost / raw_scale
         risk = position.planned_risk / max(position.shares, 1) / raw_scale
         if risk <= 0.0:
-            risk = max(average * 0.01, math.ulp(average))
+            return None
         hard_stop = max(average - risk, math.ulp(average))
         entry_date, first_reduction, _ = self._event_lifecycle(symbol, bars)
         if entry_date is None:
@@ -3710,7 +3719,12 @@ class SwingService:
                     except FileNotFoundError:
                         pass
 
-    def _build_snapshot(self, now: datetime) -> dict[str, object]:
+    def _build_snapshot(
+        self,
+        now: datetime,
+        *,
+        quality_now: datetime | None = None,
+    ) -> dict[str, object]:
         current = self.published if hasattr(self, "published") else {}
         history_by_symbol = self._bars_by_symbol()
         enabled_histories = {
@@ -3723,6 +3737,11 @@ class SwingService:
             for item in current.get("items", [])
             if isinstance(item, Mapping)
         }
+        # ``now`` is supplied by the producer boundary and is already the
+        # trusted observation time for this snapshot.  Do not call the clock
+        # again here: doing so can make a staged failure consume a new clock
+        # value and can produce a partially advanced quality timestamp.
+        quality_reference = now if quality_now is None else quality_now
         items: list[dict[str, object]] = []
         for watch in self._watchlist:
             if not watch.enabled:
@@ -3732,11 +3751,9 @@ class SwingService:
                 continue
             previous = current_items.get(watch.symbol, {})
             metadata = self._metadata.get(watch.symbol)
-            v11 = self._v11_snapshot(
-                watch.symbol,
-                tuple(bar for bar in self._history if bar.symbol == watch.symbol),
-                metadata,
-                previous,
+            bars_for_symbol = tuple(
+                bar for bar in enabled_histories[watch.symbol]
+                if bar.symbol == watch.symbol
             )
             quality = (
                 summarize_history_quality(
@@ -3744,7 +3761,30 @@ class SwingService:
                 )
                 if self._strategy is not None else None
             )
+            if quality is not None and self._strategy is not None:
+                metadata_errors = validate_v11_metadata(
+                    {watch.symbol: metadata} if metadata is not None else {},
+                    (watch.symbol,),
+                )
+                verified_quality = assess_verified_quality(
+                    bars_for_symbol,
+                    today=quality_reference,
+                    closed_dates=self._closed_dates or frozenset(),
+                    metadata_status="PASSED" if not metadata_errors else "FAILED",
+                    environment_histories=self._index_history,
+                    receipt=self._research_receipt(watch.symbol),
+                    minimum_daily_bars=250,
+                )
+                quality = {**quality, **verified_quality}
             valuation = self._valuation_snapshot(metadata, valuation_by_index)
+            v11 = self._v11_snapshot(
+                watch.symbol,
+                bars_for_symbol,
+                metadata,
+                previous,
+                data_quality=quality,
+                valuation=valuation,
+            )
             items.append({
                 "symbol": watch.symbol,
                 "name": metadata.name if metadata is not None else watch.symbol,
@@ -3915,12 +3955,51 @@ class SwingService:
             },
         }
 
+    def _research_receipt(self, symbol: str) -> Mapping[str, object] | None:
+        """Load an optional per-symbol research receipt without trusting it.
+
+        The receipt is only evidence for ``assess_verified_quality``; its
+        crosscheck, adjustment and warning fields are independently checked by
+        that gate.  Missing manifests therefore remain a normal, safe state.
+        """
+        manifest_path = self.paths.strategy.with_name("research_manifest.json")
+        if not manifest_path.exists():
+            fallback = Path(__file__).resolve().parents[2] / "data" / "swing" / "research_manifest.json"
+            manifest_path = fallback
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+        if not isinstance(payload, Mapping):
+            return None
+        generated_at = payload.get("generated_at")
+        for item in payload.get("items", ()):
+            if not isinstance(item, Mapping) or item.get("symbol") != symbol:
+                continue
+            source = item.get("source")
+            if isinstance(source, list):
+                source = "; ".join(str(value) for value in source)
+            return {
+                "source": source,
+                "checked_at": generated_at,
+                "sample_start": item.get("history_start"),
+                "sample_end": item.get("history_end"),
+                "crosscheck_status": item.get("crosscheck_status"),
+                "adjustment_status": item.get("adjustment_status"),
+                "amount_quality": item.get("amount_quality"),
+                "calculation_version": item.get("data_version"),
+                "warnings": item.get("warnings", ()),
+            }
+        return None
+
     def _v11_snapshot(
         self,
         symbol: str,
         bars: Sequence[DailyBar],
         metadata: EtfMetadata | None,
         previous: Mapping[str, object],
+        data_quality: Mapping[str, object] | None = None,
+        valuation: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         quasi_close_available = False
         raw_time = previous.get("current_price_time")
@@ -3939,17 +4018,30 @@ class SwingService:
             )
         except Exception:
             quasi_close_available = False
+        quality_status = (
+            str(data_quality.get("status"))
+            if isinstance(data_quality, Mapping)
+            and data_quality.get("status") in {"VERIFIED", "UNVERIFIED"}
+            else "UNKNOWN"
+        )
+        quality_reasons = [
+            reason for reason in (
+                data_quality.get("reasons", ())
+                if isinstance(data_quality, Mapping) else ()
+            )
+            if isinstance(reason, str)
+        ]
         base = {
             "strategy_version": "SWING_V11_SHADOW",
             "status": "DATA_UNAVAILABLE",
-            "data_quality_status": "UNKNOWN",
+            "data_quality_status": quality_status,
             "executable": False,
             "as_of_kind": "QUASI_CLOSE_1445" if quasi_close_available else "COMPLETED_DAILY",
             "as_of_trading_date": (
                 quasi_close_date if quasi_close_available and quasi_close_date else
                 bars[-1].trading_date.isoformat() if bars else None
             ),
-            "blocked_reasons": ["V11_CONFIG_UNAVAILABLE"],
+            "blocked_reasons": [*quality_reasons, "V11_CONFIG_UNAVAILABLE"],
             "decision": None,
             "quasi_close_available": quasi_close_available,
         }
@@ -3957,7 +4049,7 @@ class SwingService:
         if config is None:
             return base
         if not bars:
-            base["blocked_reasons"] = ["NO_COMPLETED_BARS"]
+            base["blocked_reasons"] = [*quality_reasons, "NO_COMPLETED_BARS"]
             return base
         try:
             indicators = calculate_v11_indicators(
@@ -3985,11 +4077,18 @@ class SwingService:
             metadata_errors = validate_v11_metadata(
                 {symbol: metadata} if metadata is not None else {}, (symbol,),
             )
+            quality_reasons = tuple(
+                reason for reason in (
+                    data_quality.get("reasons", ())
+                    if isinstance(data_quality, Mapping) else ()
+                )
+                if isinstance(reason, str)
+            )
             context = V11Context(
                 # Metadata completeness does not prove provider/history quality;
                 # the V11 service remains fail-closed until its quality gate
                 # supplies an explicit VERIFIED status.
-                data_quality="UNVERIFIED",
+                data_quality=quality_status,
                 environment_state=str(environment.get("state", "UNKNOWN")),
                 category=(
                     metadata.category if metadata is not None else None
@@ -4019,12 +4118,18 @@ class SwingService:
                     "health": self._health.get("intraday"),
                 },
                 metadata=(metadata.to_dict() if metadata is not None else {}),
+                valuation_stage=(
+                    valuation.get("valuation_stage")
+                    if isinstance(valuation, Mapping) else None
+                ),
             )
             context = replace(context, metadata={
                 **context.metadata,
                 "v11_metadata_errors": metadata_errors,
                 "environment": environment,
                 "relative_strength_20": rs,
+                "data_quality_reasons": quality_reasons,
+                "valuation": dict(valuation) if isinstance(valuation, Mapping) else {},
             })
             decision = evaluate_v11(bars, config=config, context=context)
             base.update({
@@ -4095,19 +4200,19 @@ class SwingService:
             base["error"] = self._shadow_config_error
             return base
 
-        quality_status = "UNKNOWN"
-        if isinstance(data_quality, Mapping):
-            warnings = data_quality.get("warnings")
-            quality_status = (
-                "VERIFIED"
-                if not warnings
-                and data_quality.get("crosscheck_status") == "PASSED"
-                and data_quality.get("adjustment_status") == "VERIFIED"
-                and data_quality.get("sample_class") not in {
-                    "SHORT_SAMPLE", "NO_SAMPLE", "EXCLUDED",
-                }
-                else "UNKNOWN"
+        quality_status = (
+            str(data_quality.get("status"))
+            if isinstance(data_quality, Mapping)
+            and data_quality.get("status") in {"VERIFIED", "UNVERIFIED"}
+            else "UNKNOWN"
+        )
+        quality_reasons = tuple(
+            reason for reason in (
+                data_quality.get("reasons", ())
+                if isinstance(data_quality, Mapping) else ()
             )
+            if isinstance(reason, str)
+        )
         opportunity = self._shadow_opportunity_snapshot(symbol, bars)
         trend_state, regime_evidence = infer_shadow_regime(bars)
         evidence = formal.evidence
@@ -4134,6 +4239,7 @@ class SwingService:
         context = ShadowContext(
             snapshot_only=self._holdings_snapshot_present(),
             data_quality=quality_status,
+            quality_reasons=quality_reasons,
             data_healthy=symbol_data_healthy,
             account_known=account_known,
             cost_ok=cost_ok,
@@ -4247,8 +4353,12 @@ class SwingService:
             return None
         snapshot = valuation_by_index.get(metadata.index.code)
         if snapshot is not None:
-            return snapshot.to_dict()
-        return {
+            payload = snapshot.to_dict()
+            payload["valuation_stage"] = classify_valuation_stage(
+                snapshot, category=metadata.category or "UNAVAILABLE",
+            ).to_dict()
+            return payload
+        payload = {
             "index_code": metadata.index.code,
             "index_name": metadata.index.name,
             "as_of": None,
@@ -4271,6 +4381,10 @@ class SwingService:
             "status": "MISSING_VALUATION",
             "source": None,
         }
+        payload["valuation_stage"] = classify_valuation_stage(
+            None, category=metadata.category or "UNAVAILABLE",
+        ).to_dict()
+        return payload
 
     @staticmethod
     def _indicator_snapshot(
@@ -4380,7 +4494,24 @@ class SwingService:
     ) -> None:
         self._health[component] = status
         self._errors[component] = self._safe_error(error)
-        self._publish(self._build_snapshot(self._safe_now() if now is None else now))
+        effective_now = self._safe_now() if now is None else now
+        # A failed staged recomputation must not advance per-item quality
+        # timestamps.  Reuse the last published snapshot's generated time
+        # when available while still updating the service-level error state.
+        quality_now = self._published_quality_time()
+        self._publish(self._build_snapshot(effective_now, quality_now=quality_now))
+
+    def _published_quality_time(self) -> datetime | None:
+        raw = self.published.get("generated_at")
+        if type(raw) is not str:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(SHANGHAI)
 
     def _select_event_locked(self, after_revision: int) -> dict[str, object] | None:
         if after_revision > self.revision:

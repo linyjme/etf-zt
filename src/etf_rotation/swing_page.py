@@ -247,11 +247,14 @@ function qualityMarkup(quality,coverage,evidence={}){
   const riskSource=evidence.risk_setting_source==='ACCOUNT'?'账户设置':evidence.risk_setting_source==='STRATEGY_DEFAULT'?'策略默认（账户未就绪）':'来源未知';
   const cell=(label,value)=>`<div><span>${escapeHtml(label)}</span>${escapeHtml(value)}</div>`;
   const sources=Array.isArray(quality.sources)?quality.sources:[];
-  const warningLabels={INDEPENDENT_CROSSCHECK_NOT_RECORDED:'尚未记录独立数据核验',ADJUSTMENT_BASIS_UNVERIFIED:'复权方式尚未验收',AMOUNT_ESTIMATED:'成交额为估算值',UNKNOWN_SOURCE_CONTRACT:'存在口径未知的数据来源',MIXED_SOURCES:'存在混合来源，需核验口径一致性',DUPLICATE_TRADING_DATE:'存在重复交易日，不能按正常样本评价',ADJUSTMENT_RATIO_CHANGED:'复权比例发生变化，需核验权益事件',NO_DAILY_HISTORY:'暂无已完成日线',MISSING_SYMBOL_HISTORY:'组合缺少标的历史',NON_ALIGNED_COMMON_HISTORY:'组合共同日期未对齐',INSUFFICIENT_COMMON_WALK_FORWARD_SAMPLE:'组合共同样本不足以形成完整滚动窗口'};
+  const warningLabels={INDEPENDENT_CROSSCHECK_NOT_RECORDED:'尚未记录独立数据核验',ADJUSTMENT_BASIS_UNVERIFIED:'复权方式尚未验收',AMOUNT_ESTIMATED:'成交额为估算值',UNKNOWN_SOURCE_CONTRACT:'存在口径未知的数据来源',MIXED_SOURCES:'存在混合来源，需核验口径一致性',DUPLICATE_TRADING_DATE:'存在重复交易日，不能按正常样本评价',ADJUSTMENT_RATIO_CHANGED:'复权比例发生变化，需核验权益事件',NO_DAILY_HISTORY:'暂无已完成日线',MISSING_SYMBOL_HISTORY:'组合缺少标的历史',NON_ALIGNED_COMMON_HISTORY:'组合共同日期未对齐',INSUFFICIENT_COMMON_WALK_FORWARD_SAMPLE:'组合共同样本不足以形成完整滚动窗口',DATA_QUALITY_INSUFFICIENT_BARS:'完成日线不足 250 根',DATA_QUALITY_LATEST_DATE_NOT_CURRENT:'最新完成日线不是最近有效交易日',DATA_QUALITY_AMOUNT_NOT_PROVIDER_REPORTED:'成交额不是供应商原始报告值',DATA_QUALITY_METADATA_INVALID:'标的交易元数据未通过校验',DATA_QUALITY_ENVIRONMENT_MISSING:'沪深300/中证1000环境历史不完整',DATA_QUALITY_RECEIPT_MISSING:'缺少数据核验收据',DATA_QUALITY_RECEIPT_INVALID:'数据核验收据字段不完整',DATA_QUALITY_RECEIPT_SAMPLE_MISMATCH:'核验收据样本范围不匹配',DATA_QUALITY_RECEIPT_CROSSCHECK_PENDING:'成交额交叉核验未通过',DATA_QUALITY_RECEIPT_ADJUSTMENT_UNVERIFIED:'复权基准未核验',DATA_QUALITY_RECEIPT_WARNINGS:'核验收据仍有警告'};
   const warnings=[...new Set([...(Array.isArray(quality.warnings)?quality.warnings:[]),...(Array.isArray(coverage?.warnings)?coverage.warnings:[])])];
   const warningMarkup=warnings.length?`<div class="help">数据提示<ul>${warnings.map(code=>`<li>${escapeHtml(warningLabels[code]||code)}</li>`).join('')}</ul></div>`:'';
   const common=coverage?`${backtestNumber(coverage.common_bar_count,0)} / ${backtestNumber(coverage.walk_forward_required_bars,0)} 日；${backtestNumber(coverage.walk_forward_fold_count,0)} 个完整时间窗${coverage.aligned===false?'（日期未对齐或缺标的）':''}`:'暂无共同历史记录';
-  return `<section class="quality-summary"><h3>数据质量与回测准备</h3><div class="evidence">${[
+  const gateStatus=quality.status==='VERIFIED'?'VERIFIED · 已通过发布门控':'UNVERIFIED · 仅观察，不产出候选';
+  const gateReasons=Array.isArray(quality.reasons)?[...new Set(quality.reasons)]:[];
+  const gateMarkup=`<div class="help">发布门控：${escapeHtml(gateStatus)}${gateReasons.length?`<ul>${gateReasons.map(code=>`<li>${escapeHtml(warningLabels[code]||code)}</li>`).join('')}</ul>`:''}</div>`;
+  return `<section class="quality-summary"><h3>数据质量与回测准备</h3>${gateMarkup}<div class="evidence">${[
     cell('历史交易日',`${backtestNumber(quality.bar_count,0)} 日；指标至少 ${backtestNumber(quality.minimum_daily_bars,0)} 日`),
     cell('单标的回测样本',`单标的收益回测至少 ${backtestNumber(quality.minimum_backtest_bars,0)} 日；仅为数量门槛`),
     cell('成交额质量',amountLabels[quality.amount_quality]||'未识别口径'),
@@ -283,7 +286,7 @@ function valuationMarkup(valuation){
   const value=(raw,digits=2)=>{const number=finite(raw);return number==null?'—':number.toFixed(digits)};
   const percent=(raw)=>{const number=finite(raw);return number==null?'—':number.toFixed(2)+'%'};
   if(!valuation)return '<section class="valuation-summary"><header><h3>指数估值（观察层）</h3><span class="valuation-status">暂无数据</span></header><p class="valuation-note">服务尚未返回估值映射，不代表估值为零。</p></section>';
-  const status=String(valuation.status||'UNKNOWN'),level=String(valuation.level||'UNKNOWN');
+  const status=String(valuation.status||'UNKNOWN'),level=String(valuation.level||'UNKNOWN'),stage=String(valuation.valuation_stage?.stage||'UNAVAILABLE');
   const levelLabel={LOW:'低估',NORMAL:'中性',HIGH:'偏高',UNKNOWN:'未知'}[level]||'未知';
   const statusLabel={OK:'已读取',MISSING_VALUATION:'暂无估值',STALE:'数据偏旧',INSUFFICIENT_HISTORY:'历史不足',UNKNOWN:'未知'}[status]||status;
   const levelClass=level==='LOW'?'low':level==='HIGH'?'high':level==='NORMAL'?'normal':'';
@@ -291,7 +294,7 @@ function valuationMarkup(valuation){
   const cell=(label,raw,digits=2,suffix='')=>`<div class="valuation-cell"><span>${label}</span><strong>${value(raw,digits)}${finite(raw)==null?'':suffix}</strong></div>`;
   const index=escapeHtml(String(valuation.index_name||'未映射')),code=escapeHtml(String(valuation.index_code||'—'));
   const pe5=value(valuation.pe_percentile_5y),pb5=value(valuation.pb_percentile_5y),pe10=value(valuation.pe_percentile_10y),pb10=value(valuation.pb_percentile_10y);
-  return `<section class="valuation-summary"><header><h3>指数估值（观察层）</h3><span class="valuation-status ${levelClass}">估值状态：${escapeHtml(levelLabel)} · ${escapeHtml(statusLabel)}（${escapeHtml(status)}）</span></header><p class="valuation-note">关联指数 ${index} · ${code} · 数据日期 ${escapeHtml(String(valuation.as_of||'—'))}</p><div class="valuation-grid">${cell('PE-TTM',valuation.pe_ttm)}${cell('PB',valuation.pb)}${cell('股息率',valuation.dividend_yield,2,'%')}${cell('ROE-TTM',valuation.roe_ttm,2,'%')}<div class="valuation-cell"><span>5年估值分位（PE / PB）</span><strong>${pe5} / ${pb5}</strong></div><div class="valuation-cell"><span>10年估值分位（PE / PB）</span><strong>${pe10} / ${pb10}</strong></div></div><p class="valuation-impact"><strong>估值对本次信号的影响：</strong>${escapeHtml(impact)}</p><p class="valuation-note">来源：${escapeHtml(String(valuation.source||'未记录'))} · 估值为慢变量，不按分钟更新。</p></section>`;
+  return `<section class="valuation-summary"><header><h3>指数估值（观察层）</h3><span class="valuation-status ${levelClass}">估值阶段：${escapeHtml(stage)} · ${escapeHtml(levelLabel)} · ${escapeHtml(statusLabel)}（${escapeHtml(status)}）</span></header><p class="valuation-note">关联指数 ${index} · ${code} · 数据日期 ${escapeHtml(String(valuation.as_of||'—'))}</p><div class="valuation-grid">${cell('PE-TTM',valuation.pe_ttm)}${cell('PB',valuation.pb)}${cell('股息率',valuation.dividend_yield,2,'%')}${cell('ROE原始/年化',valuation.roe_ttm,2,'%')}<div class="valuation-cell"><span>5年估值分位（PE / PB）</span><strong>${pe5} / ${pb5}</strong></div><div class="valuation-cell"><span>10年估值分位（PE / PB）</span><strong>${pe10} / ${pb10}</strong></div><div class="valuation-cell"><span>ROE期间 / PR一致性</span><strong>${escapeHtml(String(valuation.roe_period||'未知'))} / ${valuation.roe_consistent?'通过':'未通过'}</strong></div></div><p class="valuation-impact"><strong>估值对本次信号的影响：</strong>${escapeHtml(impact)}${stage==='UNAVAILABLE'?' 当前阶段不可用，不放宽任何技术门槛。':''}</p><p class="valuation-note">来源：${escapeHtml(String(valuation.source||'未记录'))} · 估值为慢变量，不按分钟更新。</p></section>`;
 }
 function shadowMarkup(shadow){
   const stateLabels={TECHNICAL_CANDIDATE:'技术候选',OBSERVE:'观察',OBSERVE_BLOCKED:'观察（已阻断）',RANGE_BLOCKED:'震荡阻断',UNCERTAIN:'状态不确定',DATA_UNAVAILABLE:'数据不可用'};

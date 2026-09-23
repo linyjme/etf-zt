@@ -8,10 +8,181 @@ These summaries neither change canonical bars nor authorize trading.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import date, datetime, time, timedelta
 import math
+from zoneinfo import ZoneInfo
 
 from .swing_config import SwingStrategyConfig
 from .swing_data import DailyBar
+
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+_MARKET_CLOSE = time(15, 0)
+
+
+def _local_date(value: date | datetime) -> date:
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("today must be timezone-aware")
+        return value.astimezone(SHANGHAI).date()
+    if type(value) is date:
+        return value
+    raise ValueError("today must be a date or timezone-aware datetime")
+
+
+def _expected_last_completed_date(
+    today: date | datetime, closed_dates: Sequence[date] | set[date] | frozenset[date],
+) -> date:
+    """Return the latest date that should have a completed daily bar.
+
+    Before the 15:00 close, today's bar is deliberately excluded.  After the
+    close it is eligible, while weekends and configured exchange holidays are
+    skipped.  This keeps the gate deterministic and independent of host locale.
+    """
+    if isinstance(today, datetime):
+        if today.tzinfo is None or today.utcoffset() is None:
+            raise ValueError("today must be timezone-aware")
+        local = today.astimezone(SHANGHAI)
+        candidate = local.date()
+        if local.time().replace(tzinfo=None) < _MARKET_CLOSE:
+            candidate -= timedelta(days=1)
+    else:
+        candidate = _local_date(today) - timedelta(days=1)
+    closures = frozenset(closed_dates)
+    while candidate.weekday() >= 5 or candidate in closures:
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def _receipt_text(value: object) -> str | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            return None
+        return value.astimezone(SHANGHAI).isoformat()
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                return None
+        except ValueError:
+            return None
+        return parsed.astimezone(SHANGHAI).isoformat()
+    return None
+
+
+def assess_verified_quality(
+    bars: Sequence[DailyBar], *, today: date | datetime,
+    closed_dates: Sequence[date] | set[date] | frozenset[date] = (),
+    metadata_status: str | Mapping[str, object] | None = None,
+    environment_histories: Mapping[str, Sequence[DailyBar]] | None = None,
+    receipt: Mapping[str, object] | None = None,
+    minimum_daily_bars: int = 250,
+) -> dict[str, object]:
+    """Apply the fail-closed V11 release gate to a completed daily snapshot.
+
+    ``summarize_history_quality`` remains a descriptive legacy report.  This
+    function is the stronger publication contract: enough rows alone never
+    become VERIFIED without a source receipt, provider-reported amounts,
+    metadata validation and both broad-market environment histories.
+    """
+    ordered, duplicates = _records(bars)
+    reasons: list[str] = []
+    latest = ordered[-1].trading_date if ordered else None
+    expected = _expected_last_completed_date(today, closed_dates)
+    kinds = {_amount_quality(bar.source) for bar in ordered}
+    amount_quality = (
+        next(iter(kinds)) if len(kinds) == 1 else
+        "MIXED" if kinds else "UNKNOWN"
+    )
+    receipt_amount_quality = (
+        receipt.get("amount_quality") if isinstance(receipt, Mapping) else None
+    )
+    if amount_quality == "UNKNOWN" and receipt_amount_quality == "PROVIDER_REPORTED":
+        amount_quality = "PROVIDER_REPORTED"
+    if len(ordered) < minimum_daily_bars or duplicates:
+        reasons.append("DATA_QUALITY_INSUFFICIENT_BARS")
+    if latest != expected:
+        reasons.append("DATA_QUALITY_LATEST_DATE_NOT_CURRENT")
+    if amount_quality != "PROVIDER_REPORTED":
+        reasons.append("DATA_QUALITY_AMOUNT_NOT_PROVIDER_REPORTED")
+
+    metadata_ok = metadata_status in {"PASSED", "VERIFIED"}
+    if isinstance(metadata_status, Mapping):
+        metadata_ok = metadata_status.get("status") in {"PASSED", "VERIFIED"}
+    if not metadata_ok:
+        reasons.append("DATA_QUALITY_METADATA_INVALID")
+
+    environments_ok = True
+    environment_latest: dict[str, str | None] = {}
+    for symbol in ("000300", "000852"):
+        history = tuple((environment_histories or {}).get(symbol, ()))
+        if not history:
+            environments_ok = False
+            continue
+        environment_latest[symbol] = history[-1].trading_date.isoformat()
+        if any(type(item) is not DailyBar for item in history):
+            environments_ok = False
+    if not environments_ok:
+        reasons.append("DATA_QUALITY_ENVIRONMENT_MISSING")
+
+    receipt_status = "MISSING"
+    receipt_payload: dict[str, object] | None = None
+    if not isinstance(receipt, Mapping):
+        reasons.append("DATA_QUALITY_RECEIPT_MISSING")
+    else:
+        source = receipt.get("source")
+        checked_at = _receipt_text(receipt.get("checked_at"))
+        sample_start = receipt.get("sample_start")
+        sample_end = receipt.get("sample_end")
+        crosscheck = receipt.get("crosscheck_status", receipt.get("amount_crosscheck"))
+        adjustment = receipt.get("adjustment_status", receipt.get("adjustment_basis"))
+        receipt_amount_quality = receipt.get("amount_quality")
+        version = receipt.get("calculation_version")
+        warnings = receipt.get("warnings", ())
+        if not isinstance(source, str) or not source.strip() or checked_at is None:
+            reasons.append("DATA_QUALITY_RECEIPT_INVALID")
+        if (
+            latest is None or sample_start != ordered[0].trading_date.isoformat()
+            or sample_end != latest.isoformat()
+        ):
+            reasons.append("DATA_QUALITY_RECEIPT_SAMPLE_MISMATCH")
+        if crosscheck != "PASSED":
+            reasons.append("DATA_QUALITY_RECEIPT_CROSSCHECK_PENDING")
+        if receipt_amount_quality is not None and receipt_amount_quality != "PROVIDER_REPORTED":
+            reasons.append("DATA_QUALITY_AMOUNT_NOT_PROVIDER_REPORTED")
+        if adjustment != "VERIFIED":
+            reasons.append("DATA_QUALITY_RECEIPT_ADJUSTMENT_UNVERIFIED")
+        if not isinstance(version, str) or not version.strip():
+            reasons.append("DATA_QUALITY_RECEIPT_VERSION_MISSING")
+        if isinstance(warnings, Sequence) and not isinstance(warnings, (str, bytes)) and warnings:
+            reasons.append("DATA_QUALITY_RECEIPT_WARNINGS")
+        elif warnings not in ((), [], None):
+            reasons.append("DATA_QUALITY_RECEIPT_WARNINGS")
+        if not any(reason.startswith("DATA_QUALITY_RECEIPT_") for reason in reasons):
+            receipt_status = "PASSED"
+        receipt_payload = dict(receipt)
+        receipt_payload["checked_at"] = checked_at
+
+    unique_reasons = list(dict.fromkeys(reasons))
+    return {
+        "status": "VERIFIED" if not unique_reasons else "UNVERIFIED",
+        "reasons": unique_reasons,
+        "checked_at": _receipt_text(today) if isinstance(today, datetime) else None,
+        "bar_count": len(ordered),
+        "last_completed_date": latest.isoformat() if latest is not None else None,
+        "expected_last_completed_date": expected.isoformat(),
+        "amount_quality": amount_quality,
+        "metadata_status": "PASSED" if metadata_ok else "FAILED",
+        "environment_history_status": "PASSED" if environments_ok else "MISSING",
+        "environment_latest": environment_latest,
+        "receipt_status": receipt_status,
+        "receipt": receipt_payload,
+        "minimum_daily_bars": minimum_daily_bars,
+    }
+
+
+# Descriptive alias for callers that use the release-gate vocabulary.
+verify_data_quality = assess_verified_quality
 
 
 def _window_count(count: int, config: SwingStrategyConfig) -> int:
