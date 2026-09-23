@@ -26,7 +26,7 @@
 - 估值、服务、页面、质量门控专项：页面/质量/门控 76 tests passed；估值专项全部通过；服务专项逐项回归通过（含事务失败不改变已发布快照）。
 - 新增 `tests/test_verified_quality_gate.py` 覆盖完整通过、日线不足、最新日期、成交额、元数据、环境历史、收据缺失和收据警告。
 - `tests/test_repository_completeness.py` 通过；`git diff --check` 通过。
-- 全量跨平台业务测试共 1325 项通过、2 项既有跳过；指标 pytest 文件另用等价注入 runner 验证 6 项通过。直接 `unittest discover` 的两个环境问题已分类：运行时未安装 pytest，以及隔离 worktree 禁止测试写入其固定的临时 JSON 文件；均非源码失败。
+- 全量跨平台业务测试共 1327 项通过、2 项既有跳过；指标 pytest 文件另用等价注入 runner 验证 6 项通过。直接 `unittest discover` 的两个环境问题已分类：运行时未安装 pytest，以及隔离 worktree 禁止测试写入其固定的临时 JSON 文件；均非源码失败。
 - 运行时源码与测试 107 个 Python 文件完成 AST 语法解析。
 - 代码审查后补充环境指数历史的长度、顺序、重复日期和新鲜度门禁；新增回归用例均通过。
 
