@@ -16,7 +16,8 @@
       "level": "UNKNOWN",
       "status": "OK",
       "source": "Wind get_index_fundamentals，交易日2026-09-18；PE为近5年分位，PB为近10年分位；未返回另一窗口则保留空值",
-      "roe_ttm": 5.5011
+      "roe_ttm": 5.5011,
+      "roe_period": "H1"
     },
     {
       "index_code": "980081",
@@ -165,7 +166,8 @@
       "level": "UNKNOWN",
       "status": "OK",
       "source": "Wind Finance，PE/PB/ROE取Wind最新可用口径；估值序列最近更新至2026-06-11",
-      "roe_ttm": 10.5705
+      "roe_ttm": 10.5705,
+      "roe_period": "H1"
     },
     {
       "index_code": "000905",
@@ -176,7 +178,8 @@
       "roe_ttm": 4.6239,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind当前指数口径",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "000510",
@@ -187,7 +190,8 @@
       "roe_ttm": 5.6036,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind当前指数口径",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "000852",
@@ -198,7 +202,8 @@
       "roe_ttm": 3.4775,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind当前指数口径",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "399006",
@@ -209,7 +214,8 @@
       "roe_ttm": 8.8535,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind当前指数口径",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "000688",
@@ -220,7 +226,8 @@
       "roe_ttm": 3.9688,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind当前指数口径",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "931643",
@@ -231,7 +238,8 @@
       "roe_ttm": 8.8143,
       "source": "Wind Finance，交易时点2026-09-15；ROE为Wind当前指数口径",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "980080",
@@ -242,7 +250,8 @@
       "roe_ttm": 10.7574,
       "source": "Wind Finance，PE/PB/ROE取Wind最新可用口径；部分估值序列最近更新至2026-03-31",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "931637",
@@ -253,7 +262,8 @@
       "roe_ttm": null,
       "source": "Wind Finance，PE/PB取Wind最新可用口径（2026-06-26）；ROE未返回",
       "status": "MISSING_VALUATION",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "H30533",
@@ -264,7 +274,8 @@
       "roe_ttm": null,
       "source": "Wind Finance，PE/PB取Wind最新可用口径（2026-06-26）；ROE未返回",
       "status": "MISSING_VALUATION",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "H30184",
@@ -496,7 +507,8 @@
       "roe_ttm": null,
       "source": "Wind get_index_fundamentals；历史序列返回32个交易日，未映射为5年/10年分位",
       "status": "OK",
-      "level": "UNKNOWN"
+      "level": "UNKNOWN",
+      "roe_period": "H1"
     },
     {
       "index_code": "000913",
@@ -512,7 +524,8 @@
       "roe_ttm": 7.0743,
       "source": "Wind index_data.get_index_fundamentals；交易日2026-09-18；PE/PB/股息率/ROE单位为倍或百分比，历史分位为Wind返回的近5年/近10年分位；未返回近10年PB分位",
       "status": "OK",
-      "level": "NORMAL"
+      "level": "NORMAL",
+      "roe_period": "H1"
     }
   ]
 }

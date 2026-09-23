@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time, timedelta
+import hashlib
+import json
 import math
 from zoneinfo import ZoneInfo
 
@@ -17,7 +19,10 @@ from .swing_data import DailyBar
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-_MARKET_CLOSE = time(15, 0)
+# The cash session ends at 15:00, but the daily collector usually finishes
+# later.  Requiring today's bar at the bell makes a verified snapshot flash
+# unverified until that collection lands.
+_DAILY_READY_AFTER = time(16, 0)
 
 
 def _local_date(value: date | datetime) -> date:
@@ -35,16 +40,17 @@ def _expected_last_completed_date(
 ) -> date:
     """Return the latest date that should have a completed daily bar.
 
-    Before the 15:00 close, today's bar is deliberately excluded.  After the
-    close it is eligible, while weekends and configured exchange holidays are
-    skipped.  This keeps the gate deterministic and independent of host locale.
+    Before 16:00 Asia/Shanghai, today's bar is deliberately excluded so the
+    post-close collection window does not flip a verified snapshot.  After
+    that ready time it is eligible, while weekends and configured exchange
+    holidays are skipped.
     """
     if isinstance(today, datetime):
         if today.tzinfo is None or today.utcoffset() is None:
             raise ValueError("today must be timezone-aware")
         local = today.astimezone(SHANGHAI)
         candidate = local.date()
-        if local.time().replace(tzinfo=None) < _MARKET_CLOSE:
+        if local.time().replace(tzinfo=None) < _DAILY_READY_AFTER:
             candidate -= timedelta(days=1)
     else:
         candidate = _local_date(today) - timedelta(days=1)
@@ -154,10 +160,8 @@ def assess_verified_quality(
         warnings = receipt.get("warnings", ())
         if not isinstance(source, str) or not source.strip() or checked_at is None:
             reasons.append("DATA_QUALITY_RECEIPT_INVALID")
-        if (
-            latest is None or sample_start != ordered[0].trading_date.isoformat()
-            or sample_end != latest.isoformat()
-        ):
+        sample_ok = _receipt_sample_matches(ordered, sample_start, sample_end, version)
+        if not sample_ok:
             reasons.append("DATA_QUALITY_RECEIPT_SAMPLE_MISMATCH")
         if crosscheck != "PASSED":
             reasons.append("DATA_QUALITY_RECEIPT_CROSSCHECK_PENDING")
@@ -196,6 +200,49 @@ def assess_verified_quality(
 
 # Descriptive alias for callers that use the release-gate vocabulary.
 verify_data_quality = assess_verified_quality
+
+
+def _history_digest(bars: Sequence[DailyBar]) -> str:
+    payload = [bar.to_dict() for bar in bars]
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def _version_matches(version: object, digest: str) -> bool:
+    return (
+        isinstance(version, str)
+        and version.startswith("sha256:")
+        and len(version) >= len("sha256:") + 8
+        and digest.startswith(version)
+    )
+
+
+def _receipt_sample_matches(
+    ordered: Sequence[DailyBar],
+    sample_start: object,
+    sample_end: object,
+    version: object,
+) -> bool:
+    """Accept a receipt whose window sits inside the bars and whose digest matches.
+
+    ``sample_end`` no longer has to equal the newest bar.  It must be at least
+    the sample start and no later than the newest bar, and ``calculation_version``
+    must be a prefix of the current history digest.  A new bar therefore fails
+    closed until the manifest is rebuilt against that history.
+    """
+    if not ordered or not isinstance(sample_start, str) or not isinstance(sample_end, str):
+        return False
+    first = ordered[0].trading_date.isoformat()
+    latest = ordered[-1].trading_date.isoformat()
+    if sample_start != first or not first <= sample_end <= latest:
+        return False
+    return _version_matches(version, _history_digest(ordered))
 
 
 def _window_count(count: int, config: SwingStrategyConfig) -> int:

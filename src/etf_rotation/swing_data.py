@@ -785,6 +785,128 @@ class DailyHistoryStore:
             pass
 
 
+_ENVIRONMENT_INDEX_SYMBOLS = frozenset({"000300", "000852"})
+
+
+class IndexHistoryStore:
+    """Persist index daily bars outside the tradable ETF history file."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+
+    def load(self) -> tuple[DailyBar, ...]:
+        if not self.path.exists():
+            return ()
+        with _SiblingFileLock(self.path, shared=True):
+            return self._load_unlocked()
+
+    def upsert(self, records: Sequence[DailyBar]) -> tuple[DailyBar, ...]:
+        try:
+            incoming = tuple(records)
+        except Exception as error:
+            raise SwingDataError("指数日线批次读取失败") from error
+        for record in incoming:
+            if type(record) is not DailyBar:
+                raise SwingDataError("指数日线record必须是DailyBar")
+            if record.symbol not in _ENVIRONMENT_INDEX_SYMBOLS:
+                raise SwingDataError(f"指数日线symbol不受支持: {record.symbol}")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with _SiblingFileLock(self.path, shared=False):
+            current = self._load_unlocked()
+            indexed = {
+                (record.symbol, record.trading_date): record for record in current
+            }
+            for record in incoming:
+                normalized = DailyBar.from_mapping(record.to_dict())
+                if normalized.symbol not in _ENVIRONMENT_INDEX_SYMBOLS:
+                    raise SwingDataError(f"指数日线symbol不受支持: {normalized.symbol}")
+                key = (normalized.symbol, normalized.trading_date)
+                existing = indexed.get(key)
+                if existing is None or normalized.observed_at >= existing.observed_at:
+                    indexed[key] = normalized
+            merged = tuple(indexed[key] for key in sorted(indexed))
+            self._validate_sequence(merged)
+            if merged != current:
+                self._atomic_replace(merged)
+            return merged
+
+    def _load_unlocked(self) -> tuple[DailyBar, ...]:
+        try:
+            content = self.path.read_bytes()
+        except FileNotFoundError:
+            return ()
+        if content == b"":
+            return ()
+        if not content.endswith(b"\n"):
+            raise SwingDataError("指数日线历史末行不完整")
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise SwingDataError("指数日线历史不是有效UTF-8") from error
+        records: list[DailyBar] = []
+        for line_number, line in enumerate(text[:-1].split("\n"), start=1):
+            if not line:
+                raise SwingDataError(f"指数日线历史第{line_number}行为空")
+            try:
+                value = json.loads(line)
+            except (ValueError, RecursionError) as error:
+                raise SwingDataError(f"指数日线历史第{line_number}行JSON无效") from error
+            if type(value) is not dict:
+                raise SwingDataError(f"指数日线历史第{line_number}行必须是对象")
+            try:
+                record = DailyBar.from_mapping(value)
+            except SwingDataError as error:
+                raise SwingDataError(f"指数日线历史第{line_number}行无效") from error
+            if record.symbol not in _ENVIRONMENT_INDEX_SYMBOLS:
+                raise SwingDataError(f"指数日线symbol不受支持: {record.symbol}")
+            records.append(record)
+        result = tuple(records)
+        self._validate_sequence(result)
+        return result
+
+    @staticmethod
+    def _validate_sequence(records: Sequence[DailyBar]) -> None:
+        previous: tuple[str, date] | None = None
+        for record in records:
+            key = (record.symbol, record.trading_date)
+            if previous is not None and key <= previous:
+                raise SwingDataError("指数日线序列必须按代码和日期严格递增")
+            previous = key
+
+    def _atomic_replace(self, records: Sequence[DailyBar]) -> None:
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="",
+                delete=False,
+                dir=self.path.parent,
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
+            ) as handle:
+                temporary_path = Path(handle.name)
+                for record in records:
+                    handle.write(json.dumps(
+                        record.to_dict(),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ))
+                    handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, self.path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+
 def _iso_date(value: object) -> date:
     if type(value) is not str:
         raise SwingDataError("日线trading_date必须是ISO日期")

@@ -65,14 +65,27 @@ class SwingValuationTests(unittest.TestCase):
 
     def test_unknown_roe_period_never_assumes_ttm(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = self._valuation_path(Path(directory), roe_period="UNKNOWN")
-            snapshot = ValuationStore(path, today=date(2026, 9, 23)).get("000300")
+            root = Path(directory)
+            inferred = self._valuation_path(root, roe_period="UNKNOWN")
+            snapshot = ValuationStore(inferred, today=date(2026, 9, 23)).get("000300")
+            unlabeled = self._valuation_path(
+                root, roe_period=None, roe_ttm=10.0, pe_ttm=10.0, pb=1.0,
+            )
+            near_ttm = ValuationStore(unlabeled, today=date(2026, 9, 23)).get("000300")
         self.assertIsNotNone(snapshot)
         assert snapshot is not None
-        self.assertIsNone(snapshot.roe_annualized)
-        self.assertIsNone(snapshot.pr_pe_roe)
-        self.assertFalse(snapshot.roe_consistent)
-        self.assertEqual(snapshot.status, "UNKNOWN")
+        self.assertEqual(snapshot.roe_period, "H1")
+        self.assertTrue(snapshot.roe_period_inferred)
+        self.assertNotEqual(snapshot.roe_period, "TTM")
+        self.assertAlmostEqual(snapshot.roe_annualized or 0.0, 20.0)
+        self.assertTrue(snapshot.roe_consistent)
+        self.assertEqual(snapshot.status, "OK")
+        self.assertIsNotNone(near_ttm)
+        assert near_ttm is not None
+        self.assertIsNone(near_ttm.roe_period)
+        self.assertFalse(near_ttm.roe_period_inferred)
+        self.assertIsNone(near_ttm.pr_pe_roe)
+        self.assertEqual(near_ttm.status, "OK")
 
     def test_roe_cross_check_over_twenty_percent_is_not_published(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -153,7 +166,10 @@ class SwingValuationTests(unittest.TestCase):
                 snapshot = ValuationStore(path, today=date(2026, 9, 23)).get("000300")
                 self.assertIsNotNone(snapshot)
                 assert snapshot is not None
-                self.assertEqual(classify_valuation_stage(snapshot).stage, expected)
+                self.assertEqual(
+                    classify_valuation_stage(snapshot, category="SECTOR").stage,
+                    expected,
+                )
             path = self._valuation_path(
                 root,
                 pe_percentile_10y=None,
@@ -165,6 +181,38 @@ class SwingValuationTests(unittest.TestCase):
         self.assertIsNotNone(snapshot)
         assert snapshot is not None
         self.assertEqual(classify_valuation_stage(snapshot, category="industry").stage, "UNAVAILABLE")
+        broad = classify_valuation_stage(snapshot, category="BROAD")
+        self.assertEqual(broad.stage, "VALUE")
+        self.assertEqual(broad.pr_stage, "VALUE")
+        self.assertFalse(broad.stage_conflict)
+
+    def test_percentile_and_pr_two_stages_apart_take_fair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._valuation_path(
+                Path(directory),
+                pe_ttm=9.0,
+                pb=1.0,
+                pe_percentile_10y=80.0,
+                pb_percentile_10y=80.0,
+                pe_percentile_5y=None,
+                pb_percentile_5y=None,
+            )
+            snapshot = ValuationStore(path, today=date(2026, 9, 23)).get("000300")
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        stage = classify_valuation_stage(snapshot, category="BROAD")
+        self.assertEqual(stage.percentile_stage, "RICH")
+        self.assertEqual(stage.pr_stage, "VALUE")
+        self.assertTrue(stage.stage_conflict)
+        self.assertEqual(stage.stage, "FAIR")
+
+    def test_load_uses_the_supplied_shanghai_date_for_staleness(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._valuation_path(Path(directory), as_of="2026-09-01")
+            fresh = ValuationStore(path, today=date(2026, 1, 1)).load(today=date(2026, 9, 5))
+            stale = ValuationStore(path, today=date(2026, 9, 5)).load(today=date(2026, 9, 20))
+        self.assertEqual(fresh["000300"].status, "OK")
+        self.assertEqual(stale["000300"].status, "STALE")
 
     def test_swing_snapshot_publishes_associated_index_valuation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -220,7 +268,12 @@ class SwingValuationTests(unittest.TestCase):
             self.assertEqual(valuation_payload["percentile_horizon_used"], "10y")
             self.assertIsNone(valuation_payload["pr_pe_roe"])
             self.assertAlmostEqual(valuation_payload["pr_pe_pb"], 1.2445714285714284)
-            self.assertEqual(valuation_payload["status"], "UNKNOWN")
+            self.assertEqual(valuation_payload["status"], "OK")
+            self.assertIsNone(valuation_payload["roe_period"])
+            self.assertEqual(
+                service.health()["environment_history"],
+                {"000300": None, "000852": None},
+            )
 
     def test_repository_valuation_file_covers_every_swing_metadata_index(self) -> None:
         root = Path(__file__).parents[1]

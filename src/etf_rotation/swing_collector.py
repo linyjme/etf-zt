@@ -26,6 +26,10 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 KLINE_ENDPOINT = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 KLINE_FALLBACK_ENDPOINT = "https://push2delay.eastmoney.com/api/qt/stock/kline/get"
 TENCENT_KLINE_ENDPOINT = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+ENVIRONMENT_INDEX_PREFIX = {
+    "000300": "sh",
+    "000852": "sh",
+}
 FIELDS1 = "f1,f2,f3,f4,f5,f6"
 FIELDS2 = "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
 _FINAL_TIME = time(15, 10)
@@ -59,6 +63,16 @@ class _ParsedKline:
 class _Response:
     pre_close: float | None
     bars: tuple[_ParsedKline, ...]
+
+
+def tencent_market_symbol(symbol: str, market_prefix: str | None = None) -> str:
+    """Return the Tencent code, forcing Shanghai for the environment indices."""
+    if market_prefix is None:
+        market = _market_for_symbol(symbol)
+        market_prefix = "sh" if market == 1 else "sz"
+    if market_prefix not in {"sh", "sz"}:
+        raise SwingDataError("指数市场前缀无效")
+    return f"{market_prefix}{symbol}"
 
 
 def _market_for_symbol(symbol: str) -> int:
@@ -117,6 +131,52 @@ class EastmoneyDailyCollector:
                 self._collect_symbol(item, last_completed_date, count, observed_at),
             )
         return tuple(sorted(collected, key=lambda bar: (bar.symbol, bar.trading_date)))
+
+    def collect_indices(
+        self,
+        last_completed_date: date,
+        count: int = DEFAULT_SWING_HISTORY_COUNT,
+    ) -> tuple[DailyBar, ...]:
+        """Collect CSI 300 and CSI 1000 from Tencent without mixing them into ETFs.
+
+        Eastmoney's market id treats a leading zero as Shenzhen.  These index
+        codes are Shanghai instruments (``sh000300`` / ``sh000852``), so the
+        environment history uses the Tencent prefix explicitly and is stored
+        apart from tradable ETF bars.  Their amount remains an estimate and
+        cannot satisfy the ETF provider-reported amount gate.
+        """
+        if type(last_completed_date) is not date:
+            raise SwingDataError("last_completed_date必须是date")
+        if type(count) is not int or not 0 < count <= _MAX_COUNT:
+            raise SwingDataError(f"count必须是1到{_MAX_COUNT}的整数")
+        items = tuple(
+            SwingWatchItem(symbol, True) for symbol in ENVIRONMENT_INDEX_PREFIX
+        )
+        observed_at = self._observed_at()
+        responses: dict[str, tuple[_Response, _Response]] = {}
+        for item in items:
+            prefix = ENVIRONMENT_INDEX_PREFIX[item.symbol]
+            raw = self._fetch_tencent(
+                item.symbol,
+                adjustment=0,
+                last_completed_date=last_completed_date,
+                count=count,
+                market_prefix=prefix,
+            )
+            adjusted = self._fetch_tencent(
+                item.symbol,
+                adjustment=1,
+                last_completed_date=last_completed_date,
+                count=count,
+                market_prefix=prefix,
+            )
+            adjusted = self._complete_tencent_adjusted_suffix(
+                item.symbol, raw, adjusted,
+            )
+            responses[item.symbol] = (raw, adjusted)
+        return self._build_bars(
+            items, responses, last_completed_date, observed_at, TENCENT_KLINE_ENDPOINT,
+        )
 
     def _collect_symbol(
         self,
@@ -311,9 +371,9 @@ class EastmoneyDailyCollector:
         adjustment: int,
         last_completed_date: date,
         count: int,
+        market_prefix: str | None = None,
     ) -> _Response:
-        market = _market_for_symbol(symbol)
-        market_symbol = f"{'sh' if market == 1 else 'sz'}{symbol}"
+        market_symbol = tencent_market_symbol(symbol, market_prefix)
         adjustment_name = "qfq" if adjustment == 1 else ""
         query = urlencode({
             "param": (

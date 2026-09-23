@@ -52,7 +52,7 @@ from .swing_alerts import AlertStoreError
 from .swing_page import SWING_PAGE
 from .swing_portfolio import PortfolioLedgerError, TradeInput
 from .swing_service import SwingPaths, SwingService, SwingServiceError
-from .valuation import ValuationStore
+from .valuation import ValuationStore, classify_valuation_stage
 
 
 _DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "monitor"
@@ -1227,12 +1227,25 @@ class MonitorApplication:
 
     def valuations(self) -> dict[str, Any]:
         metadata = self.metadata_store.load()
+        today = datetime.now(SHANGHAI).date()
         store = ValuationStore(self.valuation_path) if self.valuation_path else None
-        values = store.load() if store else {}
+        values = store.load(today=today) if store else {}
         items = []
         for symbol, item in metadata.items():
             snapshot = values.get(item.index.code)
-            items.append({"symbol": symbol, "name": item.name, "index": item.index.to_dict(), "status": snapshot.status if snapshot else "MISSING_VALUATION", "valuation": snapshot.to_dict() if snapshot else None, "read_only": True})
+            stage = classify_valuation_stage(
+                snapshot, category=item.category or "UNAVAILABLE",
+            ).to_dict()
+            items.append({
+                "symbol": symbol,
+                "name": item.name,
+                "category": item.category,
+                "index": item.index.to_dict(),
+                "status": snapshot.status if snapshot else "MISSING_VALUATION",
+                "valuation": snapshot.to_dict() if snapshot else None,
+                "stage": stage,
+                "read_only": True,
+            })
         return {"generated_at": datetime.now(SHANGHAI).isoformat(), "items": items, "read_only": True}
 
     def industry_valuations(self) -> dict[str, Any]:
@@ -1241,7 +1254,8 @@ class MonitorApplication:
             records = json.loads(path.read_text(encoding="utf-8")).get("items", [])
         except (OSError, json.JSONDecodeError):
             records = []
-        values = ValuationStore(self.valuation_path).load() if self.valuation_path else {}
+        today = datetime.now(SHANGHAI).date()
+        values = ValuationStore(self.valuation_path).load(today=today) if self.valuation_path else {}
         items = []
         for r in records:
             code = str(r.get("index_code", "")); v = values.get(code)
@@ -1257,9 +1271,17 @@ class MonitorApplication:
         metadata = EtfMetadataStore(self.metadata_path).get(symbol) if self.metadata_path else None
         if metadata is None:
             return {"symbol": symbol, "status": "MISSING_METADATA", "index": None, "valuation": None, "read_only": True}
-        snapshot = ValuationStore(self.valuation_path).get(metadata.index.code) if self.valuation_path else None
+        snapshot = (
+            ValuationStore(self.valuation_path).get(
+                metadata.index.code, today=datetime.now(SHANGHAI).date(),
+            )
+            if self.valuation_path else None
+        )
         usable = snapshot if snapshot and snapshot.status != "MISSING_VALUATION" else None
-        return {"symbol": symbol, "status": snapshot.status if snapshot else "MISSING_VALUATION", "index": metadata.index.to_dict(), "valuation": usable.to_dict() if usable else None, "read_only": True}
+        stage = classify_valuation_stage(
+            usable, category=metadata.category or "UNAVAILABLE",
+        ).to_dict()
+        return {"symbol": symbol, "status": snapshot.status if snapshot else "MISSING_VALUATION", "index": metadata.index.to_dict(), "valuation": usable.to_dict() if usable else None, "stage": stage, "read_only": True}
 
     def t_backtest(self) -> dict[str, Any]:
         payload = json.loads(self.quotes_path.read_text(encoding="utf-8"))
@@ -1691,7 +1713,14 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/history/quotes":
             self._history_quotes()
         elif path == "/health":
-            self._json(HTTPStatus.OK, self.server.application.health())
+            payload = self.server.application.health()
+            swing = self.server.swing_application
+            if swing is not None:
+                try:
+                    payload["environment_history"] = swing.health().get("environment_history")
+                except Exception:
+                    payload["environment_history"] = {"000300": None, "000852": None}
+            self._json(HTTPStatus.OK, payload)
         else:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 

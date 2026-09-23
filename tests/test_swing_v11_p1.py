@@ -157,13 +157,23 @@ class SwingV11P1Tests(unittest.TestCase):
         self.assertTrue(decision.evidence["forced_half_size"])
         self.assertTrue(decision.evidence["sizing"]["forced_half_size"])
 
-    def test_a_macd_histogram_recovery_does_not_require_dif_above_dea(self):
-        decision = self.evaluate_with_account(self.evidence(
+    def test_a_macd_histogram_recovery_requires_dif_above_dea(self):
+        blocked = self.evaluate_with_account(self.evidence(
             macd_dif=-0.4, macd_dea=-0.3,
             macd_histogram_improving_2d=True,
+            rsi_current=45.0,
+            volume_ratio20=1.0,
         ))
-        self.assertEqual(decision.setup, V11Setup.A_PULLBACK)
-        self.assertTrue(decision.evidence["macd_trigger"])
+        self.assertFalse(blocked.evidence["macd_trigger"])
+        self.assertNotEqual(blocked.setup, V11Setup.A_PULLBACK)
+        allowed = self.evaluate_with_account(self.evidence(
+            macd_dif=-0.2, macd_dea=-0.3,
+            macd_histogram_improving_2d=True,
+            rsi_current=45.0,
+            volume_ratio20=1.0,
+        ))
+        self.assertTrue(allowed.evidence["macd_trigger"])
+        self.assertEqual(allowed.setup, V11Setup.A_PULLBACK)
 
     def test_b_missing_long_trend_box_or_bollinger_evidence_blocks(self):
         decision = self.evaluate(self.evidence(

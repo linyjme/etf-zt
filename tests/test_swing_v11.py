@@ -216,7 +216,7 @@ class SwingV11ContractTests(unittest.TestCase):
             V11Position(
                 shares=500, sellable_shares=500, entry_price=100.0,
                 stop_price=95.0, current_price=94.0,
-                initial_risk_per_share=5.0, profit_r=2.0,
+                initial_risk_per_share=5.0,
             ), config=config, context=V11Context(environment_state="ATTACK"),
         )
         self.assertEqual(action.action, "EXIT")
@@ -228,7 +228,7 @@ class SwingV11ContractTests(unittest.TestCase):
             V11Position(
                 shares=500, sellable_shares=100, entry_price=100.0,
                 stop_price=95.0, current_price=94.0,
-                initial_risk_per_share=5.0, profit_r=2.0,
+                initial_risk_per_share=5.0,
             ), config=config, context=V11Context(environment_state="ATTACK"),
         )
         self.assertEqual(action.planned_shares, 100)

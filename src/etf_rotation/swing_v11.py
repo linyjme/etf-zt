@@ -127,7 +127,6 @@ class V11Position:
     stop_price: float
     current_price: float
     initial_risk_per_share: float
-    profit_r: float = 0.0
     reduced: bool = False
     tracking_price: float | None = None
     # Position state is optional so callers that only provide the original
@@ -149,7 +148,7 @@ class V11Position:
             raise ValueError("shares must be a nonnegative integer")
         if type(self.sellable_shares) is not int or not 0 <= self.sellable_shares <= self.shares:
             raise ValueError("sellable_shares must be between zero and shares")
-        for name in ("entry_price", "stop_price", "current_price", "initial_risk_per_share", "profit_r"):
+        for name in ("entry_price", "stop_price", "current_price", "initial_risk_per_share"):
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(float(value)):
                 raise ValueError(f"{name} must be finite")
@@ -395,26 +394,37 @@ def evaluate_v11(
     )
     a_week_ok = t3_week_ok
     category = (context.category or "UNVERIFIED").upper()
-    if context.category is None or not context.category.strip() or category == "UNVERIFIED":
+    category_unverified = (
+        context.category is None
+        or not str(context.category).strip()
+        or category == "UNVERIFIED"
+    )
+    if category_unverified:
         reasons.append("CATEGORY_UNVERIFIED")
-    # T5 is intentionally explicit and category-aware.  Missing environment
-    # evidence is handled as UNKNOWN above; once a category is supplied,
-    # neutral only permits broad/gold and defense only permits defensive
-    # categories.
-    explicit_t5 = indicator.get("environment_category_allowed")
-    if explicit_t5 is None:
-        if environment == "ATTACK":
-            t5_allowed = True
-        elif environment == "NEUTRAL":
-            t5_allowed = category in {"BROAD", "GOLD", "CROSS_BORDER"}
-        elif environment == "DEFENSE":
-            t5_allowed = category in {"CROSS_BORDER", "GOLD"}
-        else:
-            t5_allowed = False
+    # T5 is intentionally explicit and category-aware.  An unverified category
+    # already fail-closes the decision, so it is not evaluated again as a
+    # false environment permission.  Neutral only permits broad/gold and
+    # defense only permits defensive categories.
+    t5_reported: bool | None
+    if category_unverified:
+        t5_allowed = False
+        t5_reported = None
     else:
-        t5_allowed = bool(explicit_t5)
-    if not t5_allowed:
-        reasons.append("T5_ENVIRONMENT_CATEGORY")
+        explicit_t5 = indicator.get("environment_category_allowed")
+        if explicit_t5 is None:
+            if environment == "ATTACK":
+                t5_allowed = True
+            elif environment == "NEUTRAL":
+                t5_allowed = category in {"BROAD", "GOLD", "CROSS_BORDER"}
+            elif environment == "DEFENSE":
+                t5_allowed = category in {"CROSS_BORDER", "GOLD"}
+            else:
+                t5_allowed = False
+        else:
+            t5_allowed = bool(explicit_t5)
+        t5_reported = t5_allowed
+        if not t5_allowed:
+            reasons.append("T5_ENVIRONMENT_CATEGORY")
 
     ma10 = _number_or_none(indicator.get("ma10"))
     pullback_sessions = _number_or_none(indicator.get("pullback_window_sessions"))
@@ -456,22 +466,28 @@ def evaluate_v11(
         reasons.append("BIAS_OUT_OF_RANGE")
     macd_dif = _number_or_none(indicator.get("macd_dif"))
     macd_dea = _number_or_none(indicator.get("macd_dea"))
+    macd_dif_above_dea = (
+        macd_dif is not None and macd_dea is not None and macd_dif > macd_dea
+    )
     macd_evidence_available = (
         type(indicator.get("macd_histogram_improving_2d")) is bool
+        and macd_dif is not None and macd_dea is not None
     )
     macd_exact = bool(
         macd_evidence_available
         and indicator.get("macd_histogram_improving_2d")
+        and macd_dif_above_dea
     )
     rsi_min = _number_or_none(indicator.get("rsi_pullback_min"))
     rsi_current = _number_or_none(indicator.get("rsi_current"))
     rsi_previous = _number_or_none(indicator.get("rsi_previous_1"))
-    rsi_evidence_available = (
-        rsi_min is not None and rsi_current is not None and rsi_previous is not None
-    )
+    rsi_evidence_available = rsi_min is not None and rsi_current is not None
     rsi_exact = bool(
-        rsi_evidence_available and rsi_min >= 40.0 and rsi_previous is not None
-        and rsi_previous <= 50.0 and rsi_current is not None and rsi_current > 50.0
+        rsi_evidence_available and rsi_min >= 40.0 and rsi_current > 50.0
+    )
+    rsi_crossed_above_50 = bool(
+        rsi_previous is not None and rsi_current is not None
+        and rsi_previous <= 50.0 and rsi_current > 50.0
     )
     volume_evidence_available = (
         type(indicator.get("volume_recovery_trigger")) is bool
@@ -530,17 +546,25 @@ def evaluate_v11(
     stage_allow_a = True
     stage_allow_b = True
     stage_force_half = False
+    stage_block_entry = False
     if context.valuation_stage_enforcement:
+        stage_multiplier: float | None = None
         if isinstance(context.valuation_stage, ValuationStage):
             stage_name = context.valuation_stage.stage
             stage_allow_a = context.valuation_stage.allow_a_pullback
             stage_allow_b = context.valuation_stage.allow_b_breakout
-            stage_force_half = context.valuation_stage.size_multiplier <= 0.5
+            stage_multiplier = context.valuation_stage.size_multiplier
         elif isinstance(context.valuation_stage, Mapping):
             stage_name = str(context.valuation_stage.get("stage") or "") or None
             stage_allow_a = context.valuation_stage.get("allow_a_pullback", True) is not False
             stage_allow_b = context.valuation_stage.get("allow_b_breakout", True) is not False
-            stage_force_half = _number_or_none(context.valuation_stage.get("size_multiplier")) == 0.5
+            stage_multiplier = _number_or_none(context.valuation_stage.get("size_multiplier"))
+        if stage_multiplier is not None and stage_multiplier <= 0.0:
+            stage_block_entry = True
+        elif stage_multiplier is not None and stage_multiplier <= 0.5:
+            stage_force_half = True
+        if stage_block_entry:
+            reasons.append("VALUATION_STAGE_NO_ENTRY")
         if a_ok and not stage_allow_a:
             reasons.append("VALUATION_EXPENSIVE_NO_PULLBACK")
         if b_ok and not stage_allow_b:
@@ -682,7 +706,7 @@ def evaluate_v11(
             _number_or_none(indicator.get("return_60d_pct")) is not None
             and float(indicator["return_60d_pct"]) > 0.0
         ),
-        "t5_environment_category": t5_allowed,
+        "t5_environment_category": t5_reported,
         "weekly_trend_ok": a_week_ok,
         "a_setup_ok": a_ok,
         "b_setup_ok": b_ok,
@@ -696,7 +720,9 @@ def evaluate_v11(
         "b6_overheated_ok": b6_ok,
         "momentum_trigger_count": sum(momentum_triggers),
         "macd_trigger": momentum_triggers[0],
+        "macd_dif_above_dea": macd_dif_above_dea,
         "rsi_trigger": momentum_triggers[1],
+        "rsi_crossed_above_50": rsi_crossed_above_50,
         "volume_recovery_trigger": momentum_triggers[2],
         "kdj_required": False,
         "forced_half_size": forced_half,
@@ -751,25 +777,28 @@ def parse_v11_observed_at(value: object) -> datetime | None:
 
 
 def classify_v11_environment(indicator: Mapping[str, object]) -> str:
-    """Classify the broad market backdrop from explicit completed-bar evidence."""
+    """Classify one index as attack or defense.
+
+    Complete inputs never return neutral or unknown.  Neutral is reserved for
+    the two-index synthesis in ``calculate_v11_environment``.  A healthy index
+    is above MA60 while MA20 is not declining and, when weekly evidence exists,
+    the weekly close has not broken weekly MA20.
+    """
     price = _number_or_none(indicator.get("price"))
     ma20 = _number_or_none(indicator.get("ma20"))
     ma60 = _number_or_none(indicator.get("ma60"))
     slope = _number_or_none(indicator.get("ma20_slope_pct_10d"))
-    weekly_close = _number_or_none(indicator.get("weekly_close"))
-    weekly_ma20 = _number_or_none(indicator.get("weekly_ma20"))
     if None in (price, ma20, ma60, slope):
         return "UNKNOWN"
-    # A healthy index only needs to remain above MA60 while MA20 rises or
-    # stays effectively flat (within 0.5 percentage points over ten days).
-    if price > ma60 and slope >= -0.5:
-        if weekly_close is None or weekly_ma20 is None or weekly_close >= weekly_ma20:
-            return "ATTACK"
-    if price < ma60:
-        return "DEFENSE"
-    if abs(slope) <= 0.8 and abs(price / ma60 - 1.0) <= 0.04:
-        return "NEUTRAL"
-    return "UNKNOWN"
+    weekly_close = _number_or_none(indicator.get("weekly_close"))
+    weekly_ma20 = _number_or_none(indicator.get("weekly_ma20"))
+    weekly_broken = (
+        weekly_close is not None and weekly_ma20 is not None
+        and weekly_close < weekly_ma20
+    )
+    if price > ma60 and slope >= -0.5 and not weekly_broken:
+        return "ATTACK"
+    return "DEFENSE"
 
 
 def _lot_floor(shares: float, lot_size: int) -> int:
@@ -1079,6 +1108,11 @@ def evaluate_v11_position(
         planned = half
         reasons.append("S8_VALUATION_STAGE")
         evidence["reduce_reason"] = "S8_VALUATION_STAGE"
+        tracking_ma = "MA20" if category in {"BROAD", "GOLD", "UNVERIFIED"} else "MA10"
+        tracking_value = number("ma20" if tracking_ma == "MA20" else "ma10")
+        tracking_price = max(position.entry_price, tracking_value or position.entry_price)
+        evidence.update({"tracking_ma": tracking_ma, "tracking_price": tracking_price, "tracking_floor": position.entry_price})
+        decision_stop = max(position.stop_price, tracking_price)
     elif not position.reduced and half > 0 and (
         s1 or s2 or s3 or s4 or s6 or s7
     ):
@@ -1421,8 +1455,17 @@ def calculate_v11_indicators(
         valid_pullback_rsi and rsi_pullback_min >= 40.0
     )
     rsi_trigger = bool(
-        rsi_pullback_never_below_40 and rsi is not None and previous_rsi is not None
-        and previous_rsi <= 50.0 and rsi > 50.0
+        rsi_pullback_min is not None and rsi_pullback_min >= 40.0
+        and rsi is not None and rsi > 50.0
+    )
+    macd_dif_value = macd.get("dif")
+    macd_dea_value = macd.get("dea")
+    macd_dif_above_dea = bool(
+        type(macd_dif_value) in (int, float)
+        and type(macd_dea_value) in (int, float)
+        and not isinstance(macd_dif_value, bool)
+        and not isinstance(macd_dea_value, bool)
+        and macd_dif_value > macd_dea_value
     )
     volume_recovery_trigger = bool(
         current_volume is not None and prior_volume_average is not None
@@ -1519,12 +1562,14 @@ def calculate_v11_indicators(
             and previous_rsi <= 50.0 and rsi > 50.0
         ),
         "macd_histogram_improving_2d": macd_histogram_improving_2d,
+        "macd_dif_above_dea": macd_dif_above_dea,
         "weekly": weekly,
         "setups": {
             "pullback_window_ok": pullback_window_ok,
             "pullback_recovery_ok": pullback_recovery_ok,
             "volume_contraction_ok": volume_contraction_ok,
             "macd_trigger": macd_trigger,
+            "macd_dif_above_dea": macd_dif_above_dea,
             "rsi_trigger": rsi_trigger,
             "volume_recovery_trigger": volume_recovery_trigger,
             "box_ok": box_ok,
@@ -1601,6 +1646,12 @@ def normalize_v11_indicators(indicators: Mapping[str, object]) -> dict[str, obje
         "box_breakout_ok": bool(raw.get("box_breakout_ok", setups.get("box_breakout_ok"))),
         "macd_dif": raw.get("macd_dif", macd.get("dif")),
         "macd_dea": raw.get("macd_dea", macd.get("dea")),
+        "macd_dif_above_dea": bool(raw.get(
+            "macd_dif_above_dea", setups.get("macd_dif_above_dea"),
+        )),
+        "rsi_crossed_above_50": bool(raw.get(
+            "rsi_crossed_above_50", setups.get("rsi_crossed_above_50"),
+        )),
         "macd_dif_nonnegative": bool(raw.get("macd_dif_nonnegative", setups.get("macd_dif_nonnegative"))),
         "weekly_above_ma10": bool(raw.get("weekly_above_ma10", setups.get("weekly_above_ma10"))),
         "return_60d_pct": raw.get(

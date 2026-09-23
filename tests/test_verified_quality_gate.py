@@ -2,13 +2,24 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from dataclasses import replace
+import hashlib
+import json
 import unittest
+from zoneinfo import ZoneInfo
 
 from etf_rotation.swing_quality import assess_verified_quality
 from tests.swing_helpers import retime_daily_bars, swing_strategy_bars
 
 
-SHANGHAI = timedelta(hours=8)
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _digest(bars):
+    payload = [bar.to_dict() for bar in bars]
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
 def _receipt(bars):
@@ -19,7 +30,7 @@ def _receipt(bars):
         "sample_end": bars[-1].trading_date.isoformat(),
         "crosscheck_status": "PASSED",
         "adjustment_status": "VERIFIED",
-        "calculation_version": "research-v1",
+        "calculation_version": _digest(bars),
         "warnings": [],
     }
 
@@ -30,7 +41,7 @@ class VerifiedQualityGateTests(unittest.TestCase):
         bars = tuple(replace(bar, source="东方财富 kline (push2his.eastmoney.com)") for bar in bars)
         self.bars = bars
         self.kwargs = dict(
-            today=datetime(2026, 9, 23, 14, 20, tzinfo=__import__("zoneinfo").ZoneInfo("Asia/Shanghai")),
+            today=datetime(2026, 9, 23, 14, 20, tzinfo=SHANGHAI),
             closed_dates=frozenset(),
             metadata_status="PASSED",
             environment_histories={"000300": bars, "000852": bars},
@@ -68,7 +79,7 @@ class VerifiedQualityGateTests(unittest.TestCase):
 
     def test_weekend_and_closed_day_are_resolved_by_calendar(self):
         kwargs = dict(self.kwargs)
-        kwargs["today"] = datetime(2026, 9, 24, 14, 20, tzinfo=__import__("zoneinfo").ZoneInfo("Asia/Shanghai"))
+        kwargs["today"] = datetime(2026, 9, 24, 14, 20, tzinfo=SHANGHAI)
         kwargs["closed_dates"] = frozenset({date(2026, 9, 23)})
         result = assess_verified_quality(self.bars, **kwargs)
         self.assertEqual(result["status"], "VERIFIED")
@@ -104,6 +115,30 @@ class VerifiedQualityGateTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "UNVERIFIED")
         self.assertIn("DATA_QUALITY_ENVIRONMENT_INVALID_SEQUENCE", result["reasons"])
+
+    def test_post_close_window_keeps_previous_trading_day(self):
+        kwargs = dict(self.kwargs)
+        kwargs["today"] = datetime(2026, 9, 23, 15, 30, tzinfo=SHANGHAI)
+        result = assess_verified_quality(self.bars, **kwargs)
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertEqual(result["expected_last_completed_date"], "2026-09-22")
+
+    def test_after_daily_ready_time_expects_same_day_bar(self):
+        kwargs = dict(self.kwargs)
+        kwargs["today"] = datetime(2026, 9, 23, 16, 0, tzinfo=SHANGHAI)
+        result = assess_verified_quality(self.bars, **kwargs)
+        self.assertEqual(result["status"], "UNVERIFIED")
+        self.assertIn("DATA_QUALITY_LATEST_DATE_NOT_CURRENT", result["reasons"])
+        self.assertEqual(result["expected_last_completed_date"], "2026-09-23")
+
+    def test_sample_end_may_lag_when_digest_still_matches(self):
+        receipt = _receipt(self.bars)
+        receipt["sample_end"] = self.bars[-2].trading_date.isoformat()
+        result = assess_verified_quality(self.bars, **dict(self.kwargs, receipt=receipt))
+        self.assertEqual(result["status"], "VERIFIED")
+        receipt["calculation_version"] = "sha256:" + "ab" * 8
+        mismatched = assess_verified_quality(self.bars, **dict(self.kwargs, receipt=receipt))
+        self.assertIn("DATA_QUALITY_RECEIPT_SAMPLE_MISMATCH", mismatched["reasons"])
 
 
 if __name__ == "__main__":

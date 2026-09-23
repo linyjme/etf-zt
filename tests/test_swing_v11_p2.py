@@ -30,6 +30,7 @@ class SwingV11P2CoreTests(unittest.TestCase):
             "initial_risk_per_share": 5.0,
         }
         values.update(overrides)
+        values.pop("profit_r", None)
         return V11Position(**values)
 
     def evaluate(self, position: V11Position, **context_overrides: object):

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, timezone
 import json
 import math
+from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -1100,6 +1101,54 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
                 )
                 self.assertEqual(len(bars), 2)
                 self.assertTrue(any(url.startswith(KLINE_FALLBACK_ENDPOINT) for url in requests))
+
+
+class EnvironmentIndexCollectionTests(unittest.TestCase):
+    def test_tencent_symbol_forces_shanghai_for_environment_indices(self) -> None:
+        from etf_rotation.swing_collector import ENVIRONMENT_INDEX_PREFIX, tencent_market_symbol
+
+        self.assertEqual(tencent_market_symbol("000300"), "sz000300")
+        self.assertEqual(
+            tencent_market_symbol("000300", ENVIRONMENT_INDEX_PREFIX["000300"]),
+            "sh000300",
+        )
+        self.assertEqual(
+            tencent_market_symbol("000852", ENVIRONMENT_INDEX_PREFIX["000852"]),
+            "sh000852",
+        )
+
+    def test_collect_indices_requests_shanghai_codes_and_stays_out_of_etf_history(self) -> None:
+        from etf_rotation.swing_data import IndexHistoryStore
+
+        requests: list[str] = []
+
+        def transport(request: Request, timeout: float) -> bytes:
+            requests.append(request.full_url)
+            query = parse_qs(urlsplit(request.full_url).query)
+            param = query["param"][0]
+            market_symbol = param.split(",", 1)[0]
+            adjusted = param.endswith(",qfq")
+            symbol = market_symbol[2:]
+            payload = tencent_payload(symbol, adjusted=adjusted)
+            body = next(iter(payload["data"].values()))
+            payload["data"] = {market_symbol: body}
+            return json.dumps(payload).encode("utf-8")
+
+        bars = EastmoneyDailyCollector(
+            transport=transport, now=lambda: NOW,
+        ).collect_indices(date(2026, 8, 28), count=10)
+        self.assertEqual({bar.symbol for bar in bars}, {"000300", "000852"})
+        self.assertTrue(requests)
+        self.assertTrue(all("sh000300" in url or "sh000852" in url for url in requests))
+        self.assertFalse(any("sz000300" in url or "sz000852" in url for url in requests))
+        with tempfile.TemporaryDirectory() as directory:
+            store = IndexHistoryStore(Path(directory) / "index_quotes.jsonl")
+            stored = store.upsert(bars)
+            self.assertEqual(
+                {bar.symbol for bar in store.load()},
+                {"000300", "000852"},
+            )
+            self.assertEqual(stored[-1].symbol, "000852")
 
 
 if __name__ == "__main__":

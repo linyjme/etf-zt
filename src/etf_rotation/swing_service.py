@@ -15,6 +15,7 @@ from datetime import date, datetime, time, timedelta
 import json
 import hashlib
 import hmac
+import importlib.util
 import math
 import os
 from pathlib import Path
@@ -43,6 +44,7 @@ from .swing_config import (
 from .swing_data import (
     DailyBar,
     DailyHistoryStore,
+    IndexHistoryStore,
     _SiblingFileLock,
 )
 from .swing_minutes import expected_complete_minutes, parse_minute_payload
@@ -107,6 +109,7 @@ from .swing_v11 import (
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FINAL_DAILY_TIME = time(15, 10)
+_ENVIRONMENT_INDEX_CODES = ("000300", "000852")
 _BACKTEST_CACHE_SCHEMA_VERSION = 4
 _BACKTEST_ENGINE_VERSION = "SWING_BACKTEST_ENGINE_V5"
 _DEFAULT_HISTORY_COUNT = DEFAULT_SWING_HISTORY_COUNT
@@ -287,6 +290,9 @@ class SwingService:
         snapshot = self.snapshot()
         health = dict(snapshot.get("health", {}))
         ok = all(value in {"OK", "REALTIME", "NOT_RUN"} for value in health.values())
+        environment_history = snapshot.get("environment_history")
+        if not isinstance(environment_history, Mapping):
+            environment_history = {code: None for code in _ENVIRONMENT_INDEX_CODES}
         return {
             "status": "ok" if ok else "degraded",
             "ok": ok,
@@ -294,6 +300,9 @@ class SwingService:
             "revision": snapshot["revision"],
             "components": health,
             "errors": copy.deepcopy(snapshot.get("errors", {})),
+            "environment_history": {
+                code: environment_history.get(code) for code in _ENVIRONMENT_INDEX_CODES
+            },
         }
 
     def watchlist(self) -> dict[str, object]:
@@ -2220,9 +2229,15 @@ class SwingService:
                 return False
             recovered = self._mark_clock_success() if used_clock else False
             holdings_changed = self._reload_holdings_snapshot(cycle_time)
+            environment_before = self._environment_history_summary()
+            self._reload_index_history()
             revision_before_refresh = self.revision
             result = self._refresh_completed_daily(cycle_time)
-            if (recovered or holdings_changed) and self.revision == revision_before_refresh:
+            environment_changed = environment_before != self._environment_history_summary()
+            if (
+                (recovered or holdings_changed or environment_changed)
+                and self.revision == revision_before_refresh
+            ):
                 self._publish(self._build_snapshot(cycle_time))
             return result
 
@@ -2613,6 +2628,7 @@ class SwingService:
                 self._errors["daily"] = self._safe_error(error)
         else:
             self._health["daily"] = "BLOCKED"
+        self._reload_index_history()
 
         if self._metadata:
             try:
@@ -3072,6 +3088,8 @@ class SwingService:
 
     def _refresh_completed_daily(self, now: datetime) -> bool:
         target = self._last_completed_trading_date(now)
+        if target is not None and not self._index_history_current(target):
+            self._collect_index_history(target)
         enabled = tuple(item for item in self._watchlist if item.enabled)
         if target is None or not enabled:
             return False
@@ -3181,6 +3199,7 @@ class SwingService:
                 "daily", "PERSISTENCE_FAILED", error, now=now,
             )
             return False
+        self._rebuild_research_manifest()
 
         try:
             persisted_portfolio = self._calculate_portfolio_projection(
@@ -3731,7 +3750,9 @@ class SwingService:
             watch.symbol: history_by_symbol.get(watch.symbol, ())
             for watch in self._watchlist if watch.enabled
         }
-        valuation_by_index = self._valuation_store.load()
+        valuation_by_index = self._valuation_store.load(
+            today=now.astimezone(SHANGHAI).date(),
+        )
         current_items = {
             str(item.get("symbol")): item
             for item in current.get("items", [])
@@ -3907,6 +3928,7 @@ class SwingService:
             "history_coverage": history_coverage,
             "diagnostics": diagnostics,
             "health": copy.deepcopy(self._health),
+            "environment_history": self._environment_history_summary(),
             "errors": copy.deepcopy(self._errors),
             "portfolio": (
                 self._portfolio_projection.to_dict()
@@ -4149,6 +4171,99 @@ class SwingService:
             base["error"] = self._safe_error(error)
             return base
 
+    def _index_history_path(self) -> Path:
+        return self.paths.daily_history.with_name("index_quotes.jsonl")
+
+    def _environment_history_summary(self) -> dict[str, str | None]:
+        summary: dict[str, str | None] = {}
+        for code in _ENVIRONMENT_INDEX_CODES:
+            bars = self._index_history.get(code, ())
+            summary[code] = bars[-1].trading_date.isoformat() if bars else None
+        return summary
+
+    def _index_history_current(self, target: date) -> bool:
+        for code in _ENVIRONMENT_INDEX_CODES:
+            bars = self._index_history.get(code, ())
+            if not bars or bars[-1].trading_date != target:
+                return False
+        return True
+
+    def _reload_index_history(self) -> None:
+        """Reload CSI 300/1000 bars from the index file when it exists.
+
+        A missing file keeps constructor-injected history so tests can supply
+        evidence without a runtime collector.  A present file replaces that
+        cache, including an empty file.
+        """
+        path = self._index_history_path()
+        if not path.exists():
+            return
+        try:
+            bars = IndexHistoryStore(path).load()
+        except Exception as error:
+            self._errors["environment_history"] = self._safe_error(error)
+            return
+        grouped: dict[str, list[DailyBar]] = {}
+        for bar in bars:
+            if bar.symbol in _ENVIRONMENT_INDEX_CODES:
+                grouped.setdefault(bar.symbol, []).append(bar)
+        self._index_history = {
+            code: tuple(sorted(items, key=lambda item: item.trading_date))
+            for code, items in grouped.items()
+        }
+        self._errors.pop("environment_history", None)
+
+    def _collect_index_history(self, target: date) -> None:
+        collector = self.collector
+        collect_indices = getattr(collector, "collect_indices", None)
+        if collector is None or not callable(collect_indices):
+            return
+        try:
+            strategy_count = (
+                0 if self._strategy is None
+                else self._strategy.walk_forward_train_days
+                + self._strategy.walk_forward_test_days
+                + self._strategy.walk_forward_step_days
+            )
+            records = collect_indices(target, max(_DEFAULT_HISTORY_COUNT, strategy_count))
+            IndexHistoryStore(self._index_history_path()).upsert(records)
+            self._reload_index_history()
+        except Exception as error:
+            self._errors["environment_history"] = self._safe_error(error)
+
+    def _rebuild_research_manifest(self) -> None:
+        """Refresh the research receipt after a completed daily collection.
+
+        Failure stays on the research manifest and does not roll back bars.
+        The verified gate still requires a provider amount, a passed crosscheck
+        and a verified adjustment; rebuilding only keeps the sample digest
+        aligned with the history that was just stored.
+        """
+        try:
+            builder = _load_research_manifest_builder()
+            output = self.paths.strategy.with_name("research_manifest.json")
+            builder(
+                self.paths.daily_history,
+                self.paths.watchlist,
+                metadata_path=self.paths.metadata,
+                output_path=output,
+                calendar_path=self.paths.calendar,
+            )
+            self._errors.pop("research_manifest", None)
+        except Exception as error:
+            self._errors["research_manifest"] = self._safe_error(error)
+
+    @staticmethod
+    def _shadow_valuation_stage(valuation: Mapping[str, object] | None) -> str:
+        if not isinstance(valuation, Mapping):
+            return "UNKNOWN"
+        stage_payload = valuation.get("valuation_stage")
+        if isinstance(stage_payload, Mapping):
+            stage = stage_payload.get("stage")
+            if isinstance(stage, str) and stage:
+                return stage
+        return "UNKNOWN"
+
     def _v11_environment_context(
         self,
     ) -> tuple[dict[str, object], dict[str, tuple[DailyBar, ...]]]:
@@ -4244,7 +4359,7 @@ class SwingService:
             account_known=account_known,
             cost_ok=cost_ok,
             risk_ok=risk_ok,
-            valuation_status=str((valuation or {}).get("level", "UNKNOWN")),
+            valuation_status=self._shadow_valuation_stage(valuation),
             trend_state=trend_state,
             range_confirmed=trend_state == "RANGE",
             uncertain=trend_state == "UNCERTAIN",
@@ -4938,6 +5053,19 @@ class SwingService:
                         "service", "PRODUCER_FAILED", error, now=None,
                     )
             self._stop_event.wait(self.refresh_interval)
+
+
+def _load_research_manifest_builder():
+    path = Path(__file__).resolve().parents[2] / "scripts" / "build_swing_research_manifest.py"
+    spec = importlib.util.spec_from_file_location("build_swing_research_manifest", path)
+    if spec is None or spec.loader is None:
+        raise SwingServiceError("research manifest builder is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    build = getattr(module, "build_manifest", None)
+    if not callable(build):
+        raise SwingServiceError("research manifest builder is unavailable")
+    return build
 
 
 __all__ = ["DailyCollector", "SwingPaths", "SwingService", "SwingServiceError"]
