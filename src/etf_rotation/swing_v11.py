@@ -909,9 +909,14 @@ def classify_v11_environment(indicator: Mapping[str, object]) -> str:
     """Classify one index as attack or defense.
 
     Complete inputs never return neutral or unknown.  Neutral is reserved for
-    the two-index synthesis in ``calculate_v11_environment``.  A healthy index
-    is above MA60 while MA20 is not declining and, when weekly evidence exists,
-    the weekly close has not broken weekly MA20.
+    the two-index synthesis in ``calculate_v11_environment``.  Handbook
+    section three judges each index on its daily chart only: healthy means
+    the close is above MA60 while MA20 is not declining (10-session slope no
+    worse than -0.5%).  The weekly break is not part of the per-index test;
+    it is the CSI 300 hard override applied by ``calculate_v11_environment``
+    (weekly close below a declining weekly MA20).  Folding the weekly break
+    into every index made CSI 1000 read as defense while its daily chart was
+    healthy, which removed the neutral "healthy side" the handbook allows.
     """
     price = _number_or_none(indicator.get("price"))
     ma20 = _number_or_none(indicator.get("ma20"))
@@ -919,13 +924,7 @@ def classify_v11_environment(indicator: Mapping[str, object]) -> str:
     slope = _number_or_none(indicator.get("ma20_slope_pct_10d"))
     if None in (price, ma20, ma60, slope):
         return "UNKNOWN"
-    weekly_close = _number_or_none(indicator.get("weekly_close"))
-    weekly_ma20 = _number_or_none(indicator.get("weekly_ma20"))
-    weekly_broken = (
-        weekly_close is not None and weekly_ma20 is not None
-        and weekly_close < weekly_ma20
-    )
-    if price > ma60 and slope >= -0.5 and not weekly_broken:
+    if price > ma60 and slope >= -0.5:
         return "ATTACK"
     return "DEFENSE"
 

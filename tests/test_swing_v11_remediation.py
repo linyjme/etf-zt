@@ -6,6 +6,7 @@ import unittest
 from etf_rotation.swing_v11 import (
     V11Context,
     V11Position,
+    calculate_v11_environment,
     classify_v11_environment,
     evaluate_v11,
     evaluate_v11_position,
@@ -84,12 +85,27 @@ class SwingV11RemediationTests(unittest.TestCase):
             "ma20_slope_pct_10d": -0.9,
         }), "DEFENSE")
 
-    def test_weekly_break_above_ma60_is_defense(self):
-        self.assertEqual(classify_v11_environment({
+    def test_weekly_break_does_not_override_a_healthy_daily_index(self):
+        # Handbook section three: the per-index test is daily only.  The
+        # weekly break belongs to the CSI 300 hard override, which
+        # calculate_v11_environment applies on top of this classification.
+        healthy = {
             "price": 105.0, "ma20": 103.0, "ma60": 100.0,
             "ma20_slope_pct_10d": 0.4,
             "weekly_close": 90.0, "weekly_ma20": 95.0,
-        }), "DEFENSE")
+        }
+        self.assertEqual(classify_v11_environment(healthy), "ATTACK")
+        csi300 = {
+            **healthy, "weekly_ma20_slope_pct_10d": -0.8,
+        }
+        context = calculate_v11_environment({"000300": (csi300,), "000852": (healthy,)})
+        self.assertEqual(context["state"], "DEFENSE")
+        self.assertEqual(context["hard_defense_reason"], "CSI300_WEEKLY_BREAK")
+        self.assertEqual(context["latest_states"], {"000300": "ATTACK", "000852": "ATTACK"})
+        csi1000_only_break = calculate_v11_environment({
+            "000300": ({**healthy, "weekly_close": 96.0},), "000852": (healthy,),
+        })
+        self.assertEqual(csi1000_only_break["state"], "ATTACK")
 
     def test_s8_reduce_arms_the_same_tracking_stop(self):
         result = evaluate_v11_position(
