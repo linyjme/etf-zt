@@ -7,6 +7,7 @@ runtime watchlist, or changes the formal monitor strategy.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import datetime
 import argparse
 import hashlib
@@ -16,6 +17,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from etf_rotation.swing_crosscheck import load_receipts, receipt_applies
 from etf_rotation.swing_data import DailyBar, DailyBarValidator, SwingDataError
 from etf_rotation.etf_metadata import EtfMetadataStore, MetadataError
 from etf_rotation.market_data import MarketDataError, load_closed_dates
@@ -79,7 +81,10 @@ def _load_watchlist(path: Path) -> tuple[str, ...]:
     return tuple(symbols)
 
 
-def _quality_for(bars: tuple[DailyBar, ...]) -> tuple[str, str, str]:
+def _quality_for(
+    bars: tuple[DailyBar, ...],
+    receipt: Mapping[str, Any] | None = None,
+) -> tuple[str, str, str]:
     sources = {bar.source for bar in bars}
     if not sources:
         amount_quality = "UNKNOWN"
@@ -90,9 +95,20 @@ def _quality_for(bars: tuple[DailyBar, ...]) -> tuple[str, str, str]:
     else:
         amount_quality = "UNKNOWN"
 
+    # An independent crosscheck receipt only counts when it describes exactly
+    # this history (same window and digest).  Otherwise the legacy fail-closed
+    # values stand until the crosscheck is rerun.
+    if receipt is not None and receipt_applies(receipt, bars):
+        crosscheck_status = (
+            "PASSED" if receipt.get("crosscheck_status") == "PASSED" else "FAILED"
+        )
+        adjustment_status = (
+            "VERIFIED" if receipt.get("adjustment_status") == "VERIFIED" else "REVIEW"
+        )
+        return crosscheck_status, adjustment_status, amount_quality
+
     ratios = {round(bar.close / bar.adjusted_close, 12) for bar in bars}
     adjustment_status = "REVIEW" if len(ratios) > 1 else "UNKNOWN"
-    # An independent receipt is not present in the legacy canonical file.
     crosscheck_status = "PENDING"
     return crosscheck_status, adjustment_status, amount_quality
 
@@ -149,13 +165,23 @@ def build_manifest(
     wind_root: Path | None = None,
     calendar_path: Path | None = None,
     generated_at: str | None = None,
+    receipts_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Return and optionally persist a deterministic research manifest."""
+    """Return and optionally persist a deterministic research manifest.
+
+    ``receipts_path`` points at the independent crosscheck receipts written by
+    ``swing_crosscheck``; it defaults to ``crosscheck_receipts.json`` beside
+    ``output_path``.  A receipt is applied only when its digest matches the
+    symbol's current history.
+    """
 
     history_path = Path(history_path)
     watchlist_path = Path(watchlist_path)
     if output_path is not None and Path(output_path).resolve() == history_path.resolve():
         raise ValueError("output_path must not overwrite runtime history")
+    if receipts_path is None and output_path is not None:
+        receipts_path = Path(output_path).with_name("crosscheck_receipts.json")
+    receipts = load_receipts(None if receipts_path is None else Path(receipts_path))
     original_history = (
         history_path.read_bytes() if history_path.exists() else None
     )
@@ -181,7 +207,9 @@ def build_manifest(
     items: list[dict[str, Any]] = []
     for symbol in symbols:
         bars = tuple(bars_by_symbol.get(symbol, ()))
-        crosscheck_status, adjustment_status, amount_quality = _quality_for(bars)
+        receipt = receipts.get(symbol)
+        crosscheck_status, adjustment_status, amount_quality = _quality_for(bars, receipt)
+        receipt_applied = receipt is not None and receipt_applies(receipt, bars)
         assessment = assess_history(
             bars,
             crosscheck_status=crosscheck_status,
@@ -238,6 +266,17 @@ def build_manifest(
             "crosscheck_status": crosscheck_status,
             "adjustment_status": adjustment_status,
             "amount_quality": amount_quality,
+            "crosscheck_receipt": (
+                {
+                    "source": receipt.get("source"),
+                    "checked_at": receipt.get("checked_at"),
+                    "compared_count": receipt.get("compared_count"),
+                    "mismatch_count": len(receipt.get("mismatches") or ()),
+                    "adjustment_events": len(receipt.get("adjustment_events") or ()),
+                    "warnings": list(receipt.get("warnings") or ()),
+                }
+                if receipt_applied else None
+            ),
             "source": sources,
             "price_basis": "adjusted_ohlc",
             "metadata_status": (
@@ -287,6 +326,10 @@ def main() -> int:
     )
     parser.add_argument("--wind-root", type=Path)
     parser.add_argument("--generated-at")
+    parser.add_argument(
+        "--receipts", type=Path,
+        help="crosscheck_receipts.json (defaults to the file beside --output)",
+    )
     args = parser.parse_args()
     build_manifest(
         args.history,
@@ -296,6 +339,7 @@ def main() -> int:
         wind_root=args.wind_root,
         calendar_path=args.calendar,
         generated_at=args.generated_at,
+        receipts_path=args.receipts,
     )
     return 0
 

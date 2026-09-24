@@ -19,6 +19,7 @@ from .eastmoney_client import (
     market_for_symbol as _shared_market_for_symbol,
 )
 from .swing_config import SwingWatchItem
+from .swing_crosscheck import IndependentBar
 from .swing_data import DailyBar, SwingDataError
 
 
@@ -177,6 +178,52 @@ class EastmoneyDailyCollector:
         return self._build_bars(
             items, responses, last_completed_date, observed_at, TENCENT_KLINE_ENDPOINT,
         )
+
+    def collect_independent(
+        self,
+        symbol: str,
+        last_completed_date: date,
+        count: int = DEFAULT_SWING_HISTORY_COUNT,
+    ) -> tuple[IndependentBar, ...]:
+        """Fetch the Tencent raw and qfq series as crosscheck evidence.
+
+        The result is never stored as canonical history.  It feeds
+        ``swing_crosscheck.crosscheck_history`` so the research manifest can
+        record an independent-source receipt for Eastmoney bars.  A session
+        whose qfq value Tencent has not published yet keeps
+        ``adjusted_close`` as ``None`` instead of deriving it.
+        """
+        _market_for_symbol(symbol)
+        if type(last_completed_date) is not date:
+            raise SwingDataError("last_completed_date必须是date")
+        if type(count) is not int or not 0 < count <= _MAX_COUNT:
+            raise SwingDataError(f"count必须是1到{_MAX_COUNT}的整数")
+        raw = self._fetch_tencent(
+            symbol, adjustment=0, last_completed_date=last_completed_date,
+            count=count, keep_first=True,
+        )
+        adjusted = self._fetch_tencent(
+            symbol, adjustment=1, last_completed_date=last_completed_date,
+            count=count, keep_first=True,
+        )
+        adjusted_by_date = {bar.trading_date: bar for bar in adjusted.bars}
+        result: list[IndependentBar] = []
+        for bar in raw.bars:
+            if bar.trading_date > last_completed_date:
+                continue
+            adjusted_bar = adjusted_by_date.get(bar.trading_date)
+            result.append(IndependentBar(
+                trading_date=bar.trading_date,
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+                adjusted_close=None if adjusted_bar is None else adjusted_bar.close,
+            ))
+        if not result:
+            raise SwingDataError(f"{symbol} 腾讯kline没有可用于交叉核验的日线")
+        return tuple(result)
 
     def _collect_symbol(
         self,
@@ -372,6 +419,7 @@ class EastmoneyDailyCollector:
         last_completed_date: date,
         count: int,
         market_prefix: str | None = None,
+        keep_first: bool = False,
     ) -> _Response:
         market_symbol = tencent_market_symbol(symbol, market_prefix)
         adjustment_name = "qfq" if adjustment == 1 else ""
@@ -402,6 +450,7 @@ class EastmoneyDailyCollector:
             market_symbol=market_symbol,
             adjusted=adjustment == 1,
             count=count,
+            keep_first=keep_first,
         )
 
     @staticmethod
@@ -460,7 +509,15 @@ class EastmoneyDailyCollector:
         market_symbol: str,
         adjusted: bool,
         count: int,
+        keep_first: bool = False,
     ) -> _Response:
+        """Parse one Tencent kline payload.
+
+        The first line normally serves as the previous close and is dropped.
+        ``keep_first`` retains it (with no previous close) for the independent
+        crosscheck series, where a newly listed ETF's first session would
+        otherwise have no counterpart.
+        """
         if (
             type(payload) is not dict
             or type(payload.get("code")) is not int
@@ -488,6 +545,8 @@ class EastmoneyDailyCollector:
             raise SwingDataError(f"{symbol} 腾讯kline日期重复")
         if any(left >= right for left, right in zip(dates, dates[1:])):
             raise SwingDataError(f"{symbol} 腾讯kline日期必须严格递增")
+        if keep_first:
+            return _Response(None, bars)
         return _Response(bars[0].close, bars[1:])
 
     def _parse_tencent_line(self, symbol: str, value: Any) -> _ParsedKline:

@@ -941,6 +941,80 @@ class SwingServiceTests(unittest.TestCase):
         self.assertEqual(self.paths.daily_history.read_bytes(), before)
         self.assertIn("duplicate", service.snapshot()["errors"]["daily"])
 
+    def test_daily_refresh_records_independent_crosscheck_receipts_for_the_manifest(self) -> None:
+        from etf_rotation.swing_crosscheck import IndependentBar
+
+        final_bars = self.final_bars
+        calls: list[tuple[str, date, int]] = []
+
+        class CrosscheckingCollector(StaticDailyCollector):
+            def collect_independent(
+                self, symbol: str, last_completed_date: date, count: int,
+            ) -> tuple[IndependentBar, ...]:
+                calls.append((symbol, last_completed_date, count))
+                return tuple(
+                    IndependentBar(
+                        trading_date=bar.trading_date, open=bar.open, high=bar.high,
+                        low=bar.low, close=bar.close, volume=bar.volume,
+                        adjusted_close=bar.adjusted_close,
+                    )
+                    for bar in final_bars
+                )
+
+        service = self.make_service(collector=CrosscheckingCollector(final_bars))
+        self.assertTrue(service.refresh_once(datetime(2026, 9, 1, 15, 10, tzinfo=SHANGHAI)))
+
+        self.assertEqual([call[0] for call in calls], ["510300"])
+        self.assertEqual(calls[0][1], date(2026, 9, 1))
+        receipts_path = self.paths.strategy.with_name("crosscheck_receipts.json")
+        receipts = json.loads(receipts_path.read_text(encoding="utf-8"))
+        receipt = receipts["items"]["510300"]
+        self.assertEqual(receipt["crosscheck_status"], "PASSED")
+        self.assertEqual(receipt["adjustment_status"], "VERIFIED")
+        self.assertEqual(receipt["sample_end"], "2026-09-01")
+        manifest = json.loads(
+            self.paths.strategy.with_name("research_manifest.json").read_text(encoding="utf-8"),
+        )
+        item = manifest["items"][0]
+        self.assertEqual(item["crosscheck_status"], "PASSED")
+        self.assertEqual(item["adjustment_status"], "VERIFIED")
+        self.assertEqual(item["data_version"], receipt["data_version"])
+        snapshot = service.snapshot()
+        self.assertEqual(snapshot["health"]["independent_crosscheck"], "OK")
+        reasons = snapshot["items"][0]["v11"]["blocked_reasons"]
+        self.assertNotIn("DATA_QUALITY_RECEIPT_CROSSCHECK_PENDING", reasons)
+        self.assertNotIn("DATA_QUALITY_RECEIPT_ADJUSTMENT_UNVERIFIED", reasons)
+        self.assertNotIn("DATA_QUALITY_RECEIPT_SAMPLE_MISMATCH", reasons)
+
+    def test_daily_refresh_without_independent_series_keeps_the_gate_closed(self) -> None:
+        service = self.make_service(collector=StaticDailyCollector(self.final_bars))
+        self.assertTrue(service.refresh_once(datetime(2026, 9, 1, 15, 10, tzinfo=SHANGHAI)))
+        self.assertFalse(self.paths.strategy.with_name("crosscheck_receipts.json").exists())
+        manifest = json.loads(
+            self.paths.strategy.with_name("research_manifest.json").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(manifest["items"][0]["crosscheck_status"], "PENDING")
+        self.assertEqual(service.snapshot()["health"]["independent_crosscheck"], "NOT_RUN")
+
+        class BrokenCrosscheckCollector(StaticDailyCollector):
+            def collect_independent(self, *args: object, **kwargs: object) -> tuple[()]:
+                raise RuntimeError("tencent unavailable SECRET")
+
+        later = retime_daily_bars(swing_strategy_bars(72), ending_on=date(2026, 9, 2))
+        service = self.make_service(
+            collector=BrokenCrosscheckCollector(later),
+            clock=lambda: datetime(2026, 9, 2, 15, 10, tzinfo=SHANGHAI),
+        )
+        self.assertTrue(service.refresh_once(datetime(2026, 9, 2, 15, 10, tzinfo=SHANGHAI)))
+        snapshot = service.snapshot()
+        self.assertEqual(snapshot["health"]["independent_crosscheck"], "PARTIAL")
+        self.assertEqual(snapshot["errors"]["independent_crosscheck"], "510300: RuntimeError")
+        manifest = json.loads(
+            self.paths.strategy.with_name("research_manifest.json").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(manifest["items"][0]["crosscheck_status"], "PENDING")
+        self.assertIn("DATA_QUALITY_RECEIPT_CROSSCHECK_PENDING", snapshot["items"][0]["v11"]["blocked_reasons"])
+
     def test_absent_minute_crosscheck_is_degraded_but_does_not_block_commit(self) -> None:
         service = self.make_service(
             collector=StaticDailyCollector(self.final_bars),

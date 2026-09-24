@@ -41,6 +41,12 @@ from .swing_config import (
     load_strategy,
     load_watchlist,
 )
+from .swing_crosscheck import (
+    INDEPENDENT_SOURCE_LABEL,
+    CrosscheckReceipt,
+    crosscheck_history,
+    write_receipts,
+)
 from .swing_data import (
     DailyBar,
     DailyHistoryStore,
@@ -278,6 +284,7 @@ class SwingService:
             "calendar": "UNKNOWN",
             "daily": "UNKNOWN",
             "minute_crosscheck": "NOT_RUN",
+            "independent_crosscheck": "NOT_RUN",
             "portfolio": "UNKNOWN",
             "alerts": "UNKNOWN",
             "intraday": "UNAVAILABLE",
@@ -3222,6 +3229,14 @@ class SwingService:
                 "daily", "PERSISTENCE_FAILED", error, now=now,
             )
             return False
+        crosscheck_health, crosscheck_error = self._record_crosscheck_receipts(
+            merged, enabled, target, max(_DEFAULT_HISTORY_COUNT, strategy_count), now,
+        )
+        next_health["independent_crosscheck"] = crosscheck_health
+        if crosscheck_error is None:
+            next_errors.pop("independent_crosscheck", None)
+        else:
+            next_errors["independent_crosscheck"] = crosscheck_error
         self._rebuild_research_manifest()
 
         try:
@@ -4374,6 +4389,63 @@ class SwingService:
             self._reload_index_history()
         except Exception as error:
             self._errors["environment_history"] = self._safe_error(error)
+
+    def _crosscheck_receipts_path(self) -> Path:
+        return self.paths.strategy.with_name("crosscheck_receipts.json")
+
+    def _record_crosscheck_receipts(
+        self,
+        merged: Sequence[DailyBar],
+        enabled: Sequence[SwingWatchItem],
+        target: date,
+        count: int,
+        now: datetime,
+    ) -> tuple[str, str | None]:
+        """Compare the stored history with the independent provider.
+
+        Receipts are evidence for the research manifest, which the verified
+        gate reads.  A collector without ``collect_independent`` or a failed
+        fetch leaves the receipt for that symbol absent, so the manifest falls
+        back to ``PENDING`` and the gate stays closed.  Nothing here changes
+        canonical bars.  Returns the component health and error text for the
+        staged snapshot.
+        """
+        collect_independent = getattr(self.collector, "collect_independent", None)
+        if not callable(collect_independent):
+            return "NOT_RUN", None
+        by_symbol: dict[str, list[DailyBar]] = {}
+        for bar in merged:
+            by_symbol.setdefault(bar.symbol, []).append(bar)
+        receipts: list[CrosscheckReceipt] = []
+        failures: dict[str, str] = {}
+        for item in enabled:
+            bars = tuple(sorted(
+                by_symbol.get(item.symbol, ()), key=lambda bar: bar.trading_date,
+            ))
+            metadata = self._metadata.get(item.symbol)
+            if not bars or metadata is None:
+                failures[item.symbol] = "NO_HISTORY" if not bars else "NO_METADATA"
+                continue
+            try:
+                independent = collect_independent(item.symbol, target, count)
+                receipts.append(crosscheck_history(
+                    bars, independent,
+                    source=INDEPENDENT_SOURCE_LABEL,
+                    checked_at=now,
+                    price_tick=float(metadata.trading.price_tick),
+                ))
+            except Exception as error:
+                # Transport errors may quote the remote reply; keep the type.
+                failures[item.symbol] = type(error).__name__
+        try:
+            write_receipts(self._crosscheck_receipts_path(), receipts, generated_at=now)
+        except Exception as error:
+            return "WRITE_FAILED", self._safe_error(error)
+        if failures:
+            return "PARTIAL", "; ".join(
+                f"{symbol}: {reason}" for symbol, reason in sorted(failures.items())
+            )
+        return "OK", None
 
     def _rebuild_research_manifest(self) -> None:
         """Refresh the research receipt after a completed daily collection.

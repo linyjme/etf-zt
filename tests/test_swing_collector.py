@@ -841,6 +841,40 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
             self.assertEqual(bar.adjusted_low, bar.low * scale)
         self.assertEqual(bars[0].amount, 2624224493.0)
 
+    def test_collect_independent_keeps_first_tencent_bar_and_marks_missing_qfq(self) -> None:
+        requests: list[str] = []
+
+        def transport(request: Request, timeout: float) -> bytes:
+            requests.append(request.full_url)
+            query = parse_qs(urlsplit(request.full_url).query)["param"][0]
+            adjusted = query.endswith(",qfq")
+            dates = ("2026-08-26", "2026-08-27", "2026-08-28")
+            payload = tencent_payload(
+                "510300", adjusted=adjusted,
+                # Tencent has not published the qfq value for the last day.
+                dates=dates[:-1] if adjusted else dates,
+            )
+            return payload_bytes(payload)
+
+        bars = self.collector(transport).collect_independent(
+            "510300", date(2026, 8, 28), count=3,
+        )
+
+        self.assertEqual(len(requests), 2)
+        self.assertTrue(all(urlsplit(url).netloc == "web.ifzq.gtimg.cn" for url in requests))
+        self.assertEqual(
+            [bar.trading_date.isoformat() for bar in bars],
+            ["2026-08-26", "2026-08-27", "2026-08-28"],
+        )
+        self.assertEqual(bars[0].close, 9.5)
+        self.assertEqual(bars[0].adjusted_close, 4.75)
+        self.assertIsNone(bars[-1].adjusted_close)
+        self.assertEqual(bars[-1].volume, 1002.0)
+        with self.assertRaises(SwingDataError):
+            self.collector(transport).collect_independent("510300", "2026-08-28")
+        with self.assertRaises(SwingDataError):
+            self.collector(transport).collect_independent("51030", date(2026, 8, 28))
+
     def test_rejects_unsorted_dates_and_inconsistent_adjustment_scale(self) -> None:
         for mode in ("unsorted", "scale"):
             with self.subTest(mode=mode):
