@@ -23,6 +23,7 @@ from etf_rotation.swing_data import DailyBar
 SHANGHAI = timezone(timedelta(hours=8))
 CHECKED_AT = datetime(2026, 9, 23, 17, 0, tzinfo=SHANGHAI)
 EASTMONEY = "东方财富 kline (push2his.eastmoney.com)"
+EASTMONEY_CONSISTENT = "东方财富 kline 一致前复权序列 (push2his.eastmoney.com)"
 TENCENT = "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)"
 TENCENT_CANONICAL = (
     "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
@@ -197,6 +198,80 @@ class CrosscheckHistoryTests(unittest.TestCase):
         self.assertTrue(canonical_source_is_independent(EASTMONEY, TENCENT))
         self.assertFalse(canonical_source_is_independent(TENCENT_CANONICAL, TENCENT))
 
+    def test_split_substituted_bars_are_compared_against_independent_adjusted_ohlc(self) -> None:
+        # 2:1 share split before the window: the canonical raw fields hold
+        # the Eastmoney adjusted series (close == adjusted_close), while the
+        # independent provider's raw prices are still the pre-split levels.
+        # The canonical volume is already in post-split units (doubled) while
+        # the independent provider still reports pre-split lots.
+        bars = _bars((1.35, 1.331, 1.36, 1.342), source=EASTMONEY_CONSISTENT)
+        independent = tuple(
+            IndependentBar(
+                trading_date=bar.trading_date, open=bar.open * 2, high=bar.high * 2,
+                low=bar.low * 2, close=bar.close * 2, volume=bar.volume / 2,
+                adjusted_close=bar.close, adjusted_open=bar.open,
+                adjusted_high=bar.high, adjusted_low=bar.low,
+            )
+            for bar in bars
+        )
+        receipt = crosscheck_history(
+            bars, independent, source=TENCENT, checked_at=CHECKED_AT, price_tick=0.001,
+        )
+        self.assertEqual(receipt.crosscheck_status, "PASSED")
+        self.assertEqual(receipt.adjustment_status, "VERIFIED")
+        self.assertEqual(receipt.compared_count, 4)
+        self.assertEqual(receipt.adjustment_events, ())
+        self.assertNotIn("MIXED_ADJUSTMENT_CONVENTION", receipt.warnings)
+
+        drifted = list(independent)
+        drifted[2] = IndependentBar(
+            trading_date=drifted[2].trading_date, open=drifted[2].open, high=drifted[2].high,
+            low=drifted[2].low, close=drifted[2].close, volume=drifted[2].volume,
+            adjusted_close=drifted[2].adjusted_close + 0.003, adjusted_open=drifted[2].adjusted_open,
+            adjusted_high=drifted[2].adjusted_high, adjusted_low=drifted[2].adjusted_low,
+        )
+        receipt = crosscheck_history(
+            bars, drifted, source=TENCENT, checked_at=CHECKED_AT, price_tick=0.001,
+        )
+        self.assertEqual(receipt.crosscheck_status, "FAILED")
+        self.assertEqual(
+            [item["reason"] for item in receipt.mismatches], ["ADJUSTED_PRICE_MISMATCH"],
+        )
+
+    def test_split_substituted_bars_need_full_independent_adjusted_ohlc(self) -> None:
+        bars = _bars((1.35, 1.331, 1.36), source=EASTMONEY_CONSISTENT)
+        receipt = crosscheck_history(
+            bars, _independent(bars), source=TENCENT, checked_at=CHECKED_AT, price_tick=0.001,
+        )
+        self.assertEqual(receipt.crosscheck_status, "FAILED")
+        self.assertEqual(receipt.adjustment_status, "REVIEW")
+        self.assertEqual(receipt.compared_count, 0)
+        self.assertEqual(
+            {item["reason"] for item in receipt.mismatches}, {"MISSING_INDEPENDENT_ADJUSTED_BAR"},
+        )
+
+    def test_mixed_adjustment_conventions_cannot_be_verified(self) -> None:
+        bars = _bars((1.35, 1.331, 1.36, 1.342))
+        mixed = bars[:2] + tuple(
+            DailyBar.from_mapping({**bar.to_dict(), "source": EASTMONEY_CONSISTENT})
+            for bar in bars[2:]
+        )
+        independent = tuple(
+            IndependentBar(
+                trading_date=bar.trading_date, open=bar.open, high=bar.high, low=bar.low,
+                close=bar.close, volume=bar.volume, adjusted_close=bar.adjusted_close,
+                adjusted_open=bar.adjusted_open, adjusted_high=bar.adjusted_high,
+                adjusted_low=bar.adjusted_low,
+            )
+            for bar in bars
+        )
+        receipt = crosscheck_history(
+            mixed, independent, source=TENCENT, checked_at=CHECKED_AT, price_tick=0.001,
+        )
+        self.assertEqual(receipt.crosscheck_status, "PASSED")
+        self.assertEqual(receipt.adjustment_status, "REVIEW")
+        self.assertIn("MIXED_ADJUSTMENT_CONVENTION", receipt.warnings)
+
     def test_rejects_unsafe_inputs(self) -> None:
         bars = _bars((4.0, 4.05))
         independent = _independent(bars)
@@ -215,6 +290,13 @@ class CrosscheckHistoryTests(unittest.TestCase):
             crosscheck_history(bars + _bars((1.0,), symbol="510500"), independent, source=TENCENT, checked_at=CHECKED_AT, price_tick=0.001)
         with self.assertRaises(CrosscheckError):
             IndependentBar(date(2026, 6, 1), 1.0, 1.0, 1.0, 0.0, 1.0)
+        with self.assertRaises(CrosscheckError):
+            IndependentBar(date(2026, 6, 1), 1.0, 1.0, 1.0, 1.0, 1.0, adjusted_open=1.0)
+        with self.assertRaises(CrosscheckError):
+            IndependentBar(
+                date(2026, 6, 1), 1.0, 1.0, 1.0, 1.0, 1.0,
+                adjusted_close=1.0, adjusted_open=1.0, adjusted_high=0.0, adjusted_low=1.0,
+            )
 
 
 class ReceiptFileTests(unittest.TestCase):

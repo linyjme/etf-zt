@@ -40,6 +40,10 @@ DEFAULT_VOLUME_TOLERANCE = 0.005
 # 1.5 ticks separates a real distribution from that rounding noise.
 _EVENT_OFFSET_TICKS = 1.5
 _EVENT_RATIO_TICKS = 1.5
+# Canonical bars whose raw fields were replaced by the provider's continuous
+# front-adjusted series (share splits) carry this token in their source label.
+# Such bars are compared against the independent provider's adjusted OHLC.
+CONSISTENT_ADJUSTED_MARKER = "一致前复权序列"
 
 
 class CrosscheckError(ValueError):
@@ -50,8 +54,9 @@ class CrosscheckError(ValueError):
 class IndependentBar:
     """One completed daily bar from the independent provider.
 
-    ``adjusted_close`` is ``None`` when the provider has not yet published the
-    front-adjusted value for that session.
+    The ``adjusted_*`` fields are ``None`` when the provider has not yet
+    published the front-adjusted values for that session.  They must be given
+    together: a partially adjusted bar cannot be compared safely.
     """
 
     trading_date: date
@@ -61,6 +66,9 @@ class IndependentBar:
     close: float
     volume: float
     adjusted_close: float | None = None
+    adjusted_open: float | None = None
+    adjusted_high: float | None = None
+    adjusted_low: float | None = None
 
     def __post_init__(self) -> None:
         if type(self.trading_date) is not date:
@@ -71,12 +79,27 @@ class IndependentBar:
                 raise CrosscheckError(f"{name} must be a finite positive number")
         if type(self.volume) not in (int, float) or not math.isfinite(self.volume) or self.volume < 0.0:
             raise CrosscheckError("volume must be a finite nonnegative number")
-        if self.adjusted_close is not None and (
-            type(self.adjusted_close) not in (int, float)
-            or not math.isfinite(self.adjusted_close)
-            or self.adjusted_close <= 0.0
-        ):
-            raise CrosscheckError("adjusted_close must be a finite positive number")
+        adjusted = {
+            name: getattr(self, name)
+            for name in ("adjusted_open", "adjusted_high", "adjusted_low", "adjusted_close")
+        }
+        for name, value in adjusted.items():
+            if value is not None and (
+                type(value) not in (int, float) or not math.isfinite(value) or value <= 0.0
+            ):
+                raise CrosscheckError(f"{name} must be a finite positive number")
+        present = [value is not None for value in adjusted.values()]
+        if any(present) and not all(present):
+            # adjusted_close alone is accepted for backwards compatibility with
+            # receipts that only verified the close; anything else must be whole.
+            if not (self.adjusted_close is not None and sum(present) == 1):
+                raise CrosscheckError("adjusted OHLC must be given together")
+
+    @property
+    def has_adjusted_ohlc(self) -> bool:
+        return None not in (
+            self.adjusted_open, self.adjusted_high, self.adjusted_low, self.adjusted_close,
+        )
 
 
 @dataclass(frozen=True)
@@ -172,6 +195,10 @@ def adjustment_events(
     return tuple(events)
 
 
+def _uses_consistent_adjusted_series(bar: DailyBar) -> bool:
+    return isinstance(bar.source, str) and CONSISTENT_ADJUSTED_MARKER in bar.source
+
+
 def _validate_bars(bars: Sequence[DailyBar]) -> tuple[DailyBar, ...]:
     ordered = tuple(bars)
     if not ordered:
@@ -203,6 +230,12 @@ def crosscheck_history(
     ``VERIFIED`` only when both providers imply the same front-adjustment
     events (same dates, payouts within 1.5 ticks).  Anything else fails
     closed to ``FAILED`` / ``REVIEW``.
+
+    Canonical bars labelled with ``CONSISTENT_ADJUSTED_MARKER`` hold the
+    provider's front-adjusted series in their raw fields (share splits), so
+    their OHLC are compared against the independent adjusted OHLC instead and
+    the adjustment is verified by that agreement rather than by events.  A
+    history mixing both conventions cannot be verified and stays ``REVIEW``.
     """
     ordered = _validate_bars(bars)
     if type(price_tick) not in (int, float) or not math.isfinite(price_tick) or price_tick <= 0.0:
@@ -230,7 +263,8 @@ def crosscheck_history(
     warnings: list[str] = []
     compared = 0
     price_tolerance = float(price_tick)
-    for bar in ordered:
+    substituted = tuple(_uses_consistent_adjusted_series(bar) for bar in ordered)
+    for bar, uses_adjusted in zip(ordered, substituted):
         other = by_date.get(bar.trading_date)
         if other is None:
             mismatches.append({
@@ -238,25 +272,39 @@ def crosscheck_history(
                 "field": "bar", "reason": "MISSING_INDEPENDENT_BAR",
             })
             continue
+        if uses_adjusted and not other.has_adjusted_ohlc:
+            mismatches.append({
+                "trading_date": bar.trading_date.isoformat(),
+                "field": "bar", "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR",
+            })
+            continue
         compared += 1
         for name in ("open", "high", "low", "close"):
             canonical_value = float(getattr(bar, name))
-            independent_value = float(getattr(other, name))
+            independent_value = float(
+                getattr(other, f"adjusted_{name}" if uses_adjusted else name)
+            )
             tolerance = price_tolerance + 8.0 * max(
                 math.ulp(canonical_value), math.ulp(independent_value),
             )
             if abs(canonical_value - independent_value) > tolerance:
                 mismatches.append({
                     "trading_date": bar.trading_date.isoformat(),
-                    "field": name, "reason": "PRICE_MISMATCH",
+                    "field": name,
+                    "reason": "ADJUSTED_PRICE_MISMATCH" if uses_adjusted else "PRICE_MISMATCH",
                     "canonical": canonical_value, "independent": independent_value,
                 })
-        reference = max(float(bar.volume), float(other.volume))
-        if abs(float(bar.volume) - float(other.volume)) > volume_tolerance * reference:
+        independent_volume = float(other.volume)
+        if uses_adjusted:
+            # The canonical volume was scaled into post-split units; derive
+            # the same scaling from the independent provider's own series.
+            independent_volume *= float(other.close) / float(other.adjusted_close)
+        reference = max(float(bar.volume), independent_volume)
+        if abs(float(bar.volume) - independent_volume) > volume_tolerance * reference:
             mismatches.append({
                 "trading_date": bar.trading_date.isoformat(),
                 "field": "volume", "reason": "VOLUME_MISMATCH",
-                "canonical": float(bar.volume), "independent": float(other.volume),
+                "canonical": float(bar.volume), "independent": independent_volume,
             })
     if any(not canonical_source_is_independent(bar.source, source) for bar in ordered):
         mismatches.append({
@@ -264,10 +312,23 @@ def crosscheck_history(
         })
         warnings.append("CROSSCHECK_SOURCE_NOT_INDEPENDENT")
 
-    canonical_events = adjustment_events(
-        tuple((bar.trading_date, float(bar.close), float(bar.adjusted_close)) for bar in ordered),
-        price_tick=price_tick,
-    )
+    all_substituted = all(substituted)
+    mixed_convention = any(substituted) and not all_substituted
+    if mixed_convention:
+        warnings.append("MIXED_ADJUSTMENT_CONVENTION")
+    if all_substituted:
+        # The canonical raw fields already are the adjusted series, so close
+        # and adjusted_close coincide and no event can be inferred from them.
+        # Agreement of the adjusted OHLC above is the adjustment evidence.
+        canonical_events: tuple[AdjustmentEvent, ...] = ()
+    else:
+        canonical_events = adjustment_events(
+            tuple(
+                (bar.trading_date, float(bar.close), float(bar.adjusted_close))
+                for bar in ordered
+            ),
+            price_tick=price_tick,
+        )
     independent_rows: list[tuple[date, float, float]] = []
     adjusted_missing = False
     for bar in ordered:
@@ -279,18 +340,22 @@ def crosscheck_history(
     independent_events = adjustment_events(independent_rows, price_tick=price_tick)
     if adjusted_missing:
         warnings.append("INDEPENDENT_ADJUSTED_INCOMPLETE")
-    events_agree = (
-        not adjusted_missing
-        and len(canonical_events) == len(independent_events)
-        and all(
-            left.trading_date == right.trading_date
-            and abs(left.payout - right.payout) <= _EVENT_OFFSET_TICKS * price_tick
-            for left, right in zip(canonical_events, independent_events)
+    if all_substituted:
+        adjustment_verified = not adjusted_missing
+    else:
+        adjustment_verified = (
+            not adjusted_missing
+            and not mixed_convention
+            and len(canonical_events) == len(independent_events)
+            and all(
+                left.trading_date == right.trading_date
+                and abs(left.payout - right.payout) <= _EVENT_OFFSET_TICKS * price_tick
+                for left, right in zip(canonical_events, independent_events)
+            )
         )
-    )
     crosscheck_status = "PASSED" if not mismatches else "FAILED"
     adjustment_status = (
-        "VERIFIED" if events_agree and crosscheck_status == "PASSED" else "REVIEW"
+        "VERIFIED" if adjustment_verified and crosscheck_status == "PASSED" else "REVIEW"
     )
     return CrosscheckReceipt(
         symbol=symbol,
