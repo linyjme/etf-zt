@@ -245,6 +245,28 @@ def _receipt_sample_matches(
     return _version_matches(version, _history_digest(ordered))
 
 
+def _applicable_receipt_statuses(
+    ordered: Sequence[DailyBar], receipt: Mapping[str, object] | None,
+) -> tuple[str | None, str | None]:
+    """Return the receipt's (crosscheck, adjustment) statuses if it describes ``ordered``.
+
+    A receipt for another window or digest, or one produced by the same
+    provider as the bars, yields ``(None, None)`` so the legacy defaults apply.
+    """
+    if not isinstance(receipt, Mapping) or not ordered:
+        return None, None
+    if not _receipt_sample_matches(
+        ordered, receipt.get("sample_start"), receipt.get("sample_end"),
+        receipt.get("calculation_version"),
+    ):
+        return None, None
+    crosscheck = receipt.get("crosscheck_status")
+    adjustment = receipt.get("adjustment_status")
+    if not isinstance(crosscheck, str) or not isinstance(adjustment, str):
+        return None, None
+    return crosscheck, adjustment
+
+
 def _window_count(count: int, config: SwingStrategyConfig) -> int:
     required = config.walk_forward_train_days + config.walk_forward_test_days
     return 0 if count < required else 1 + (count - required) // config.walk_forward_step_days
@@ -281,14 +303,31 @@ def _amount_quality(source: str) -> str:
 
 def summarize_history_quality(
     bars: Sequence[DailyBar], config: SwingStrategyConfig,
+    receipt: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """Describe what is recorded; sample sufficiency is not data acceptance."""
+    """Describe what is recorded; sample sufficiency is not data acceptance.
+
+    ``receipt`` is the research-manifest receipt for these bars.  When it
+    describes exactly this history and records a passed independent
+    crosscheck with a verified adjustment basis, the descriptive statuses
+    reflect that evidence instead of the legacy "not recorded" defaults, so
+    the summary and the release gate cannot disagree about the same bars.
+    """
     ordered, duplicates = _records(bars)
     count = len(ordered)
     sources = sorted({bar.source for bar in ordered})
     kinds = {_amount_quality(source) for source in sources}
     amount_quality = next(iter(kinds)) if len(kinds) == 1 else "MIXED" if kinds else "UNKNOWN"
-    warnings = ["INDEPENDENT_CROSSCHECK_NOT_RECORDED", "ADJUSTMENT_BASIS_UNVERIFIED"]
+    receipt_crosscheck, receipt_adjustment = _applicable_receipt_statuses(ordered, receipt)
+    crosscheck_status = receipt_crosscheck or "NOT_RECORDED"
+    classification_basis = (
+        "INDEPENDENT_RECEIPT" if receipt_crosscheck is not None else "LEGACY_SOURCE_LABEL"
+    )
+    warnings = []
+    if crosscheck_status != "PASSED":
+        warnings.append("INDEPENDENT_CROSSCHECK_NOT_RECORDED")
+    if receipt_adjustment != "VERIFIED":
+        warnings.append("ADJUSTMENT_BASIS_UNVERIFIED")
     if "ESTIMATED" in kinds:
         warnings.append("AMOUNT_ESTIMATED")
     if "UNKNOWN" in kinds:
@@ -302,12 +341,17 @@ def summarize_history_quality(
         not math.isclose(prior, current, rel_tol=1e-6, abs_tol=1e-12)
         for prior, current in zip(scales, scales[1:])
     )
-    adjustment_status = (
-        "NO_DATA" if not count else
-        "RATIO_CHANGED_REQUIRES_REVIEW" if changed else "RATIO_STABLE_UNVERIFIED"
-    )
-    if changed:
-        warnings.append("ADJUSTMENT_RATIO_CHANGED")
+    if receipt_adjustment == "VERIFIED":
+        # Every ratio change was matched against the independent provider's
+        # own adjustment events, so it is verified rather than pending review.
+        adjustment_status = "RATIO_CHANGED_VERIFIED" if changed else "RATIO_STABLE_VERIFIED"
+    else:
+        adjustment_status = (
+            "NO_DATA" if not count else
+            "RATIO_CHANGED_REQUIRES_REVIEW" if changed else "RATIO_STABLE_UNVERIFIED"
+        )
+        if changed:
+            warnings.append("ADJUSTMENT_RATIO_CHANGED")
     if not count:
         warnings.append("NO_DAILY_HISTORY")
     return {
@@ -316,10 +360,10 @@ def summarize_history_quality(
         "end_date": ordered[-1].trading_date.isoformat() if count else None,
         "last_observed_at": max(bar.observed_at for bar in ordered).isoformat() if count else None,
         "sources": sources,
-        "classification_basis": "LEGACY_SOURCE_LABEL",
+        "classification_basis": classification_basis,
         "amount_quality": amount_quality,
         "adjustment_status": adjustment_status,
-        "crosscheck_status": "NOT_RECORDED",
+        "crosscheck_status": crosscheck_status,
         "warnings": warnings,
         "minimum_daily_bars": config.minimum_daily_bars,
         "minimum_backtest_bars": config.minimum_daily_bars + 1,

@@ -423,6 +423,22 @@ console.log(JSON.stringify({html,empty:qualityMarkup(null,null,{})}));
         self.assertIn("暂无质量记录", result["empty"])
         self.assertIn("qualityMarkup(item.data_quality,state.snapshot?.history_coverage,evidence)", SWING_PAGE)
 
+    def test_quality_panel_reports_a_passed_independent_crosscheck(self) -> None:
+        result = run_swing_helpers("""
+const html=qualityMarkup({bar_count:760,start_date:'2023-08-08',end_date:'2026-09-23',
+  sources:['东方财富 kline (push2his.eastmoney.com)'],amount_quality:'PROVIDER_REPORTED',
+  adjustment_status:'RATIO_CHANGED_VERIFIED',crosscheck_status:'PASSED',status:'VERIFIED',reasons:[],
+  last_observed_at:'2026-09-23T15:10:00+08:00',minimum_daily_bars:250,
+  minimum_backtest_bars:251,walk_forward_required_bars:630,walk_forward_fold_count:2,warnings:[]},
+  null,{});
+console.log(JSON.stringify({html}));
+""")
+        html = result["html"]
+        for fragment in ("已通过独立来源交叉核验", "权益事件已与独立来源核验一致", "已通过发布门控"):
+            self.assertIn(fragment, html)
+        self.assertNotIn("未记录独立核验", html)
+        self.assertNotIn("未识别核验状态", html)
+
     def test_quality_panel_exposes_source_and_date_warnings_in_chinese(self) -> None:
         result = run_swing_helpers("""
 console.log(JSON.stringify(qualityMarkup({amount_quality:'PROVIDER_REPORTED',

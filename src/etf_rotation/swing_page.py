@@ -242,7 +242,7 @@ function backtestReasonCopy(reason){
 function qualityMarkup(quality,coverage,evidence={}){
   if(!quality)return '<section class="quality-summary"><h3>数据质量与回测准备</h3><p class="help">暂无质量记录，不能视为已验收。</p></section>';
   const amountLabels={ESTIMATED:'估算值（非真实成交额）',PROVIDER_REPORTED:'供应商报告值（未独立核验）',UNKNOWN:'来源口径未知',MIXED:'混合口径（含不同来源）'};
-  const adjustmentLabels={RATIO_CHANGED_REQUIRES_REVIEW:'复权比例有变化，需核验',RATIO_STABLE_UNVERIFIED:'样本内比例稳定，尚未核验复权方式',NO_DATA:'暂无复权数据'};
+  const adjustmentLabels={RATIO_CHANGED_REQUIRES_REVIEW:'复权比例有变化，需核验',RATIO_STABLE_UNVERIFIED:'样本内比例稳定，尚未核验复权方式',RATIO_CHANGED_VERIFIED:'复权比例有变化，权益事件已与独立来源核验一致',RATIO_STABLE_VERIFIED:'样本内比例稳定，复权方式已与独立来源核验一致',NO_DATA:'暂无复权数据'};
   const requested=finite(evidence.effective_risk_per_trade),risk=requested==null?'—':`${(requested*100).toFixed(2)}%`;
   const riskSource=evidence.risk_setting_source==='ACCOUNT'?'账户设置':evidence.risk_setting_source==='STRATEGY_DEFAULT'?'策略默认（账户未就绪）':'来源未知';
   const cell=(label,value)=>`<div><span>${escapeHtml(label)}</span>${escapeHtml(value)}</div>`;
@@ -258,7 +258,7 @@ function qualityMarkup(quality,coverage,evidence={}){
     cell('历史交易日',`${backtestNumber(quality.bar_count,0)} 日；指标至少 ${backtestNumber(quality.minimum_daily_bars,0)} 日`),
     cell('单标的回测样本',`单标的收益回测至少 ${backtestNumber(quality.minimum_backtest_bars,0)} 日；仅为数量门槛`),
     cell('成交额质量',amountLabels[quality.amount_quality]||'未识别口径'),
-    cell('独立核验',quality.crosscheck_status==='NOT_RECORDED'?'未记录独立核验':'未识别核验状态'),
+    cell('独立核验',quality.crosscheck_status==='NOT_RECORDED'?'未记录独立核验':quality.crosscheck_status==='PASSED'?'已通过独立来源交叉核验':quality.crosscheck_status==='FAILED'?'独立来源交叉核验未通过':'未识别核验状态'),
     cell('价格口径',adjustmentLabels[quality.adjustment_status]||'尚未核验'),
     cell('单标的滚动检验样本',`${backtestNumber(quality.walk_forward_fold_count,0)} 个完整时间窗；首窗至少 ${backtestNumber(quality.walk_forward_required_bars,0)} 日`),
     cell('组合共同样本',common),

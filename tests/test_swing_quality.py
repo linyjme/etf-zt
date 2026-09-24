@@ -6,6 +6,7 @@ import unittest
 
 from etf_rotation.swing_config import load_strategy
 from etf_rotation.swing_quality import (
+    _history_digest,
     summarize_common_history,
     summarize_history_quality,
     summarize_strategy_diagnostics,
@@ -93,6 +94,47 @@ class SwingQualityTests(unittest.TestCase):
         self.assertEqual(result["adjustment_status"], "RATIO_CHANGED_REQUIRES_REVIEW")
         self.assertIn("ADJUSTMENT_BASIS_UNVERIFIED", result["warnings"])
         self.assertNotIn("CORPORATE_ACTION_CONFIRMED", result["warnings"])
+
+    def test_matching_verified_receipt_replaces_legacy_not_recorded_statuses(self) -> None:
+        bars = tuple(replace(bar, source=EASTMONEY) for bar in swing_strategy_bars(71))
+        last = bars[-1]
+        changed = replace(last, **{
+            field: getattr(last, field) * 0.9
+            for field in ("adjusted_open", "adjusted_high", "adjusted_low", "adjusted_close")
+        })
+        history = (*bars[:-1], changed)
+        receipt = {
+            "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+            "checked_at": "2026-09-23T17:00:00+08:00",
+            "sample_start": history[0].trading_date.isoformat(),
+            "sample_end": history[-1].trading_date.isoformat(),
+            "calculation_version": _history_digest(history),
+            "crosscheck_status": "PASSED",
+            "adjustment_status": "VERIFIED",
+            "warnings": [],
+        }
+        result = summarize_history_quality(history, self.config, receipt=receipt)
+        self.assertEqual(result["classification_basis"], "INDEPENDENT_RECEIPT")
+        self.assertEqual(result["crosscheck_status"], "PASSED")
+        self.assertEqual(result["adjustment_status"], "RATIO_CHANGED_VERIFIED")
+        self.assertEqual(result["warnings"], [])
+
+        # A receipt for a different history (digest mismatch) keeps the defaults.
+        stale = {**receipt, "calculation_version": _history_digest(bars)}
+        result = summarize_history_quality(history, self.config, receipt=stale)
+        self.assertEqual(result["classification_basis"], "LEGACY_SOURCE_LABEL")
+        self.assertEqual(result["crosscheck_status"], "NOT_RECORDED")
+        self.assertEqual(result["adjustment_status"], "RATIO_CHANGED_REQUIRES_REVIEW")
+        self.assertIn("INDEPENDENT_CROSSCHECK_NOT_RECORDED", result["warnings"])
+        self.assertIn("ADJUSTMENT_BASIS_UNVERIFIED", result["warnings"])
+
+        # A matching receipt that still needs review is reported as such.
+        pending = {**receipt, "crosscheck_status": "FAILED", "adjustment_status": "REVIEW"}
+        result = summarize_history_quality(history, self.config, receipt=pending)
+        self.assertEqual(result["crosscheck_status"], "FAILED")
+        self.assertEqual(result["adjustment_status"], "RATIO_CHANGED_REQUIRES_REVIEW")
+        self.assertIn("INDEPENDENT_CROSSCHECK_NOT_RECORDED", result["warnings"])
+        self.assertIn("ADJUSTMENT_BASIS_UNVERIFIED", result["warnings"])
 
     def test_empty_history_does_not_claim_readiness(self) -> None:
         result = summarize_history_quality((), self.config)

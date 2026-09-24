@@ -3821,9 +3821,10 @@ class SwingService:
                 bar for bar in enabled_histories[watch.symbol]
                 if bar.symbol == watch.symbol
             )
+            receipt = self._research_receipt(watch.symbol)
             quality = (
                 summarize_history_quality(
-                    enabled_histories[watch.symbol], self._strategy,
+                    enabled_histories[watch.symbol], self._strategy, receipt=receipt,
                 )
                 if self._strategy is not None else None
             )
@@ -3838,7 +3839,7 @@ class SwingService:
                     closed_dates=self._closed_dates or frozenset(),
                     metadata_status="PASSED" if not metadata_errors else "FAILED",
                     environment_histories=self._index_history,
-                    receipt=self._research_receipt(watch.symbol),
+                    receipt=receipt,
                     minimum_daily_bars=250,
                 )
                 quality = {**quality, **verified_quality}
