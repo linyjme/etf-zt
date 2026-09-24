@@ -720,21 +720,34 @@ class EastmoneyDailyCollector:
         # close-derived factor as the canonical factor, validate that every
         # adjusted field is close to the same multiplicative series, and emit
         # a normalized series so DailyBar receives one exact positive scale.
+        #
+        # Eastmoney front-adjusts ETF cash distributions by subtracting the
+        # cumulative payout (差价法), so on a wide-range day the open/high/low
+        # deviate from the close-derived multiplicative series by more than
+        # the tolerance even though the data is internally consistent.  An
+        # adjusted series whose raw-minus-adjusted offset is the same for all
+        # four fields is therefore accepted as well; the emitted bar still
+        # uses the provider's adjusted close and one exact scale.
         price_tolerance = 0.011
-        multiplicative = (
-            math.isfinite(scale)
-            and scale > 0
-            and all(
-                math.isclose(
-                    candidate,
-                    original * scale,
-                    rel_tol=0.0,
-                    abs_tol=price_tolerance,
-                )
-                for original, candidate in zip(raw_prices, adjusted_prices)
+        finite_scale = math.isfinite(scale) and scale > 0
+        multiplicative = finite_scale and all(
+            math.isclose(
+                candidate,
+                original * scale,
+                rel_tol=0.0,
+                abs_tol=price_tolerance,
             )
+            for original, candidate in zip(raw_prices, adjusted_prices)
         )
-        if not multiplicative:
+        offsets = tuple(
+            original - candidate
+            for original, candidate in zip(raw_prices, adjusted_prices)
+        )
+        additive = finite_scale and all(
+            math.isclose(offset, offsets[3], rel_tol=0.0, abs_tol=price_tolerance)
+            for offset in offsets
+        )
+        if not (multiplicative or additive):
             provider = "腾讯kline" if endpoint == TENCENT_KLINE_ENDPOINT else "东方财富kline"
             raise SwingDataError(f"{symbol} {provider}复权OHLC不一致")
         return tuple(price * scale for price in raw_prices)

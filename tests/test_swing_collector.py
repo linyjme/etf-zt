@@ -806,6 +806,41 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
                         (SwingWatchItem("510300", True),), date(2026, 8, 28),
                     )
 
+    def test_accepts_eastmoney_subtractive_adjustment_and_keeps_provider_amount(self) -> None:
+        # Real 510300 bars for 2023-08-28 / 2024-10-08: Eastmoney subtracts the
+        # cumulative distribution (0.280 / 0.211) from every field, so the
+        # open/high/low sit 12-18 ticks away from the close-derived scale.
+        raw_lines = (
+            "2023-08-28,4.011,3.837,4.011,3.810,1000,2624224493.0,0,0,0,0",
+            "2024-10-08,4.656,4.412,4.656,4.208,1100,2987237086.0,0,0,0,0",
+        )
+        adjusted_lines = (
+            "2023-08-28,3.731,3.557,3.731,3.530,1000,2624224493.0,0,0,0,0",
+            "2024-10-08,4.445,4.201,4.445,3.997,1100,2987237086.0,0,0,0,0",
+        )
+
+        def transport(request: Request, timeout: float) -> bytes:
+            query = parse_qs(urlsplit(request.full_url).query)
+            self.assertIn(urlsplit(request.full_url).netloc, {urlsplit(KLINE_ENDPOINT).netloc})
+            payload = kline_payload("510300", 1, adjusted=query["fqt"] == ["1"])
+            payload["data"]["klines"] = list(
+                adjusted_lines if query["fqt"] == ["1"] else raw_lines
+            )
+            return payload_bytes(payload)
+
+        bars = self.collector(transport).collect(
+            (SwingWatchItem("510300", True),), date(2026, 8, 28), count=2,
+        )
+
+        self.assertEqual(len(bars), 2)
+        for bar, expected_close in zip(bars, (3.557, 4.201)):
+            self.assertTrue(bar.source.startswith("东方财富 kline ("))
+            self.assertEqual(bar.adjusted_close, expected_close)
+            scale = bar.adjusted_close / bar.close
+            self.assertEqual(bar.adjusted_open, bar.open * scale)
+            self.assertEqual(bar.adjusted_low, bar.low * scale)
+        self.assertEqual(bars[0].amount, 2624224493.0)
+
     def test_rejects_unsorted_dates_and_inconsistent_adjustment_scale(self) -> None:
         for mode in ("unsorted", "scale"):
             with self.subTest(mode=mode):
