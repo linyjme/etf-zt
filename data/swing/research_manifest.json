@@ -1,30 +1,34 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-20T14:43:13+08:00",
-  "history_path": "var\\swing\\daily_quotes.jsonl",
-  "watchlist_path": "data\\swing\\watchlist.json",
+  "generated_at": "2026-09-24T10:15:45+08:00",
+  "history_path": "var/swing/daily_quotes.jsonl",
+  "watchlist_path": "data/swing/watchlist.json",
   "runtime_history_unchanged": true,
   "items": [
     {
       "symbol": "510300",
-      "bar_count": 768,
-      "history_start": "2023-07-24",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_REVIEW",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:6a5c7d782421d181e9c5900e33c657a39c2176336757418b7387a9cf7f746330",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "REVIEW",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:096c90c7ab78ecee51e0ce520400b4d7185e5642453aedf8a92f77cf78705d80",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 3,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -42,24 +46,28 @@
     },
     {
       "symbol": "510500",
-      "bar_count": 768,
-      "history_start": "2023-07-24",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_REVIEW",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:d2f37d669a6b851462131ff227eb4151bcb238aba33200d3e4f7036d80a5778b",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "REVIEW",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:641038ab1c7c1f4f4bbdf756f7b8faa619f646d2b385d9560fbc3b3bd3fdd8ad",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 4,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -77,24 +85,28 @@
     },
     {
       "symbol": "563360",
-      "bar_count": 472,
-      "history_start": "2024-10-16",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 476,
+      "history_start": "2024-10-15",
+      "history_end": "2026-09-23",
+      "research_status": "SHORT_SAMPLE",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:c044773772d95641b2955226fd777c596206a5f26052f8bce6c31f89c46b8211",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:b13679a22d3753f367517cd3e142e6bdb6d18cb583126fea3386e0a6b2ad201e",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 476,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -112,24 +124,28 @@
     },
     {
       "symbol": "512100",
-      "bar_count": 768,
-      "history_start": "2023-07-24",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_REVIEW",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:d5317fd6b315d3b9dd97e69738ec0b1d347de98516ac81fbe56fc89cad1fdc98",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "REVIEW",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:5becd8cd3229e8455dd60b74d73052d7a8e8f825d09584b23f2ddf7c9370e104",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 2,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -147,24 +163,28 @@
     },
     {
       "symbol": "159915",
-      "bar_count": 768,
-      "history_start": "2023-07-24",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:ae0cf7ff9d502f6d90103ceea45fd5e8ea3774c960e990ee9c9a18cbb4f42613",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:938dc6424d3c3b5b1ac47d8d51530c2be7e85b437e3dfbfd3435fc1b770a0ba1",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -182,24 +202,28 @@
     },
     {
       "symbol": "588000",
-      "bar_count": 768,
-      "history_start": "2023-07-24",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:6dc86fc62a86e0ab1139c1600dd7340599f7ea05a810b9cda111a721a14ea691",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:743cdace3547df79a730d8a5605eff3a63ec529f50e0aaa67febff851478c59b",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -217,24 +241,28 @@
     },
     {
       "symbol": "515180",
-      "bar_count": 766,
-      "history_start": "2023-07-26",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_REVIEW",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:728a7fde065f5578f199f4f9057b728599e01743e85f6a2ccbcea1920f8d3283",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "REVIEW",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:3ae7922cc93a9d281f1c13586ff472d9eeb2c6c0a54129d5c7570e6afd0c2001",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 3,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -252,24 +280,28 @@
     },
     {
       "symbol": "159307",
-      "bar_count": 584,
-      "history_start": "2024-04-26",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 588,
+      "history_start": "2024-04-25",
+      "history_end": "2026-09-23",
+      "research_status": "SHORT_SAMPLE",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_REVIEW",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:deeb9f29cf9e667d7d123e10108d2374cf13d62fc95279052a208fa1b1555fc2",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "REVIEW",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:53efcd41266c44936ef6e4eb3a867a8d00394d2ddfc71cd4644f355ad47c25c4",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 588,
+        "mismatch_count": 0,
+        "adjustment_events": 9,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -287,24 +319,28 @@
     },
     {
       "symbol": "159792",
-      "bar_count": 766,
-      "history_start": "2023-07-26",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:5f161133b166a11227f0e78bdf378f7229e0a1e2b9d73f799e044e1b99f343ca",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:0923a8a1b2ed768263f4eed1b48689b38f2f3908d88a36a1e352a6e00c9fe012",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -322,24 +358,28 @@
     },
     {
       "symbol": "513050",
-      "bar_count": 766,
-      "history_start": "2023-07-26",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:5ebb4799196c14a2682bae729942b053e270c6c40519040ee7cd892996ea9400",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:e1993c9fd5ca67a930b3df1c94cfeffa8aaaa8ee0a513b578f9fefdcbeebd16f",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -357,24 +397,28 @@
     },
     {
       "symbol": "159781",
-      "bar_count": 766,
-      "history_start": "2023-07-26",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:443fba48180e6805ecfde871f795a8c3a4155e4970a88986d9efb543c05c40e1",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:73718d108e57641f5f5482f45c0b86429201e99d991bc26608b6397e2c8f6f60",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -392,24 +436,28 @@
     },
     {
       "symbol": "159201",
-      "bar_count": 382,
-      "history_start": "2025-02-28",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 386,
+      "history_start": "2025-02-27",
+      "history_end": "2026-09-23",
+      "research_status": "SHORT_SAMPLE",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:0ff87ac2acbe2e45615d79957549b9f9c532e4f1f581a32c43622db64eea62ca",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:04140aa34bfc13601ee7ee87bc763a10faaeeb2c747f28e09a04973c82ad5081",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 386,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -427,24 +475,28 @@
     },
     {
       "symbol": "159263",
-      "bar_count": 294,
-      "history_start": "2025-07-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 298,
+      "history_start": "2025-07-08",
+      "history_end": "2026-09-23",
+      "research_status": "SHORT_SAMPLE",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:e4e475c4e8f373bf24669c814a6158168137eb46ffe4151c8b971d3b21e902a8",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:8726a0689fd64813b04401a986a92f456ee0a057b804ae8d776e113f0f367ab4",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 298,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -462,24 +514,28 @@
     },
     {
       "symbol": "159259",
-      "bar_count": 257,
-      "history_start": "2025-08-29",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 261,
+      "history_start": "2025-08-28",
+      "history_end": "2026-09-23",
+      "research_status": "SHORT_SAMPLE",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:3d2a87d014629a0179ba7f533ff0106d0beb192e9367730571726c208b0ba2bc",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:901007005d0f7b74f134b73782832261f7fe4ca9923681f5bfd52e2da01d1a24",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 261,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -497,24 +553,28 @@
     },
     {
       "symbol": "159209",
-      "bar_count": 364,
-      "history_start": "2025-03-26",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 368,
+      "history_start": "2025-03-25",
+      "history_end": "2026-09-23",
+      "research_status": "SHORT_SAMPLE",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_REVIEW",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:57ed977f3d29414d68c939eaf6b11092d002ab74e67ed60e7c48120d46fe95f5",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "REVIEW",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:0b9cacf45517ee9f7b481a5ac3740ca2a0f5df379389873b4eb8a3e64212e3d8",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 368,
+        "mismatch_count": 0,
+        "adjustment_events": 15,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -532,24 +592,28 @@
     },
     {
       "symbol": "512480",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:e3806894551cc1bb89647399bd7d1a2ce8390be21812285a4136324a63cea6c9",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:6ca6bac39ffdfeda66e3ba473bbe536267b44565eb0c792cd3dc463618e21086",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 一致前复权序列 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline 一致前复权序列 (push2his.eastmoney.com); volume=按复权比例折算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -567,24 +631,28 @@
     },
     {
       "symbol": "515880",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:4dcf693ec3e53016f6cec685d72667fa3bbfe6a9c86380b5c8883a52bffd239f",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:992df000ae7f55bc89993349e365284c3af1953eb8cc21114ab50365351d6c63",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 一致前复权序列 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline 一致前复权序列 (push2his.eastmoney.com); volume=按复权比例折算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -602,24 +670,28 @@
     },
     {
       "symbol": "159995",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:8747b5af24ffd89b3a0f01bf3c730514e3c6c39c7b1f63509ef6b64a86c9a1ef",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:b113bd7e4ad4f46bd16818f00af56c671660440108226382223ef2bdca3f15dc",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 一致前复权序列 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline 一致前复权序列 (push2his.eastmoney.com); volume=按复权比例折算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -637,24 +709,28 @@
     },
     {
       "symbol": "562500",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:9fc92cc2dd4a2c8f77160c16da4d31e30b63e2d10a25dfe7e1c289b3c2cffd55",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:7b54a37213226e6485dabd3c594ed5a48e3ffbcbb2da8dd69a05a2373cbae88c",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -672,24 +748,28 @@
     },
     {
       "symbol": "512880",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:d2a8cd2b7447e98c4b39b9b6d25a13cce82af0dca135c81689eea963b7590bee",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:90f909bc2a85e235a4d5ac933d377f77c71920c16c8e03b46224122b6452b292",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -707,24 +787,28 @@
     },
     {
       "symbol": "516160",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:b6b67b56b78e03e6ed24dc730bdc4a9236b3645e4a1e595c9a2e4342d987de35",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:450ecb11d993f358acd99867a8e3841d0e9db0f92a288b7f432342efb1550d32",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 一致前复权序列 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline 一致前复权序列 (push2his.eastmoney.com); volume=按复权比例折算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -742,24 +826,28 @@
     },
     {
       "symbol": "512170",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:f4f3d9dd05100b5996fcfaafbf3be07566c96ae1183ec603d52982e7144957db",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:aba80aa28c9a23e434c337b1bd64450cfbedcc2a8a2d43f6e7df763a96969c21",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -777,24 +865,28 @@
     },
     {
       "symbol": "515120",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:2344e93c8d0e9e3951993e73679071c75ee8dabe74db23f453d4d5bacc8f78a8",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:247e3a7bf149cddeca653a26939e39be2ea28eeadb45918c1f4011b62c62f106",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -812,24 +904,28 @@
     },
     {
       "symbol": "159928",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:d7196b65c89b35a14a4a91abd6de59ed250d1a138b0adc37b8e5984a767865d6",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:17b10428e1378dcbdb8abf16f3dc2aa4dbc43c91c7c36b8e600e90f0f840f67a",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -847,24 +943,28 @@
     },
     {
       "symbol": "512400",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_REVIEW",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:aab5ef88033baaa0182b680f2e075cb0d98b0241421f9f8b1167006e3c7984d0",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "REVIEW",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:0d5a22b97c9a651478f8630b115bcc9e681689a7ee116df819c363fef34226fb",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 3,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -882,24 +982,28 @@
     },
     {
       "symbol": "159819",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:f93937769b72c7a8a5900926e3f24507b80cbce824cde2cde6ff5025e673c49e",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:efb1e137f5c1567776f8dba3ff4895a9a0d808bbb26c76289dfc048629eb3181",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -917,24 +1021,28 @@
     },
     {
       "symbol": "159516",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:31b48a9b538d736a263a38b3b1e9033e678185487159b4c00d626b9f1a0b8d69",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:7e243a686c61aed046e396f0e3f9f6b9e6d747fe4c447da7a8d9b4580e2cf7bb",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 一致前复权序列 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline 一致前复权序列 (push2his.eastmoney.com); volume=按复权比例折算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -952,24 +1060,28 @@
     },
     {
       "symbol": "159611",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:f24365d26c33e37f7f5092e8406879efeb930639c997c9d7d9c69a6c113583f7",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:de05edc430f973281dec6cde1cffa14726192927ccc45c8cd4bdadccca1c8be4",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -987,24 +1099,28 @@
     },
     {
       "symbol": "159206",
-      "bar_count": 371,
-      "history_start": "2025-03-17",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 375,
+      "history_start": "2025-03-14",
+      "history_end": "2026-09-23",
+      "research_status": "SHORT_SAMPLE",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:6275f3ab47afc981cb78f7be25243a44d84d9ed6e2f77faf23d3da54fbb014bb",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:b059475e0f12b1af621a18425c999f21ff5e0bd411650f7030b158c7979b519d",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 375,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -1022,24 +1138,28 @@
     },
     {
       "symbol": "512070",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:b5921d1f6839d064ea41343ade02ea7f19169923ed3a25f43adaf625391c35b9",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:e10215c5ce830756c03a3dd2db0b48084a02d49fdb46461997baf0cb56533332",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -1057,24 +1177,28 @@
     },
     {
       "symbol": "159967",
-      "bar_count": 756,
-      "history_start": "2023-08-09",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:98ae65c8ee8453f66478149b321387f74f1f365f665788ecb5498bd00167891a",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:59d4db4846598171c2003fa9882ca0dbdbeac01007a55b774c6c39001b43e06a",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -1092,24 +1216,28 @@
     },
     {
       "symbol": "159326",
-      "bar_count": 491,
-      "history_start": "2024-09-10",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 495,
+      "history_start": "2024-09-09",
+      "history_end": "2026-09-23",
+      "research_status": "SHORT_SAMPLE",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:e7d4e58343ce9ada020db93b40450c91a3e1db2357406f1b07f5907301cc8034",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:7518909982770507ef776261b8f3ce837061d6a57a83b74efd5e43f1b7fa45ad",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 495,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline (push2his.eastmoney.com)"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -1127,24 +1255,28 @@
     },
     {
       "symbol": "588020",
-      "bar_count": 739,
-      "history_start": "2023-09-01",
-      "history_end": "2026-09-18",
-      "research_status": "USABLE_WITH_WARNINGS",
+      "bar_count": 743,
+      "history_start": "2023-08-31",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
       "sample_class": "FULL_SAMPLE",
-      "walk_forward_eligible": false,
+      "walk_forward_eligible": true,
       "duplicate_dates": [],
-      "warnings": [
-        "ADJUSTMENT_UNVERIFIED",
-        "AMOUNT_ESTIMATED",
-        "CROSSCHECK_PENDING"
-      ],
-      "data_version": "sha256:9035b492fe6c9339af27b266cf93986353c097bfa2e03b9f5e24b47103b8c082",
-      "crosscheck_status": "PENDING",
-      "adjustment_status": "UNKNOWN",
-      "amount_quality": "ESTIMATED",
+      "warnings": [],
+      "data_version": "sha256:603dec8cfa84252c5c137deabe080698aa1203d9866d70197545f5b0401e3e23",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 743,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
       "source": [
-        "腾讯 fqkline 一致前复权序列 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
+        "东方财富 kline 一致前复权序列 (push2his.eastmoney.com); volume=按复权比例折算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -1157,6 +1289,45 @@
         "lot_size": 100,
         "price_tick": 0.001,
         "price_limit_pct": 0.2,
+        "volume_unit_shares": 100
+      }
+    },
+    {
+      "symbol": "512010",
+      "bar_count": 760,
+      "history_start": "2023-08-08",
+      "history_end": "2026-09-23",
+      "research_status": "VERIFIED",
+      "sample_class": "FULL_SAMPLE",
+      "walk_forward_eligible": true,
+      "duplicate_dates": [],
+      "warnings": [],
+      "data_version": "sha256:7681c6aae20a3c527957db6587168af6a8fcbe706c8e4c8327463949636bb5ec",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "amount_quality": "PROVIDER_REPORTED",
+      "crosscheck_receipt": {
+        "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+        "checked_at": "2026-09-24T10:15:43+08:00",
+        "compared_count": 760,
+        "mismatch_count": 0,
+        "adjustment_events": 0,
+        "warnings": []
+      },
+      "source": [
+        "东方财富 kline (push2his.eastmoney.com)"
+      ],
+      "price_basis": "adjusted_ohlc",
+      "metadata_status": "VERIFIED",
+      "metadata_validation_status": "PASSED",
+      "trading_metadata": {
+        "exchange": "SSE",
+        "asset_type": "DOMESTIC_EQUITY_ETF",
+        "intraday_turnaround": false,
+        "sellable_delay_days": 1,
+        "lot_size": 100,
+        "price_tick": 0.001,
+        "price_limit_pct": 0.1,
         "volume_unit_shares": 100
       }
     }

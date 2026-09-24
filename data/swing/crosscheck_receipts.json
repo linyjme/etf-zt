@@ -1,0 +1,950 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-24T10:15:43+08:00",
+  "calculation_version": "CROSSCHECK_V1",
+  "research_only": true,
+  "items": {
+    "159201": {
+      "symbol": "159201",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2025-02-27",
+      "sample_end": "2026-09-23",
+      "bar_count": 386,
+      "compared_count": 386,
+      "data_version": "sha256:04140aa34bfc13601ee7ee87bc763a10faaeeb2c747f28e09a04973c82ad5081",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159206": {
+      "symbol": "159206",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2025-03-14",
+      "sample_end": "2026-09-23",
+      "bar_count": 375,
+      "compared_count": 375,
+      "data_version": "sha256:b059475e0f12b1af621a18425c999f21ff5e0bd411650f7030b158c7979b519d",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159209": {
+      "symbol": "159209",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2025-03-25",
+      "sample_end": "2026-09-23",
+      "bar_count": 368,
+      "compared_count": 368,
+      "data_version": "sha256:0b9cacf45517ee9f7b481a5ac3740ca2a0f5df379389873b4eb8a3e64212e3d8",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [
+        {
+          "trading_date": "2025-07-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2025-08-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2025-09-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2025-10-23",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2025-11-17",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2025-12-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-01-19",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-02-24",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-03-16",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-04-16",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-05-20",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-06-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-07-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-08-17",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-09-15",
+          "payout": 0.003
+        }
+      ],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2025-07-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2025-08-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2025-09-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2025-10-23",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2025-11-17",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2025-12-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-01-19",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-02-24",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-03-16",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-04-16",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-05-20",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-06-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-07-15",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-08-17",
+          "payout": 0.003
+        },
+        {
+          "trading_date": "2026-09-15",
+          "payout": 0.003
+        }
+      ],
+      "warnings": []
+    },
+    "159259": {
+      "symbol": "159259",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2025-08-28",
+      "sample_end": "2026-09-23",
+      "bar_count": 261,
+      "compared_count": 261,
+      "data_version": "sha256:901007005d0f7b74f134b73782832261f7fe4ca9923681f5bfd52e2da01d1a24",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159263": {
+      "symbol": "159263",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2025-07-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 298,
+      "compared_count": 298,
+      "data_version": "sha256:8726a0689fd64813b04401a986a92f456ee0a057b804ae8d776e113f0f367ab4",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159307": {
+      "symbol": "159307",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2024-04-25",
+      "sample_end": "2026-09-23",
+      "bar_count": 588,
+      "compared_count": 588,
+      "data_version": "sha256:53efcd41266c44936ef6e4eb3a867a8d00394d2ddfc71cd4644f355ad47c25c4",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [
+        {
+          "trading_date": "2024-09-19",
+          "payout": 0.014
+        },
+        {
+          "trading_date": "2024-12-18",
+          "payout": 0.012
+        },
+        {
+          "trading_date": "2025-03-18",
+          "payout": 0.012
+        },
+        {
+          "trading_date": "2025-06-20",
+          "payout": 0.012
+        },
+        {
+          "trading_date": "2025-09-16",
+          "payout": 0.013
+        },
+        {
+          "trading_date": "2025-12-15",
+          "payout": 0.012
+        },
+        {
+          "trading_date": "2026-03-13",
+          "payout": 0.013
+        },
+        {
+          "trading_date": "2026-06-12",
+          "payout": 0.013
+        },
+        {
+          "trading_date": "2026-09-14",
+          "payout": 0.011
+        }
+      ],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2024-09-19",
+          "payout": 0.014
+        },
+        {
+          "trading_date": "2024-12-18",
+          "payout": 0.012
+        },
+        {
+          "trading_date": "2025-03-18",
+          "payout": 0.012
+        },
+        {
+          "trading_date": "2025-06-20",
+          "payout": 0.012
+        },
+        {
+          "trading_date": "2025-09-16",
+          "payout": 0.013
+        },
+        {
+          "trading_date": "2025-12-15",
+          "payout": 0.012
+        },
+        {
+          "trading_date": "2026-03-13",
+          "payout": 0.013
+        },
+        {
+          "trading_date": "2026-06-12",
+          "payout": 0.013
+        },
+        {
+          "trading_date": "2026-09-14",
+          "payout": 0.011
+        }
+      ],
+      "warnings": []
+    },
+    "159326": {
+      "symbol": "159326",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2024-09-09",
+      "sample_end": "2026-09-23",
+      "bar_count": 495,
+      "compared_count": 495,
+      "data_version": "sha256:7518909982770507ef776261b8f3ce837061d6a57a83b74efd5e43f1b7fa45ad",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159516": {
+      "symbol": "159516",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:7e243a686c61aed046e396f0e3f9f6b9e6d747fe4c447da7a8d9b4580e2cf7bb",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2026-03-30",
+          "payout": 0.819
+        },
+        {
+          "trading_date": "2026-07-10",
+          "payout": 0.972
+        }
+      ],
+      "warnings": []
+    },
+    "159611": {
+      "symbol": "159611",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:de05edc430f973281dec6cde1cffa14726192927ccc45c8cd4bdadccca1c8be4",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159781": {
+      "symbol": "159781",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:73718d108e57641f5f5482f45c0b86429201e99d991bc26608b6397e2c8f6f60",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159792": {
+      "symbol": "159792",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:0923a8a1b2ed768263f4eed1b48689b38f2f3908d88a36a1e352a6e00c9fe012",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159819": {
+      "symbol": "159819",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:efb1e137f5c1567776f8dba3ff4895a9a0d808bbb26c76289dfc048629eb3181",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159915": {
+      "symbol": "159915",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:938dc6424d3c3b5b1ac47d8d51530c2be7e85b437e3dfbfd3435fc1b770a0ba1",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159928": {
+      "symbol": "159928",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:17b10428e1378dcbdb8abf16f3dc2aa4dbc43c91c7c36b8e600e90f0f840f67a",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159967": {
+      "symbol": "159967",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:59d4db4846598171c2003fa9882ca0dbdbeac01007a55b774c6c39001b43e06a",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "159995": {
+      "symbol": "159995",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:b113bd7e4ad4f46bd16818f00af56c671660440108226382223ef2bdca3f15dc",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2026-07-07",
+          "payout": 1.504
+        }
+      ],
+      "warnings": []
+    },
+    "510300": {
+      "symbol": "510300",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:096c90c7ab78ecee51e0ce520400b4d7185e5642453aedf8a92f77cf78705d80",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [
+        {
+          "trading_date": "2024-01-18",
+          "payout": 0.069
+        },
+        {
+          "trading_date": "2025-06-18",
+          "payout": 0.088
+        },
+        {
+          "trading_date": "2026-01-19",
+          "payout": 0.123
+        }
+      ],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2024-01-18",
+          "payout": 0.069
+        },
+        {
+          "trading_date": "2025-06-18",
+          "payout": 0.088
+        },
+        {
+          "trading_date": "2026-01-19",
+          "payout": 0.123
+        }
+      ],
+      "warnings": []
+    },
+    "510500": {
+      "symbol": "510500",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:641038ab1c7c1f4f4bbdf756f7b8faa619f646d2b385d9560fbc3b3bd3fdd8ad",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [
+        {
+          "trading_date": "2024-05-17",
+          "payout": 0.087
+        },
+        {
+          "trading_date": "2025-01-16",
+          "payout": 0.091
+        },
+        {
+          "trading_date": "2026-01-16",
+          "payout": 0.062
+        },
+        {
+          "trading_date": "2026-07-15",
+          "payout": 0.149
+        }
+      ],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2024-05-17",
+          "payout": 0.087
+        },
+        {
+          "trading_date": "2025-01-16",
+          "payout": 0.091
+        },
+        {
+          "trading_date": "2026-01-16",
+          "payout": 0.062
+        },
+        {
+          "trading_date": "2026-07-15",
+          "payout": 0.149
+        }
+      ],
+      "warnings": []
+    },
+    "512010": {
+      "symbol": "512010",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:7681c6aae20a3c527957db6587168af6a8fcbe706c8e4c8327463949636bb5ec",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "512070": {
+      "symbol": "512070",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:e10215c5ce830756c03a3dd2db0b48084a02d49fdb46461997baf0cb56533332",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "512100": {
+      "symbol": "512100",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:5becd8cd3229e8455dd60b74d73052d7a8e8f825d09584b23f2ddf7c9370e104",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [
+        {
+          "trading_date": "2025-01-15",
+          "payout": 0.037
+        },
+        {
+          "trading_date": "2026-01-19",
+          "payout": 0.041
+        }
+      ],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2025-01-15",
+          "payout": 0.037
+        },
+        {
+          "trading_date": "2026-01-19",
+          "payout": 0.041
+        }
+      ],
+      "warnings": []
+    },
+    "512170": {
+      "symbol": "512170",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:aba80aa28c9a23e434c337b1bd64450cfbedcc2a8a2d43f6e7df763a96969c21",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "512400": {
+      "symbol": "512400",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:0d5a22b97c9a651478f8630b115bcc9e681689a7ee116df819c363fef34226fb",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [
+        {
+          "trading_date": "2024-09-18",
+          "payout": 0.01
+        },
+        {
+          "trading_date": "2025-09-15",
+          "payout": 0.015
+        },
+        {
+          "trading_date": "2026-09-09",
+          "payout": 0.08
+        }
+      ],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2024-09-18",
+          "payout": 0.01
+        },
+        {
+          "trading_date": "2025-09-15",
+          "payout": 0.015
+        },
+        {
+          "trading_date": "2026-09-09",
+          "payout": 0.08
+        }
+      ],
+      "warnings": []
+    },
+    "512480": {
+      "symbol": "512480",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:6ca6bac39ffdfeda66e3ba473bbe536267b44565eb0c792cd3dc463618e21086",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2026-07-03",
+          "payout": 1.35
+        }
+      ],
+      "warnings": []
+    },
+    "512880": {
+      "symbol": "512880",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:90f909bc2a85e235a4d5ac933d377f77c71920c16c8e03b46224122b6452b292",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "513050": {
+      "symbol": "513050",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:e1993c9fd5ca67a930b3df1c94cfeffa8aaaa8ee0a513b578f9fefdcbeebd16f",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "515120": {
+      "symbol": "515120",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:247e3a7bf149cddeca653a26939e39be2ea28eeadb45918c1f4011b62c62f106",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "515180": {
+      "symbol": "515180",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:3ae7922cc93a9d281f1c13586ff472d9eeb2c6c0a54129d5c7570e6afd0c2001",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [
+        {
+          "trading_date": "2023-10-24",
+          "payout": 0.062
+        },
+        {
+          "trading_date": "2024-10-18",
+          "payout": 0.063
+        },
+        {
+          "trading_date": "2025-10-21",
+          "payout": 0.061
+        }
+      ],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2023-10-24",
+          "payout": 0.062
+        },
+        {
+          "trading_date": "2024-10-18",
+          "payout": 0.063
+        },
+        {
+          "trading_date": "2025-10-21",
+          "payout": 0.061
+        }
+      ],
+      "warnings": []
+    },
+    "515880": {
+      "symbol": "515880",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:992df000ae7f55bc89993349e365284c3af1953eb8cc21114ab50365351d6c63",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2026-02-03",
+          "payout": 2.091
+        },
+        {
+          "trading_date": "2026-07-06",
+          "payout": 0.789
+        }
+      ],
+      "warnings": []
+    },
+    "516160": {
+      "symbol": "516160",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:450ecb11d993f358acd99867a8e3841d0e9db0f92a288b7f432342efb1550d32",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2024-09-18",
+          "payout": -1.111
+        }
+      ],
+      "warnings": []
+    },
+    "562500": {
+      "symbol": "562500",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:7b54a37213226e6485dabd3c594ed5a48e3ffbcbb2da8dd69a05a2373cbae88c",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "563360": {
+      "symbol": "563360",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2024-10-15",
+      "sample_end": "2026-09-23",
+      "bar_count": 476,
+      "compared_count": 476,
+      "data_version": "sha256:b13679a22d3753f367517cd3e142e6bdb6d18cb583126fea3386e0a6b2ad201e",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "588000": {
+      "symbol": "588000",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-08",
+      "sample_end": "2026-09-23",
+      "bar_count": 760,
+      "compared_count": 760,
+      "data_version": "sha256:743cdace3547df79a730d8a5605eff3a63ec529f50e0aaa67febff851478c59b",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [],
+      "warnings": []
+    },
+    "588020": {
+      "symbol": "588020",
+      "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
+      "checked_at": "2026-09-24T10:15:43+08:00",
+      "calculation_version": "CROSSCHECK_V1",
+      "sample_start": "2023-08-31",
+      "sample_end": "2026-09-23",
+      "bar_count": 743,
+      "compared_count": 743,
+      "data_version": "sha256:603dec8cfa84252c5c137deabe080698aa1203d9866d70197545f5b0401e3e23",
+      "crosscheck_status": "PASSED",
+      "adjustment_status": "VERIFIED",
+      "mismatches": [],
+      "adjustment_events": [],
+      "independent_adjustment_events": [
+        {
+          "trading_date": "2026-07-09",
+          "payout": 2.065
+        }
+      ],
+      "warnings": []
+    }
+  }
+}
