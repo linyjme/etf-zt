@@ -262,11 +262,17 @@ def _records(bars: Sequence[DailyBar]) -> tuple[tuple[DailyBar, ...], bool]:
 
 
 def _amount_quality(source: str) -> str:
-    if source.startswith("腾讯 fqkline 原始+前复权 (") and source.endswith(
+    if source.startswith(("腾讯 fqkline 原始+前复权 (", "腾讯 fqkline 一致前复权序列 (")) and source.endswith(
         "amount=OHLC均价×成交量(手)×100估算"
     ):
         return "ESTIMATED"
     if source.startswith("东方财富 kline (") and source.endswith(")"):
+        return "PROVIDER_REPORTED"
+    # Split-gapped histories keep the provider's turnover; only the raw OHLC
+    # and volume were replaced by the consistent adjusted series.
+    if source.startswith("东方财富 kline 一致前复权序列 (") and source.endswith(
+        "); volume=按复权比例折算"
+    ):
         return "PROVIDER_REPORTED"
     if source.startswith("Wind fund_data.get_fund_kline ") and "TURNOVER=元" in source:
         return "PROVIDER_REPORTED"

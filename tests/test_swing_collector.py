@@ -26,6 +26,7 @@ from etf_rotation.swing_collector import (
 )
 from etf_rotation.swing_config import SwingWatchItem
 from etf_rotation.swing_data import SwingDataError
+from etf_rotation.swing_quality import _amount_quality
 
 
 NOW = datetime.fromisoformat("2026-08-31T15:10:00+08:00")
@@ -667,9 +668,15 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
         )
         self.assertEqual(len(bars), 2)
         self.assertTrue(all("一致前复权序列" in bar.source for bar in bars))
+        self.assertTrue(all("volume=按复权比例折算" in bar.source for bar in bars))
+        self.assertEqual({_amount_quality(bar.source) for bar in bars}, {"ESTIMATED"})
         self.assertEqual(bars[0].close, bars[0].adjusted_close)
         self.assertEqual(bars[1].close, bars[1].adjusted_close)
         self.assertEqual(bars[1].previous_close, bars[0].close)
+        # qfq halves every price, so the pre-split lots are doubled and the
+        # estimated turnover equals the unadjusted price times unadjusted lots.
+        self.assertAlmostEqual(bars[0].volume, 2 * 1001.0)
+        self.assertAlmostEqual(bars[0].amount, (10.0 + 10.5 + 11.0 + 9.0) / 4 * 1001.0 * 100.0)
 
     def test_primary_business_or_schema_failure_never_falls_back(self) -> None:
         bad_payloads = (
@@ -807,22 +814,24 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
                     )
 
     def test_accepts_eastmoney_subtractive_adjustment_and_keeps_provider_amount(self) -> None:
-        # Real 510300 bars for 2023-08-28 / 2024-10-08: Eastmoney subtracts the
-        # cumulative distribution (0.280 / 0.211) from every field, so the
-        # open/high/low sit 12-18 ticks away from the close-derived scale.
+        # Real 510300 bars for 2024-10-08 / 2024-10-09: Eastmoney subtracts the
+        # cumulative distribution (0.211) from every field, so the open/high
+        # sit 12-14 ticks away from the close-derived scale.
         raw_lines = (
-            "2023-08-28,4.011,3.837,4.011,3.810,1000,2624224493.0,0,0,0,0",
             "2024-10-08,4.656,4.412,4.656,4.208,1100,2987237086.0,0,0,0,0",
+            "2024-10-09,4.285,4.022,4.285,4.005,1200,2928541597.0,0,0,0,0",
         )
         adjusted_lines = (
-            "2023-08-28,3.731,3.557,3.731,3.530,1000,2624224493.0,0,0,0,0",
             "2024-10-08,4.445,4.201,4.445,3.997,1100,2987237086.0,0,0,0,0",
+            "2024-10-09,4.074,3.811,4.074,3.794,1200,2928541597.0,0,0,0,0",
         )
 
         def transport(request: Request, timeout: float) -> bytes:
             query = parse_qs(urlsplit(request.full_url).query)
             self.assertIn(urlsplit(request.full_url).netloc, {urlsplit(KLINE_ENDPOINT).netloc})
-            payload = kline_payload("510300", 1, adjusted=query["fqt"] == ["1"])
+            payload = kline_payload(
+                "510300", 1, adjusted=query["fqt"] == ["1"], pre_k_price=4.233,
+            )
             payload["data"]["klines"] = list(
                 adjusted_lines if query["fqt"] == ["1"] else raw_lines
             )
@@ -833,13 +842,77 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
         )
 
         self.assertEqual(len(bars), 2)
-        for bar, expected_close in zip(bars, (3.557, 4.201)):
+        for bar, expected_close in zip(bars, (4.201, 3.811)):
             self.assertTrue(bar.source.startswith("东方财富 kline ("))
             self.assertEqual(bar.adjusted_close, expected_close)
             scale = bar.adjusted_close / bar.close
             self.assertEqual(bar.adjusted_open, bar.open * scale)
             self.assertEqual(bar.adjusted_low, bar.low * scale)
-        self.assertEqual(bars[0].amount, 2624224493.0)
+        self.assertEqual(bars[0].amount, 2987237086.0)
+        self.assertEqual(bars[0].previous_close, 4.233)
+
+    def test_eastmoney_split_gap_uses_consistent_adjusted_series(self) -> None:
+        # 512480 2026-07-02 -> 2026-07-03: a 2:1 share split halves the raw
+        # price.  The raw chain would breach the 10% limit validator, so the
+        # continuous adjusted series stands in, as the Tencent path already did.
+        raw_lines = (
+            "2026-07-02,2.660,2.700,2.720,2.640,1000,2700000000.0,0,0,0,0",
+            "2026-07-03,1.322,1.331,1.383,1.303,2100,2800000000.0,0,0,0,0",
+        )
+        adjusted_lines = (
+            "2026-07-02,1.330,1.350,1.360,1.320,1000,2700000000.0,0,0,0,0",
+            "2026-07-03,1.322,1.331,1.383,1.303,2100,2800000000.0,0,0,0,0",
+        )
+
+        def transport(request: Request, timeout: float) -> bytes:
+            query = parse_qs(urlsplit(request.full_url).query)
+            adjusted = query["fqt"] == ["1"]
+            payload = kline_payload(
+                "512480", 1, adjusted=adjusted, pre_k_price=1.340 if adjusted else 2.680,
+            )
+            payload["data"]["klines"] = list(adjusted_lines if adjusted else raw_lines)
+            return payload_bytes(payload)
+
+        bars = self.collector(transport).collect(
+            (SwingWatchItem("512480", True),), date(2026, 8, 28), count=2,
+        )
+
+        self.assertEqual([bar.close for bar in bars], [1.35, 1.331])
+        self.assertEqual([bar.previous_close for bar in bars], [1.34, 1.35])
+        self.assertEqual(bars[0].adjusted_close, 1.35)
+        # Turnover stays as reported; the pre-split volume is doubled so the
+        # bar still reconciles (2.7e9 / 2000 lots / 100 = 1.35 within range).
+        self.assertEqual([bar.amount for bar in bars], [2700000000.0, 2800000000.0])
+        self.assertAlmostEqual(bars[0].volume, 2000.0)
+        self.assertEqual(bars[1].volume, 2100.0)
+        for bar in bars:
+            self.assertEqual(
+                bar.source,
+                "东方财富 kline 一致前复权序列 (push2his.eastmoney.com); volume=按复权比例折算",
+            )
+        self.assertEqual(_amount_quality(bars[0].source), "PROVIDER_REPORTED")
+
+    def test_eastmoney_split_gap_without_adjusted_previous_close_is_rejected(self) -> None:
+        def transport(request: Request, timeout: float) -> bytes:
+            query = parse_qs(urlsplit(request.full_url).query)
+            adjusted = query["fqt"] == ["1"]
+            payload = kline_payload("512480", 1, adjusted=adjusted, pre_k_price=2.680)
+            payload["data"]["klines"] = [
+                "2026-07-02,2.660,2.700,2.720,2.640,1000,2700000000.0,0,0,0,0",
+                "2026-07-03,1.322,1.331,1.383,1.303,2100,2800000000.0,0,0,0,0",
+            ] if not adjusted else [
+                "2026-07-02,1.330,1.350,1.360,1.320,1000,2700000000.0,0,0,0,0",
+                "2026-07-03,1.322,1.331,1.383,1.303,2100,2800000000.0,0,0,0,0",
+            ]
+            if adjusted:
+                del payload["data"]["preKPrice"]
+            return payload_bytes(payload)
+
+        with self.assertRaises(SwingDataError) as caught:
+            self.collector(transport).collect(
+                (SwingWatchItem("512480", True),), date(2026, 8, 28), count=2,
+            )
+        self.assertIn("缺少复权首日昨收", str(caught.exception))
 
     def test_collect_independent_keeps_first_tencent_bar_and_marks_missing_qfq(self) -> None:
         requests: list[str] = []
@@ -868,7 +941,12 @@ class EastmoneyDailyCollectorTests(unittest.TestCase):
         )
         self.assertEqual(bars[0].close, 9.5)
         self.assertEqual(bars[0].adjusted_close, 4.75)
+        self.assertTrue(bars[0].has_adjusted_ohlc)
+        self.assertEqual(bars[0].adjusted_open, bars[0].open / 2)
+        self.assertEqual(bars[0].adjusted_high, bars[0].high / 2)
+        self.assertEqual(bars[0].adjusted_low, bars[0].low / 2)
         self.assertIsNone(bars[-1].adjusted_close)
+        self.assertFalse(bars[-1].has_adjusted_ohlc)
         self.assertEqual(bars[-1].volume, 1002.0)
         with self.assertRaises(SwingDataError):
             self.collector(transport).collect_independent("510300", "2026-08-28")

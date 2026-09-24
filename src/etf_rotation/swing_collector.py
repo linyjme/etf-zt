@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from datetime import date, datetime, time
 import json
 import math
@@ -91,6 +91,17 @@ def _source_label(endpoint: str) -> str:
             "amount=OHLC均价×成交量(手)×100估算"
         )
     return f"东方财富 kline ({host or endpoint})"
+
+
+def _consistent_adjusted_source_label(endpoint: str) -> str:
+    """Label for bars whose raw fields were replaced by the adjusted series."""
+    host = urlsplit(endpoint).netloc
+    if endpoint == TENCENT_KLINE_ENDPOINT:
+        return (
+            f"腾讯 fqkline 一致前复权序列 ({host or endpoint}); "
+            "volume=按复权比例折算; amount=OHLC均价×成交量(手)×100估算"
+        )
+    return f"东方财富 kline 一致前复权序列 ({host or endpoint}); volume=按复权比例折算"
 
 
 class EastmoneyDailyCollector:
@@ -220,6 +231,9 @@ class EastmoneyDailyCollector:
                 close=bar.close,
                 volume=bar.volume,
                 adjusted_close=None if adjusted_bar is None else adjusted_bar.close,
+                adjusted_open=None if adjusted_bar is None else adjusted_bar.open,
+                adjusted_high=None if adjusted_bar is None else adjusted_bar.high,
+                adjusted_low=None if adjusted_bar is None else adjusted_bar.low,
             ))
         if not result:
             raise SwingDataError(f"{symbol} 腾讯kline没有可用于交叉核验的日线")
@@ -585,7 +599,10 @@ class EastmoneyDailyCollector:
             if type(name) is not str or not name.strip():
                 raise SwingDataError(f"{symbol} kline名称无效")
         pre_close = None
-        if require_pre_close:
+        if require_pre_close or data.get("preKPrice") is not None:
+            # The adjusted response does not have to carry a previous close,
+            # but when it does it seeds the continuity chain if the adjusted
+            # series has to stand in for a split-gapped raw series.
             pre_close = self._positive(data.get("preKPrice"), f"{symbol}.preKPrice")
         klines = data.get("klines")
         if type(klines) is not list or not klines:
@@ -704,31 +721,41 @@ class EastmoneyDailyCollector:
                 bar.trading_date: bar for bar in adjusted_retained
             }
             item_source = source
-            if endpoint == TENCENT_KLINE_ENDPOINT:
-                def _raw_exceeds_gap(bar: _ParsedKline) -> bool:
-                    previous = previous_close_by_date[bar.trading_date]
-                    return any(
-                        previous <= 0 or abs(price / previous - 1.0) > 0.25
-                        for price in (bar.open, bar.high, bar.low, bar.close)
-                    )
-                if any(_raw_exceeds_gap(bar) for bar in raw_retained):
-                    adjusted_pre_close = adjusted_response.pre_close
-                    if adjusted_pre_close is None:
-                        raise SwingDataError(f"{item.symbol}缺少复权首日昨收")
-                    previous_close_by_date = {}
-                    previous_close = adjusted_pre_close
-                    for adjusted_bar in adjusted_response.bars:
-                        previous_close_by_date[adjusted_bar.trading_date] = previous_close
-                        previous_close = adjusted_bar.close
-                    raw_by_date = adjusted_by_date
-                    host = urlsplit(endpoint).netloc
-                    item_source = (
-                        f"腾讯 fqkline 一致前复权序列 ({host or endpoint}); "
-                        "amount=OHLC均价×成交量(手)×100估算"
-                    )
+            substituted = False
+
+            # A share split or consolidation (份额折算) leaves a gap in the
+            # unadjusted series that the price-limit validator would reject,
+            # while the provider's front-adjusted series stays continuous.
+            # Either provider may serve such an ETF, so the consistent
+            # adjusted series replaces the raw one whenever the gap exceeds
+            # any exchange limit.  Volume is scaled by the same factor so the
+            # turnover (which is invariant under a split) still reconciles
+            # with the adjusted price range.  The label records both.
+            def _raw_exceeds_gap(bar: _ParsedKline) -> bool:
+                previous = previous_close_by_date[bar.trading_date]
+                return any(
+                    previous <= 0 or abs(price / previous - 1.0) > 0.25
+                    for price in (bar.open, bar.high, bar.low, bar.close)
+                )
+            if any(_raw_exceeds_gap(bar) for bar in raw_retained):
+                adjusted_pre_close = adjusted_response.pre_close
+                if adjusted_pre_close is None:
+                    raise SwingDataError(f"{item.symbol}缺少复权首日昨收")
+                previous_close_by_date = {}
+                previous_close = adjusted_pre_close
+                for adjusted_bar in adjusted_response.bars:
+                    previous_close_by_date[adjusted_bar.trading_date] = previous_close
+                    previous_close = adjusted_bar.close
+                substituted = True
+                item_source = _consistent_adjusted_source_label(endpoint)
             for trading_day in retained_dates:
-                raw = raw_by_date[trading_day]
                 adjusted = adjusted_by_date[trading_day]
+                if substituted:
+                    raw = self._split_adjusted_kline(
+                        raw_by_date[trading_day], adjusted, item.symbol,
+                    )
+                else:
+                    raw = raw_by_date[trading_day]
                 adjusted_prices = self._adjusted_prices(
                     raw, adjusted, item.symbol, endpoint,
                 )
@@ -756,6 +783,25 @@ class EastmoneyDailyCollector:
                     "is_final": True,
                 }))
         return tuple(sorted(result, key=lambda bar: (bar.symbol, bar.trading_date)))
+
+    @staticmethod
+    def _split_adjusted_kline(
+        raw: _ParsedKline, adjusted: _ParsedKline, symbol: str,
+    ) -> _ParsedKline:
+        """Return the adjusted bar with volume scaled by the raw/adjusted ratio.
+
+        Only used when the adjusted series stands in for a split-gapped raw
+        series: the provider reports volume in pre-split units, so a bar's
+        turnover would no longer sit inside its (adjusted) price range.
+        """
+        try:
+            factor = raw.close / adjusted.close
+            volume = raw.volume * factor
+        except (ZeroDivisionError, OverflowError) as error:
+            raise SwingDataError(f"{symbol} 复权成交量折算失败") from error
+        if not math.isfinite(factor) or factor <= 0 or not math.isfinite(volume):
+            raise SwingDataError(f"{symbol} 复权成交量折算失败")
+        return dataclass_replace(adjusted, volume=volume, amount=raw.amount)
 
     @staticmethod
     def _adjusted_prices(
