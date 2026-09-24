@@ -103,7 +103,18 @@ def assess_verified_quality(
     receipt_amount_quality = (
         receipt.get("amount_quality") if isinstance(receipt, Mapping) else None
     )
-    if amount_quality == "UNKNOWN" and receipt_amount_quality == "PROVIDER_REPORTED":
+    # A receipt may vouch for the turnover basis of a legacy source label,
+    # but only when it describes exactly these bars; a receipt for another
+    # window or digest is evidence about different data.
+    receipt_describes_bars = isinstance(receipt, Mapping) and _receipt_sample_matches(
+        ordered, receipt.get("sample_start"), receipt.get("sample_end"),
+        receipt.get("calculation_version"),
+    )
+    if (
+        amount_quality == "UNKNOWN"
+        and receipt_describes_bars
+        and receipt_amount_quality == "PROVIDER_REPORTED"
+    ):
         amount_quality = "PROVIDER_REPORTED"
     if len(ordered) < minimum_daily_bars or duplicates:
         reasons.append("DATA_QUALITY_INSUFFICIENT_BARS")
@@ -151,8 +162,6 @@ def assess_verified_quality(
     else:
         source = receipt.get("source")
         checked_at = _receipt_text(receipt.get("checked_at"))
-        sample_start = receipt.get("sample_start")
-        sample_end = receipt.get("sample_end")
         crosscheck = receipt.get("crosscheck_status", receipt.get("amount_crosscheck"))
         adjustment = receipt.get("adjustment_status", receipt.get("adjustment_basis"))
         receipt_amount_quality = receipt.get("amount_quality")
@@ -160,8 +169,7 @@ def assess_verified_quality(
         warnings = receipt.get("warnings", ())
         if not isinstance(source, str) or not source.strip() or checked_at is None:
             reasons.append("DATA_QUALITY_RECEIPT_INVALID")
-        sample_ok = _receipt_sample_matches(ordered, sample_start, sample_end, version)
-        if not sample_ok:
+        if not receipt_describes_bars:
             reasons.append("DATA_QUALITY_RECEIPT_SAMPLE_MISMATCH")
         if crosscheck != "PASSED":
             reasons.append("DATA_QUALITY_RECEIPT_CROSSCHECK_PENDING")

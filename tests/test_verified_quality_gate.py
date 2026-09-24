@@ -56,6 +56,19 @@ class VerifiedQualityGateTests(unittest.TestCase):
         self.assertEqual(result["amount_quality"], "PROVIDER_REPORTED")
         self.assertEqual(result["environment_history_status"], "PASSED")
 
+    def test_receipt_for_other_bars_cannot_vouch_for_the_turnover_basis(self):
+        unknown = tuple(replace(bar, source="unknown feed") for bar in self.bars)
+        matching = {**_receipt(unknown), "amount_quality": "PROVIDER_REPORTED"}
+        result = assess_verified_quality(unknown, **{**self.kwargs, "receipt": matching})
+        self.assertEqual(result["amount_quality"], "PROVIDER_REPORTED")
+        self.assertEqual(result["status"], "VERIFIED")
+
+        stale = {**_receipt(self.bars), "amount_quality": "PROVIDER_REPORTED"}
+        result = assess_verified_quality(unknown, **{**self.kwargs, "receipt": stale})
+        self.assertEqual(result["amount_quality"], "UNKNOWN")
+        self.assertIn("DATA_QUALITY_AMOUNT_NOT_PROVIDER_REPORTED", result["reasons"])
+        self.assertIn("DATA_QUALITY_RECEIPT_SAMPLE_MISMATCH", result["reasons"])
+
     def test_each_missing_requirement_fails_closed(self):
         cases = {
             "DATA_QUALITY_INSUFFICIENT_BARS": dict(bars=self.bars[-249:]),

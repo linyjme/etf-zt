@@ -68,7 +68,9 @@ class MedicalEtf512010OnboardingTests(unittest.TestCase):
         ]
         selected = [row for row in rows if row["symbol"] == "512010"]
         self.assertGreaterEqual(len(selected), 240)
-        self.assertEqual(max(row["trading_date"] for row in selected), "2026-09-18")
+        # The onboarding history ended on 2026-09-18; the daily cycle keeps
+        # extending it, so only the lower bound is a fixed contract.
+        self.assertGreaterEqual(max(row["trading_date"] for row in selected), "2026-09-18")
         self.assertTrue(all(row["is_final"] for row in selected))
 
 
