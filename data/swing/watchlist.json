@@ -136,6 +136,10 @@
     {
       "symbol": "512010",
       "enabled": true
+    },
+    {
+      "symbol": "159758",
+      "enabled": true
     }
   ]
 }

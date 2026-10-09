@@ -106,18 +106,33 @@ def validate_snapshot(payload: object, metadata: Mapping[str, object]) -> dict:
     if type(account) is not dict or set(account) != _ACCOUNT_FIELDS:
         raise HoldingsSnapshotError("invalid account fields")
     for key, value in account.items():
-        _number(value, nullable=key in {"original_capital", "additional_loss_budget"})
-    components = sum(account[key] for key in (
-        "reported_securities_value", "available_cash", "other_assets",
-    ))
-    if not math.isclose(components, account["reported_total_assets"], rel_tol=0, abs_tol=.011):
-        raise HoldingsSnapshotError("reported account totals do not reconcile")
+        _number(value, nullable=key in {
+            "reported_total_assets", "reported_securities_value",
+            "available_cash", "other_assets", "original_capital",
+            "additional_loss_budget",
+        })
+    account_values = (
+        account["reported_total_assets"],
+        account["reported_securities_value"],
+        account["available_cash"],
+        account["other_assets"],
+    )
+    if all(value is not None for value in account_values):
+        components = sum(account[key] for key in (
+            "reported_securities_value", "available_cash", "other_assets",
+        ))
+        if not math.isclose(components, account["reported_total_assets"], rel_tol=0, abs_tol=.011):
+            raise HoldingsSnapshotError("reported account totals do not reconcile")
     budget = account["additional_loss_budget"]
-    if budget is not None and budget > account["reported_total_assets"]:
+    if (
+        budget is not None
+        and account["reported_total_assets"] is not None
+        and budget > account["reported_total_assets"]
+    ):
         raise HoldingsSnapshotError("loss budget exceeds reported assets")
 
     positions = payload["positions"]
-    if type(positions) is not list or not 1 <= len(positions) <= 200:
+    if type(positions) is not list or not 0 <= len(positions) <= 200:
         raise HoldingsSnapshotError("invalid positions collection")
     symbols: set[str] = set()
     for position in positions:

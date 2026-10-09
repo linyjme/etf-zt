@@ -68,6 +68,28 @@ class SwingHoldingsServiceTests(unittest.TestCase):
     def write_snapshot(self) -> None:
         self.path.write_text(json.dumps(snapshot_fixture()), encoding="utf-8")
 
+    def test_current_snapshot_file_takes_precedence_without_overwriting_history(self) -> None:
+        current_path = self.path.with_name("holdings_snapshot_current.json")
+        cleared = snapshot_fixture()
+        cleared["snapshot_id"] = "synthetic-cleared"
+        cleared["positions"] = []
+        cleared["account"] = {
+            "reported_total_assets": None,
+            "reported_securities_value": None,
+            "available_cash": None,
+            "other_assets": None,
+            "original_capital": None,
+            "additional_loss_budget": None,
+        }
+        self.write_snapshot()
+        current_path.write_text(json.dumps(cleared), encoding="utf-8")
+        service = self.fixture.make_service()
+        state = service.snapshot()
+        self.assertEqual(state["holdings_snapshot"]["snapshot"]["snapshot_id"], "synthetic-cleared")
+        self.assertEqual(state["holdings_snapshot"]["snapshot"]["positions"], [])
+        self.assertTrue(self.path.exists())
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["snapshot_id"], "synthetic-import")
+
     def test_bootstrap_publishes_snapshot_without_initializing_ledger(self) -> None:
         self.fixture.paths = replace(
             self.fixture.paths,
