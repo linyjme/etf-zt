@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-24T10:15:43+08:00",
+  "generated_at": "2026-10-09T10:57:31+08:00",
   "calculation_version": "CROSSCHECK_V1",
   "research_only": true,
   "items": {
     "159201": {
       "symbol": "159201",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
       "sample_start": "2025-02-27",
-      "sample_end": "2026-09-23",
-      "bar_count": 386,
-      "compared_count": 386,
-      "data_version": "sha256:04140aa34bfc13601ee7ee87bc763a10faaeeb2c747f28e09a04973c82ad5081",
+      "sample_end": "2026-10-08",
+      "bar_count": 391,
+      "compared_count": 391,
+      "data_version": "sha256:e65ab96f30fefebcab9e7abea80ff0405f3d82d9404093b499632ed15a99d495",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -24,13 +24,13 @@
     "159206": {
       "symbol": "159206",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
       "sample_start": "2025-03-14",
-      "sample_end": "2026-09-23",
-      "bar_count": 375,
-      "compared_count": 375,
-      "data_version": "sha256:b059475e0f12b1af621a18425c999f21ff5e0bd411650f7030b158c7979b519d",
+      "sample_end": "2026-10-08",
+      "bar_count": 380,
+      "compared_count": 380,
+      "data_version": "sha256:6be8e6652b69526253d73560fc31d4380087cad34101324ed5f8f67f2e713c5d",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -41,13 +41,13 @@
     "159209": {
       "symbol": "159209",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
       "sample_start": "2025-03-25",
-      "sample_end": "2026-09-23",
-      "bar_count": 368,
-      "compared_count": 368,
-      "data_version": "sha256:0b9cacf45517ee9f7b481a5ac3740ca2a0f5df379389873b4eb8a3e64212e3d8",
+      "sample_end": "2026-10-08",
+      "bar_count": 373,
+      "compared_count": 373,
+      "data_version": "sha256:484ada02cbac77a521c75535166da2c568aef50953f3dfd4f51d44ea0426b154",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -180,13 +180,13 @@
     "159259": {
       "symbol": "159259",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
       "sample_start": "2025-08-28",
-      "sample_end": "2026-09-23",
-      "bar_count": 261,
-      "compared_count": 261,
-      "data_version": "sha256:901007005d0f7b74f134b73782832261f7fe4ca9923681f5bfd52e2da01d1a24",
+      "sample_end": "2026-10-08",
+      "bar_count": 266,
+      "compared_count": 266,
+      "data_version": "sha256:ed5469a92bcd2b461fc7e0d7e3476783789c00c760a30019fe3ff01ccde715cb",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -197,13 +197,13 @@
     "159263": {
       "symbol": "159263",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
       "sample_start": "2025-07-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 298,
-      "compared_count": 298,
-      "data_version": "sha256:8726a0689fd64813b04401a986a92f456ee0a057b804ae8d776e113f0f367ab4",
+      "sample_end": "2026-10-08",
+      "bar_count": 303,
+      "compared_count": 303,
+      "data_version": "sha256:c8b449208d6e6d5a517d1a1fd377891524db7c96db2d5ee4b95ebabf9125065f",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -214,13 +214,13 @@
     "159307": {
       "symbol": "159307",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
       "sample_start": "2024-04-25",
-      "sample_end": "2026-09-23",
-      "bar_count": 588,
-      "compared_count": 588,
-      "data_version": "sha256:53efcd41266c44936ef6e4eb3a867a8d00394d2ddfc71cd4644f355ad47c25c4",
+      "sample_end": "2026-10-08",
+      "bar_count": 593,
+      "compared_count": 593,
+      "data_version": "sha256:7891f2d1845242d7a17d42c9e913a5aa8b9985bdb52b7e9aba503a58712c681e",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -305,13 +305,13 @@
     "159326": {
       "symbol": "159326",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
       "sample_start": "2024-09-09",
-      "sample_end": "2026-09-23",
-      "bar_count": 495,
-      "compared_count": 495,
-      "data_version": "sha256:7518909982770507ef776261b8f3ce837061d6a57a83b74efd5e43f1b7fa45ad",
+      "sample_end": "2026-10-08",
+      "bar_count": 500,
+      "compared_count": 500,
+      "data_version": "sha256:7f11b31df97569477b585138f63e6facd0da733a05df30a82e7c1602697fab50",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -322,16 +322,682 @@
     "159516": {
       "symbol": "159516",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:7e243a686c61aed046e396f0e3f9f6b9e6d747fe4c447da7a8d9b4580e2cf7bb",
-      "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
-      "mismatches": [],
+      "sample_start": "2023-07-27",
+      "sample_end": "2026-10-08",
+      "bar_count": 773,
+      "compared_count": 640,
+      "data_version": "sha256:e3f6850443dbcb037ed245440eb5d690b126b3fe3f4e82a1e3a06815eab1a5a2",
+      "crosscheck_status": "FAILED",
+      "adjustment_status": "REVIEW",
+      "mismatches": [
+        {
+          "trading_date": "2023-07-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        }
+      ],
       "adjustment_events": [],
       "independent_adjustment_events": [
         {
@@ -343,18 +1009,20 @@
           "payout": 0.972
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "159611": {
       "symbol": "159611",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:de05edc430f973281dec6cde1cffa14726192927ccc45c8cd4bdadccca1c8be4",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:0ee57aa9f4a4d759d9d92dccc17f980b1bd4749c44220644c45199b5449cd85b",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -365,13 +1033,13 @@
     "159781": {
       "symbol": "159781",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:73718d108e57641f5f5482f45c0b86429201e99d991bc26608b6397e2c8f6f60",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:1cd3eb3e474e3d793c38d46d12e161c3c7189f9d5fc9170ef5f7dd6588b1dc3c",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -382,13 +1050,13 @@
     "159792": {
       "symbol": "159792",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:0923a8a1b2ed768263f4eed1b48689b38f2f3908d88a36a1e352a6e00c9fe012",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:3495a5015ada6080b46a06a670c4bbcc710b745719575c406e24b64664c19c9d",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -399,13 +1067,13 @@
     "159819": {
       "symbol": "159819",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:efb1e137f5c1567776f8dba3ff4895a9a0d808bbb26c76289dfc048629eb3181",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:c836fb2f82685ec24b59ac1253941b2b81a45fa3d838682629970cb9518ff6d1",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -416,67 +1084,874 @@
     "159915": {
       "symbol": "159915",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:938dc6424d3c3b5b1ac47d8d51530c2be7e85b437e3dfbfd3435fc1b770a0ba1",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:8808c66c6cfbe47f1dfbcdd1f50fd6d71a4177a90338f79e923d217a607ae792",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [],
       "independent_adjustment_events": [],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "159928": {
       "symbol": "159928",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:17b10428e1378dcbdb8abf16f3dc2aa4dbc43c91c7c36b8e600e90f0f840f67a",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:fd239c66c484639929e245ae85116e01127fc2bc28fb638cc4e992e9b149d6d3",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [],
       "independent_adjustment_events": [],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "159967": {
       "symbol": "159967",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:59d4db4846598171c2003fa9882ca0dbdbeac01007a55b774c6c39001b43e06a",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:454fb618c724a1eff6fa5a8043e4bcb3c3568e5e64183e00f6ed2247a3c4c1eb",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [],
       "independent_adjustment_events": [],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "159995": {
       "symbol": "159995",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:b113bd7e4ad4f46bd16818f00af56c671660440108226382223ef2bdca3f15dc",
-      "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
-      "mismatches": [],
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 640,
+      "data_version": "sha256:3820ed1dfb190cdc276a820bc126f07ebfde6ec3327712075410eb282c0217e3",
+      "crosscheck_status": "FAILED",
+      "adjustment_status": "REVIEW",
+      "mismatches": [
+        {
+          "trading_date": "2023-06-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        }
+      ],
       "adjustment_events": [],
       "independent_adjustment_events": [
         {
@@ -484,20 +1959,22 @@
           "payout": 1.504
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "510300": {
       "symbol": "510300",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:096c90c7ab78ecee51e0ce520400b4d7185e5642453aedf8a92f77cf78705d80",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:24dcd4e1338251df8ce99a7fe5855bb1885a87894566709674f97c801ae52780",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [
         {
@@ -515,10 +1992,6 @@
       ],
       "independent_adjustment_events": [
         {
-          "trading_date": "2024-01-18",
-          "payout": 0.069
-        },
-        {
           "trading_date": "2025-06-18",
           "payout": 0.088
         },
@@ -527,20 +2000,22 @@
           "payout": 0.123
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "510500": {
       "symbol": "510500",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:641038ab1c7c1f4f4bbdf756f7b8faa619f646d2b385d9560fbc3b3bd3fdd8ad",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:446af9199aa7c876cdb2b550fa7f6c19b93a1de0a71574c40955c9f9ea672109",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [
         {
@@ -578,54 +2053,60 @@
           "payout": 0.149
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "512010": {
       "symbol": "512010",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:7681c6aae20a3c527957db6587168af6a8fcbe706c8e4c8327463949636bb5ec",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:28e3f41c131f9b60a899b3e10e14f10ace59a8e7e78ce5e39abe76b5615dd892",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [],
       "independent_adjustment_events": [],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "512070": {
       "symbol": "512070",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:e10215c5ce830756c03a3dd2db0b48084a02d49fdb46461997baf0cb56533332",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:c3613a22ffb2ad8c37885b04f6b14d6200c6ace3116a44e60c099e8acc592577",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [],
       "independent_adjustment_events": [],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "512100": {
       "symbol": "512100",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:5becd8cd3229e8455dd60b74d73052d7a8e8f825d09584b23f2ddf7c9370e104",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:2f775e3dc401d8ce6dd1b4cae48bed4f8c2253d0a09e9e291c5c74e088eec4f8",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [
         {
@@ -647,37 +2128,41 @@
           "payout": 0.041
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "512170": {
       "symbol": "512170",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:aba80aa28c9a23e434c337b1bd64450cfbedcc2a8a2d43f6e7df763a96969c21",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:baec8660ec2ea31219be158c05c42d93c832c9ed48c92f4fe544e1d0785b3225",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [],
       "independent_adjustment_events": [],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "512400": {
       "symbol": "512400",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:0d5a22b97c9a651478f8630b115bcc9e681689a7ee116df819c363fef34226fb",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:186d4652a620480d53794cadbb06f1e1524a9f79fcd7a80322daeb625fca5bcd",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [
         {
@@ -707,21 +2192,824 @@
           "payout": 0.08
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "512480": {
       "symbol": "512480",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:6ca6bac39ffdfeda66e3ba473bbe536267b44565eb0c792cd3dc463618e21086",
-      "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
-      "mismatches": [],
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 640,
+      "data_version": "sha256:cb7c86f9a13670bb2901cb9b1a4a38cf3e0c8a87ec97da21c20c308ca0a2e307",
+      "crosscheck_status": "FAILED",
+      "adjustment_status": "REVIEW",
+      "mismatches": [
+        {
+          "trading_date": "2023-06-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        }
+      ],
       "adjustment_events": [],
       "independent_adjustment_events": [
         {
@@ -729,18 +3017,20 @@
           "payout": 1.35
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "512880": {
       "symbol": "512880",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:90f909bc2a85e235a4d5ac933d377f77c71920c16c8e03b46224122b6452b292",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:ec5a38d892db4a7212350c8cbb7674be65449ed74763e800848648d0183f5a7d",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -751,13 +3041,13 @@
     "513050": {
       "symbol": "513050",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:e1993c9fd5ca67a930b3df1c94cfeffa8aaaa8ee0a513b578f9fefdcbeebd16f",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:933ff2a68237e93c7b768c9cdb983b24dc0c623610b2984ae34e024a3212519a",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -768,13 +3058,13 @@
     "515120": {
       "symbol": "515120",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:247e3a7bf149cddeca653a26939e39be2ea28eeadb45918c1f4011b62c62f106",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:544e78313cf5195f5f9f496e5b33c02993a06850940cde3a2adb5a21edf04852",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -785,15 +3075,15 @@
     "515180": {
       "symbol": "515180",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:3ae7922cc93a9d281f1c13586ff472d9eeb2c6c0a54129d5c7570e6afd0c2001",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:8401a96a0e5700cf0dbbe0ef37354542858d55ce03bbba520e1a0955528b797c",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [
         {
@@ -811,10 +3101,6 @@
       ],
       "independent_adjustment_events": [
         {
-          "trading_date": "2023-10-24",
-          "payout": 0.062
-        },
-        {
           "trading_date": "2024-10-18",
           "payout": 0.063
         },
@@ -823,21 +3109,824 @@
           "payout": 0.061
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "515880": {
       "symbol": "515880",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:992df000ae7f55bc89993349e365284c3af1953eb8cc21114ab50365351d6c63",
-      "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
-      "mismatches": [],
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 640,
+      "data_version": "sha256:499439b5e0b7e82dc3b74b38f06356267120fdef97fed79ebf03ab1349e092ba",
+      "crosscheck_status": "FAILED",
+      "adjustment_status": "REVIEW",
+      "mismatches": [
+        {
+          "trading_date": "2023-06-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        }
+      ],
       "adjustment_events": [],
       "independent_adjustment_events": [
         {
@@ -849,21 +3938,824 @@
           "payout": 0.789
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "516160": {
       "symbol": "516160",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:450ecb11d993f358acd99867a8e3841d0e9db0f92a288b7f432342efb1550d32",
-      "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
-      "mismatches": [],
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 640,
+      "data_version": "sha256:1efd569a7019d715cc824f2ec126f8d3d2daf27f4e3c8943537431b225ebf97a",
+      "crosscheck_status": "FAILED",
+      "adjustment_status": "REVIEW",
+      "mismatches": [
+        {
+          "trading_date": "2023-06-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-06-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-07-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-08-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        }
+      ],
       "adjustment_events": [],
       "independent_adjustment_events": [
         {
@@ -871,18 +4763,20 @@
           "payout": -1.111
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "562500": {
       "symbol": "562500",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:7b54a37213226e6485dabd3c594ed5a48e3ffbcbb2da8dd69a05a2373cbae88c",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:6f4f1bfbd19ab3c789b2a7fafa9d96057b62cbb83eea86cc44cac1e71d11cc90",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -893,13 +4787,13 @@
     "563360": {
       "symbol": "563360",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
       "sample_start": "2024-10-15",
-      "sample_end": "2026-09-23",
-      "bar_count": 476,
-      "compared_count": 476,
-      "data_version": "sha256:b13679a22d3753f367517cd3e142e6bdb6d18cb583126fea3386e0a6b2ad201e",
+      "sample_end": "2026-10-08",
+      "bar_count": 481,
+      "compared_count": 481,
+      "data_version": "sha256:6bebc15e0a12f70e0f7fcda62cb97d64c89fcc92d7d02223dccf9aaece727e8d",
       "crosscheck_status": "PASSED",
       "adjustment_status": "VERIFIED",
       "mismatches": [],
@@ -910,33 +4804,576 @@
     "588000": {
       "symbol": "588000",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
-      "sample_start": "2023-08-08",
-      "sample_end": "2026-09-23",
-      "bar_count": 760,
-      "compared_count": 760,
-      "data_version": "sha256:743cdace3547df79a730d8a5605eff3a63ec529f50e0aaa67febff851478c59b",
+      "sample_start": "2023-06-16",
+      "sample_end": "2026-10-08",
+      "bar_count": 800,
+      "compared_count": 800,
+      "data_version": "sha256:0191d9193aebdade53a7ff13eb605ef72bc40896bef6a6c2fb215077b889b107",
       "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
+      "adjustment_status": "REVIEW",
       "mismatches": [],
       "adjustment_events": [],
       "independent_adjustment_events": [],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     },
     "588020": {
       "symbol": "588020",
       "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-      "checked_at": "2026-09-24T10:15:43+08:00",
+      "checked_at": "2026-10-09T10:57:31+08:00",
       "calculation_version": "CROSSCHECK_V1",
       "sample_start": "2023-08-31",
-      "sample_end": "2026-09-23",
-      "bar_count": 743,
-      "compared_count": 743,
-      "data_version": "sha256:603dec8cfa84252c5c137deabe080698aa1203d9866d70197545f5b0401e3e23",
-      "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
-      "mismatches": [],
+      "sample_end": "2026-10-08",
+      "bar_count": 748,
+      "compared_count": 640,
+      "data_version": "sha256:0908263e2b18684f56161613a7ae39db9334fbd300b706de09f519934fa6cd60",
+      "crosscheck_status": "FAILED",
+      "adjustment_status": "REVIEW",
+      "mismatches": [
+        {
+          "trading_date": "2023-08-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-09-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-10-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-11-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-13",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-14",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-20",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-21",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-27",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-28",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2023-12-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-03",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-04",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-08",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-09",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-10",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-11",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-12",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-15",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-16",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-17",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-18",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-19",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-22",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-23",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-24",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-25",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-26",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-29",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-30",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-01-31",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-01",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-02",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-05",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-06",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        },
+        {
+          "trading_date": "2024-02-07",
+          "field": "bar",
+          "reason": "MISSING_INDEPENDENT_ADJUSTED_BAR"
+        }
+      ],
       "adjustment_events": [],
       "independent_adjustment_events": [
         {
@@ -944,7 +5381,9 @@
           "payout": 2.065
         }
       ],
-      "warnings": []
+      "warnings": [
+        "INDEPENDENT_ADJUSTED_INCOMPLETE"
+      ]
     }
   }
 }

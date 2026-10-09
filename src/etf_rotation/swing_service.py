@@ -2713,8 +2713,14 @@ class SwingService:
         except Exception:
             self._pending_instruments = {}
             self._errors["pending_instruments"] = "待接入标的登记不可用，请核对本地文件"
+        snapshot_dir = self.paths.portfolio_snapshot.parent
+        current_path = snapshot_dir / "holdings_snapshot_current.json"
+        legacy_path = snapshot_dir / "holdings_snapshot.json"
+        # The current report is a separate immutable file. Fall back to the
+        # legacy filename for existing installations, without overwriting it.
+        source_path = current_path if current_path.exists() else legacy_path
         self._holdings_snapshot = read_holdings_snapshot(
-            self.paths.portfolio_snapshot.with_name("holdings_snapshot.json"),
+            source_path,
             {**self._metadata, **self._pending_instruments},
         )
 

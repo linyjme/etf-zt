@@ -70,6 +70,27 @@ class HoldingsSnapshotTests(unittest.TestCase):
         self.assertIsNone(view["snapshot"])
         self.assertFalse(view["strategy_ready"])
 
+    def test_empty_positions_are_valid_for_a_cleared_account_report(self):
+        payload = snapshot_fixture()
+        payload["snapshot_id"] = "synthetic-cleared-account"
+        payload["recorded_at"] = "2026-10-09T11:35:07+08:00"
+        payload["reporting_date"] = "2026-10-09"
+        payload["positions_as_of"] = "2026-10-09T11:35:07+08:00"
+        payload["source"] = "synthetic cleared-account report"
+        payload["positions"] = []
+        payload["account"] = {
+            "reported_total_assets": None,
+            "reported_securities_value": None,
+            "available_cash": None,
+            "other_assets": None,
+            "original_capital": None,
+            "additional_loss_budget": None,
+        }
+        result = import_holdings_snapshot(self.path, payload, self.metadata)
+        self.assertEqual(result["status"], "SNAPSHOT_ONLY")
+        self.assertEqual(result["snapshot"]["positions"], [])
+        self.assertEqual(read_holdings_snapshot(self.path, self.metadata)["snapshot"], payload)
+
     def test_snapshot_preserves_unknowns_and_rounded_costs(self):
         result = import_holdings_snapshot(self.path, snapshot_fixture(), self.metadata)
         self.assertEqual(result["status"], "SNAPSHOT_ONLY")
