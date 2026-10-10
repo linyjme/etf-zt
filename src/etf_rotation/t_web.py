@@ -42,6 +42,8 @@ from .t_monitor import (
 )
 from .t_page import PAGE
 from .pr_page import PR_PAGE
+from .macro_page import MACRO_PAGE
+from .macro_regime import MacroCollector, MacroRegimeService
 from .industry_page import INDUSTRY_PAGE, INDUSTRY_SWING_PAGE
 from .quote_quality import (
     MinuteQuarantineStore,
@@ -1510,6 +1512,7 @@ class MonitorServer(ThreadingHTTPServer):
         self.application = application
         self.swing_application = swing_application
         self.notifications = None
+        self.macro_regime: MacroRegimeService | None = None
         self.notification_error = None
         self.request_deadline_seconds = _REQUEST_SOCKET_TIMEOUT_SECONDS
         self.response_socket_timeout_seconds = _RESPONSE_SOCKET_TIMEOUT_SECONDS
@@ -1662,6 +1665,14 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             if self._reject_unexpected_query(parsed.query):
                 return
             self._send(HTTPStatus.OK, PR_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/macro":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            self._send(HTTPStatus.OK, MACRO_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/api/macro":
+            if self._reject_unexpected_query(parsed.query):
+                return
+            self._macro_regime()
         elif path == "/api/valuations":
             if self._reject_unexpected_query(parsed.query):
                 return
@@ -2266,6 +2277,23 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             self._propagate_disconnect(error)
             self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
 
+    def _macro_regime(self) -> None:
+        service = getattr(self.server, "macro_regime", None)
+        if service is None:
+            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                "error": "macro_unavailable", "message": "宏观指标服务未启用", "read_only": True,
+            })
+            return
+        try:
+            self._json(HTTPStatus.OK, service.snapshot())
+        except Exception as error:  # noqa: BLE001 - read-only page must not take the server down
+            self._json(HTTPStatus.OK, {
+                "generated_at": datetime.now(SHANGHAI).isoformat(), "read_only": True,
+                "erp": {"status": "UNAVAILABLE", "reason": type(error).__name__},
+                "style_ratio": {"status": "UNAVAILABLE", "reason": type(error).__name__},
+                "combined": {"status": "UNAVAILABLE"}, "errors": {"service": type(error).__name__},
+            })
+
     def _valuation(self, symbol: str) -> None:
         try:
             self._json(HTTPStatus.OK, self.server.application.valuation(symbol))
@@ -2454,6 +2482,12 @@ def create_server(
         valuation_path=valuation_path,
     )
     server = MonitorServer((host, port), application, swing_application)
+    server.macro_regime = MacroRegimeService(
+        swing_paths.daily_history.with_name("macro_series.jsonl"),
+        swing_paths.daily_history,
+        None if swing_collector is None else MacroCollector(),
+        clock=(swing_clock or clock or application.clock),
+    )
     try:
         application.start_refresh()
         swing_application.start_refresh()

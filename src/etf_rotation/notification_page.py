@@ -19,7 +19,7 @@ nav[aria-label="监控模式"]{display:flex;flex-wrap:wrap;gap:8px;margin-bottom
 </head>
 <body>
 <main class="shell">
-<nav aria-label="监控模式"><a href="/swing">波段监控</a><a href="/">做T监控</a><a href="/pr">PR估值</a><a href="/notifications" aria-current="page">通知中心</a></nav>
+<nav aria-label="监控模式"><a href="/swing">波段监控</a><a href="/">做T监控</a><a href="/pr">PR估值</a><a href="/macro">股债与风格</a><a href="/notifications" aria-current="page">通知中心</a></nav>
 <header><h1>通知中心</h1><p class="subtitle">持仓 ETF 异动与监控故障 · 独立通知，不改变策略或账户</p></header>
 <div id="page-error" class="error" role="alert" hidden></div>
 <section class="panel" id="notification-status" aria-labelledby="status-title">

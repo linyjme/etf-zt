@@ -25,7 +25,7 @@ SWING_PAGE = r"""<!doctype html>
 </head>
 <body>
 <main class="shell">
-  <nav aria-label="监控模式"><a href="/swing" aria-current="page">波段监控</a><a href="/">做T监控</a><a href="/pr">PR估值</a><a href="/notifications">通知中心</a></nav>
+  <nav aria-label="监控模式"><a href="/swing" aria-current="page">波段监控</a><a href="/">做T监控</a><a href="/pr">PR估值</a><a href="/macro">股债与风格</a><a href="/notifications">通知中心</a></nav>
   <header class="topbar"><div><h1>指数ETF波段监控</h1><div class="subtitle">趋势过滤 · 回调计划 · 手工成交确认</div></div><div class="guard"><span class="badge">仅监控，不自动交易</span><button id="notification-permission" class="button secondary" type="button">通知需点击授权</button></div></header>
   <div id="swing-errors" role="alert"></div>
   <div id="swing-live-status" aria-live="polite">正在载入波段状态</div>
