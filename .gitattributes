@@ -1,0 +1,3 @@
+var/swing/*.jsonl text eol=lf
+var/monitor/*.jsonl text eol=lf
+var/monitor/history/*/*.jsonl text eol=lf
