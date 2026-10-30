@@ -79,6 +79,10 @@ def _rsi_wilder(values: Sequence[float], period: int = 14) -> float | None:
     for index in range(period, len(changes)):
         average_gain = ((average_gain * (period - 1)) + gains[index]) / period
         average_loss = ((average_loss * (period - 1)) + losses[index]) / period
+    return _rsi_from_averages(average_gain, average_loss)
+
+
+def _rsi_from_averages(average_gain: float, average_loss: float) -> float:
     if average_gain == 0.0 and average_loss == 0.0:
         return 50.0
     if average_loss == 0.0:
@@ -89,20 +93,194 @@ def _rsi_wilder(values: Sequence[float], period: int = 14) -> float | None:
     return 100.0 - (100.0 / (1.0 + relative_strength))
 
 
-def _kdj(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float]) -> dict[str, float] | None:
-    if len(closes) < 9:
-        return None
+def _positive_period(period: int, field: str) -> int:
+    if type(period) is not int or period <= 0:
+        raise IndicatorInputError(f"{field} must be a positive integer")
+    return period
+
+
+def rsi_series(closes: Sequence[float], period: int = 14) -> list[float | None]:
+    """Wilder RSI aligned to closes. Warmup bars are None.
+
+    The last finite value matches ``_rsi_wilder`` for the same period.
+    """
+    period = _positive_period(period, "period")
+    count = len(closes)
+    result: list[float | None] = [None] * count
+    if count <= period:
+        return result
+    changes = [closes[index] - closes[index - 1] for index in range(1, count)]
+    gains = [max(change, 0.0) for change in changes]
+    losses = [max(-change, 0.0) for change in changes]
+    average_gain = _mean(gains[:period])
+    average_loss = _mean(losses[:period])
+    result[period] = _rsi_from_averages(average_gain, average_loss)
+    for index in range(period, len(changes)):
+        average_gain = ((average_gain * (period - 1)) + gains[index]) / period
+        average_loss = ((average_loss * (period - 1)) + losses[index]) / period
+        result[index + 1] = _rsi_from_averages(average_gain, average_loss)
+    return result
+
+
+def kdj_series(
+    highs: Sequence[float],
+    lows: Sequence[float],
+    closes: Sequence[float],
+    rsv_period: int = 9,
+    k_smooth: int = 3,
+    d_smooth: int = 3,
+) -> tuple[list[float], list[float], list[float]]:
+    """Return K, D and J for every bar, seeded at 50 like the snapshot KDJ."""
+    rsv_period = _positive_period(rsv_period, "rsv_period")
+    k_smooth = _positive_period(k_smooth, "k_smooth")
+    d_smooth = _positive_period(d_smooth, "d_smooth")
+    if not (len(highs) == len(lows) == len(closes)):
+        raise IndicatorInputError("KDJ inputs must have the same length")
+    k_values: list[float] = []
+    d_values: list[float] = []
+    j_values: list[float] = []
     k = 50.0
     d = 50.0
+    k_weight = (k_smooth - 1) / k_smooth
+    d_weight = (d_smooth - 1) / d_smooth
     for index, close in enumerate(closes):
-        start = max(0, index - 8)
+        start = max(0, index - rsv_period + 1)
         window_high = max(highs[start:index + 1])
         window_low = min(lows[start:index + 1])
         span = window_high - window_low
         rsv = 50.0 if span <= 0.0 else (close - window_low) / span * 100.0
-        k = (2.0 * k + rsv) / 3.0
-        d = (2.0 * d + k) / 3.0
-    return {"k": k, "d": d, "j": 3.0 * k - 2.0 * d}
+        k = k_weight * k + rsv / k_smooth
+        d = d_weight * d + k / d_smooth
+        k_values.append(k)
+        d_values.append(d)
+        j_values.append(3.0 * k - 2.0 * d)
+    return k_values, d_values, j_values
+
+
+def dmi_series(
+    highs: Sequence[float],
+    lows: Sequence[float],
+    closes: Sequence[float],
+    period: int = 14,
+) -> tuple[list[float | None], list[float | None]]:
+    """Wilder +DI and -DI aligned to closes. Warmup bars are None."""
+    period = _positive_period(period, "period")
+    if not (len(highs) == len(lows) == len(closes)):
+        raise IndicatorInputError("DMI inputs must have the same length")
+    count = len(closes)
+    plus_di: list[float | None] = [None] * count
+    minus_di: list[float | None] = [None] * count
+    if count <= period:
+        return plus_di, minus_di
+    true_ranges: list[float] = []
+    plus_moves: list[float] = []
+    minus_moves: list[float] = []
+    for index in range(1, count):
+        up_move = highs[index] - highs[index - 1]
+        down_move = lows[index - 1] - lows[index]
+        plus_moves.append(up_move if up_move > down_move and up_move > 0.0 else 0.0)
+        minus_moves.append(down_move if down_move > up_move and down_move > 0.0 else 0.0)
+        true_ranges.append(max(
+            highs[index] - lows[index],
+            abs(highs[index] - closes[index - 1]),
+            abs(lows[index] - closes[index - 1]),
+        ))
+    smooth_range = sum(true_ranges[:period])
+    smooth_plus = sum(plus_moves[:period])
+    smooth_minus = sum(minus_moves[:period])
+
+    def _write(bar_index: int) -> None:
+        if smooth_range <= 0.0:
+            plus_di[bar_index] = 0.0
+            minus_di[bar_index] = 0.0
+            return
+        plus_di[bar_index] = 100.0 * smooth_plus / smooth_range
+        minus_di[bar_index] = 100.0 * smooth_minus / smooth_range
+
+    _write(period)
+    for index in range(period, len(true_ranges)):
+        smooth_range = smooth_range - (smooth_range / period) + true_ranges[index]
+        smooth_plus = smooth_plus - (smooth_plus / period) + plus_moves[index]
+        smooth_minus = smooth_minus - (smooth_minus / period) + minus_moves[index]
+        _write(index + 1)
+    return plus_di, minus_di
+
+
+def adx_series(
+    plus_di: Sequence[float | None],
+    minus_di: Sequence[float | None],
+    period: int = 14,
+) -> list[float | None]:
+    """Wilder ADX aligned to the DI series. Warmup bars are None."""
+    period = _positive_period(period, "period")
+    count = len(plus_di)
+    if count != len(minus_di):
+        raise IndicatorInputError("ADX inputs must have the same length")
+    directional = [None] * count
+    for index, (plus, minus) in enumerate(zip(plus_di, minus_di)):
+        if plus is None or minus is None or plus + minus <= 0.0:
+            continue
+        directional[index] = 100.0 * abs(plus - minus) / (plus + minus)
+    result: list[float | None] = [None] * count
+    finite = [index for index, value in enumerate(directional) if value is not None]
+    if len(finite) < period:
+        return result
+    seed_indexes = finite[:period]
+    smoothed = sum(float(directional[index]) for index in seed_indexes) / period
+    result[seed_indexes[-1]] = smoothed
+    for index in finite[period:]:
+        smoothed = ((smoothed * (period - 1)) + float(directional[index])) / period
+        result[index] = smoothed
+    return result
+
+
+def macd_series(
+    closes: Sequence[float],
+    fast: int = 6,
+    slow: int = 13,
+    signal: int = 5,
+) -> tuple[list[float], list[float], list[float]]:
+    """DIF, DEA and histogram. Histogram is DIF minus DEA, so its sign is the cross."""
+    fast = _positive_period(fast, "fast")
+    slow = _positive_period(slow, "slow")
+    signal = _positive_period(signal, "signal")
+    if fast >= slow:
+        raise IndicatorInputError("MACD fast period must be shorter than slow period")
+    dif = [
+        short - long
+        for short, long in zip(_ema(closes, fast), _ema(closes, slow))
+    ]
+    dea = _ema(dif, signal)
+    histogram = [value - average for value, average in zip(dif, dea)]
+    return dif, dea, histogram
+
+
+def classify_regimes(closes: Sequence[float]) -> list[str | None]:
+    """Label each day UP, DOWN or RANGE from its own close and MA60.
+
+    A day is UP only when close is above MA60 and MA60 is above its value 10
+    days earlier. DOWN is the mirror. Everything else that has both averages
+    is RANGE. Earlier days stay None. The three labels do not overlap.
+    """
+    labels: list[str | None] = [None] * len(closes)
+    for index in range(69, len(closes)):
+        average = _mean(closes[index - 59:index + 1])
+        previous_average = _mean(closes[index - 69:index - 9])
+        close = closes[index]
+        if close > average and average > previous_average:
+            labels[index] = "UP"
+        elif close < average and average < previous_average:
+            labels[index] = "DOWN"
+        else:
+            labels[index] = "RANGE"
+    return labels
+
+
+def _kdj(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float]) -> dict[str, float] | None:
+    if len(closes) < 9:
+        return None
+    k_values, d_values, j_values = kdj_series(highs, lows, closes)
+    return {"k": k_values[-1], "d": d_values[-1], "j": j_values[-1]}
 
 
 def _none_sections() -> dict[str, dict[str, None]]:
