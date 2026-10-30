@@ -51,6 +51,8 @@ GROWTH_PROXY_SYMBOL = "159915"    # 创业板ETF
 DIVIDEND_PROXY_SYMBOL = "515180"  # 中证红利ETF
 
 ERP_WINDOW_DAYS = 2500        # ~10 trading years
+ERP_5Y_DAYS = 1250
+ERP_3Y_DAYS = 750
 ERP_MINIMUM_DAYS = 1700       # ~7 years; must span 2018 and 2021 extremes
 RATE_CORRECTION_GAP = 15.0    # ERP pct − PE cheapness pct beyond this is rate-driven
 STYLE_WINDOW_DAYS = 750       # ~3 trading years
@@ -323,6 +325,22 @@ def _downgrade(table: Sequence[tuple], key: str) -> tuple:
     return table[min(index + 1, len(table) - 1)]
 
 
+def _percentile_band(table: Sequence[tuple], key: str) -> tuple[float, float]:
+    """Inclusive lower bound and exclusive upper bound of a tier, as percentiles."""
+    for index, row in enumerate(table):
+        if row[1] == key:
+            upper = 100.0 if index == 0 else float(table[index - 1][0])
+            return float(row[0]), upper
+    return float(table[-1][0]), 100.0
+
+
+def _recent_percentile(rows: Sequence[tuple], days: int, current: float) -> float | None:
+    sample = [row[3] for row in rows[-days:]]
+    if len(sample) < min(days, 200):
+        return None
+    return round(percentile_rank(sample, current), 1)
+
+
 def compute_erp(
     pe_points: Mapping[date, SeriesPoint],
     yield_points: Mapping[date, SeriesPoint],
@@ -354,13 +372,15 @@ def compute_erp(
             "sample_days": len(rows), "minimum_days": minimum_days, "read_only": True,
         }
     as_of, pe, yield_value, erp = rows[-1]
-    erp_pct = percentile_rank([row[3] for row in rows], erp)
+    erp_values = [row[3] for row in rows]
+    erp_pct = percentile_rank(erp_values, erp)
     pe_pct = percentile_rank([row[1] for row in rows], pe)
     pe_cheapness = 100.0 - pe_pct
     gap = erp_pct - pe_cheapness
     raw_tier = _tier(ERP_TIERS, erp_pct)
     rate_driven = gap > RATE_CORRECTION_GAP
     tier = _downgrade(ERP_TIERS, raw_tier[1]) if rate_driven else raw_tier
+    adopted_low, adopted_high = _percentile_band(ERP_TIERS, tier[1])
     pe_date = as_of
     yield_date = max(day for day in yield_dates if day <= as_of)
     return {
@@ -373,6 +393,9 @@ def compute_erp(
         "cn10y_as_of": yield_date.isoformat(),
         "erp_pct": round(erp, 4),
         "erp_percentile": round(erp_pct, 1),
+        "erp_percentile_10y": round(erp_pct, 1),
+        "erp_percentile_5y": _recent_percentile(rows, ERP_5Y_DAYS, erp),
+        "erp_percentile_3y": _recent_percentile(rows, ERP_3Y_DAYS, erp),
         "pe_percentile": round(pe_pct, 1),
         "pe_cheapness_percentile": round(pe_cheapness, 1),
         "rate_correction_gap": round(gap, 1),
@@ -380,6 +403,8 @@ def compute_erp(
         "raw_tier": raw_tier[1],
         "tier": tier[1],
         "tier_label": tier[2],
+        "adopted_percentile_low": adopted_low,
+        "adopted_percentile_high": adopted_high,
         "equity_target_pct": tier[3],
         "dca_multiplier": tier[4],
         "action": tier[5],
@@ -424,6 +449,23 @@ def compute_style_ratio(
     previous_average = sum(previous_trend) / len(previous_trend) if len(previous_trend) == trend_days else None
     above_average = current > moving_average
     average_falling = previous_average is not None and moving_average < previous_average
+    ratio_vs_ma20_pct = (current / moving_average - 1.0) * 100.0
+    ma20_slope_pct = (
+        (moving_average / previous_average - 1.0) * 100.0
+        if previous_average is not None and previous_average != 0
+        else None
+    )
+    ratio_change_20d_pct = (
+        (current / window[-trend_days - 1] - 1.0) * 100.0
+        if len(window) > trend_days
+        else None
+    )
+    comparison_days = min(60, len(window) - 1)
+    ratio_change_60d_pct = (
+        (current / window[-comparison_days - 1] - 1.0) * 100.0
+        if comparison_days > 0
+        else None
+    )
     switch_confirmed = (
         tier[1] == "GROWTH_HOT" and not above_average and average_falling
     )
@@ -437,6 +479,10 @@ def compute_style_ratio(
         "ratio_normalized": round(current, 4),
         "ratio_percentile": round(pct, 1),
         "ratio_ma20": round(moving_average, 4),
+        "ratio_vs_ma20_pct": round(ratio_vs_ma20_pct, 2),
+        "ratio_change_20d_pct": round(ratio_change_20d_pct, 2) if ratio_change_20d_pct is not None else None,
+        "ratio_change_60d_pct": round(ratio_change_60d_pct, 2) if ratio_change_60d_pct is not None else None,
+        "ma20_slope_pct": round(ma20_slope_pct, 2) if ma20_slope_pct is not None else None,
         "above_ma20": above_average,
         "ma20_falling": average_falling,
         "window_high": round(window[peak_index], 4),

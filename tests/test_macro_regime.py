@@ -79,6 +79,9 @@ class IndicatorMathTests(unittest.TestCase):
         keys = [row[1] for row in ERP_TIERS]
         self.assertEqual(keys.index(corrected["tier"]), min(keys.index(corrected["raw_tier"]) + 1, len(keys) - 1))
         self.assertEqual(corrected["cn10y_as_of"], latest.isoformat())
+        self.assertLess(corrected["adopted_percentile_low"], corrected["erp_percentile"])
+        self.assertIsNotNone(corrected["erp_percentile_5y"])
+        self.assertIsNotNone(corrected["erp_percentile_3y"])
 
     def test_erp_uses_latest_yield_on_or_before_each_pe_date(self) -> None:
         days = _trading_days(1200)
