@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-10-19T15:14:58+08:00",
+  "generated_at": "2026-10-29T15:16:02+08:00",
   "history_path": "F:\\plan\\money\\zt\\var\\swing\\daily_quotes.jsonl",
   "watchlist_path": "F:\\plan\\money\\zt\\data\\swing\\watchlist.json",
   "runtime_history_unchanged": true,
   "items": [
     {
       "symbol": "510300",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -19,15 +19,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:45b70ec4483653583b8431bf9f59a645446c105eee62460dd439a41a6f714edd",
+      "data_version": "sha256:54a7dae2247eb0bcd0491603473d6d436b56ed38aee4bb120dfeef17cc6301e1",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 3,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -54,9 +54,9 @@
     },
     {
       "symbol": "510500",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -66,15 +66,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:f945c6f71548b6a94dcc54dfde007a24cd7e274f9a5edd9ac10683c6aa4311e9",
+      "data_version": "sha256:cd23f70a0ddf4c12c68a8e835853d8ab27ada615ea39ccf46caef453d629b8f6",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 4,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -101,28 +101,35 @@
     },
     {
       "symbol": "563360",
-      "bar_count": 488,
+      "bar_count": 496,
       "history_start": "2024-10-15",
-      "history_end": "2026-10-19",
-      "research_status": "SHORT_SAMPLE",
+      "history_end": "2026-10-29",
+      "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [],
-      "data_version": "sha256:31bb0520855acf36a5ed64dabd6d191f68afb5671e7a252f5e0c4c210768e400",
-      "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
-      "amount_quality": "PROVIDER_REPORTED",
+      "warnings": [
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED",
+        "CROSSCHECK_FAILED"
+      ],
+      "data_version": "sha256:f05bbdcdd617232f421fda75e144ba05e4084e1e143ed4a762c9976adb5edc34",
+      "crosscheck_status": "FAILED",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
-        "compared_count": 488,
-        "mismatch_count": 0,
+        "checked_at": "2026-10-29T15:11:38+08:00",
+        "compared_count": 496,
+        "mismatch_count": 1,
         "adjustment_events": 0,
-        "warnings": []
+        "warnings": [
+          "CROSSCHECK_SOURCE_NOT_INDEPENDENT"
+        ]
       },
       "source": [
-        "东方财富 kline (push2his.eastmoney.com)"
+        "东方财富 kline (push2his.eastmoney.com)",
+        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -140,9 +147,9 @@
     },
     {
       "symbol": "512100",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -152,15 +159,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:574c1ba89aae8acf3b23c9d0aacf49a783ee11a028dda351fc7e4b8815276f84",
+      "data_version": "sha256:a1ab3383f8fbd5423b63724eccedf7512911971f1f8d72a5fee381635344be6e",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 2,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -187,9 +194,9 @@
     },
     {
       "symbol": "159915",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -199,15 +206,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:dfa6e3cc93b15aeda70928580ce6c6ec6ab73f052a306b6d67bdd2eb2754aa75",
+      "data_version": "sha256:59f8efd9d888947bb2ddd99499dd581be715a0e36491e1eefbc6929519612840",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -234,9 +241,9 @@
     },
     {
       "symbol": "588000",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -246,15 +253,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:df5841fa03b1c68437920b459eab9d9364f903f2b551586115e9d34c3ac132c5",
+      "data_version": "sha256:7301d3c5e7df579364a803bce9dbc9ad04552516fe47746794cb364d3726047a",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -281,9 +288,9 @@
     },
     {
       "symbol": "515180",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -293,15 +300,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:a2e424b612f11acd2313299bb38d3136d608ea074b36229c818778ba0bb300b0",
+      "data_version": "sha256:368880cb9f3f5bcdf8198273bfb3c2b26da24c3129c27cbd481c42ab39d60155",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 5,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -328,32 +335,36 @@
     },
     {
       "symbol": "159307",
-      "bar_count": 600,
+      "bar_count": 608,
       "history_start": "2024-04-25",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
       "warnings": [
-        "ADJUSTMENT_REVIEW"
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED",
+        "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:ca683582994d8b44bc11c016f957f562263b7ea4c09ff036debb81213e70638a",
-      "crosscheck_status": "PASSED",
+      "data_version": "sha256:c2bba0da6acf9707fdbed2f9ad53f52405df6fb0a8227ed7b7a52dc0a64bd238",
+      "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
-      "amount_quality": "PROVIDER_REPORTED",
+      "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
-        "compared_count": 600,
-        "mismatch_count": 0,
+        "checked_at": "2026-10-29T15:11:38+08:00",
+        "compared_count": 608,
+        "mismatch_count": 1,
         "adjustment_events": 9,
         "warnings": [
+          "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
           "INDEPENDENT_ADJUSTED_INCOMPLETE"
         ]
       },
       "source": [
-        "东方财富 kline (push2his.eastmoney.com)"
+        "东方财富 kline (push2his.eastmoney.com)",
+        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -371,9 +382,9 @@
     },
     {
       "symbol": "159792",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -383,15 +394,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:9732ee11812003c4e8b32419df2be67c81e01356af5e474d14baef92f49fdc17",
+      "data_version": "sha256:331f687f6aeb8048092e912a92523f40f0bf6265505b342369f2b10bfca25c6b",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -418,9 +429,9 @@
     },
     {
       "symbol": "513050",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -430,15 +441,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:21cdafd5f49cc930061f9dfc4112464067d9c988516371851d602183cd9c535d",
+      "data_version": "sha256:cf7a441a9095b3ff545a8e916c60ff3a70ad2b85a0859a319c7ae009cd13cb81",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -465,9 +476,9 @@
     },
     {
       "symbol": "159781",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -477,15 +488,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:805725af8dbbe6b33e3c8158bcaeef56b2b5be853d066a93830f50795e5c69d8",
+      "data_version": "sha256:8ba9ca4082b503a8c4eb2a6ccb79ed5895d3bdb9521f1a7f25e476a4013e8ea3",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -512,28 +523,35 @@
     },
     {
       "symbol": "159201",
-      "bar_count": 398,
+      "bar_count": 406,
       "history_start": "2025-02-27",
-      "history_end": "2026-10-19",
-      "research_status": "SHORT_SAMPLE",
+      "history_end": "2026-10-29",
+      "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [],
-      "data_version": "sha256:e0bce3e9fdca826f99c6cddd1ebb4781c5d4fd71dc759b69052579464611f778",
-      "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
-      "amount_quality": "PROVIDER_REPORTED",
+      "warnings": [
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED",
+        "CROSSCHECK_FAILED"
+      ],
+      "data_version": "sha256:cd08f2d29f83ddfe8be962777d1b84335b78bb5898a23d4d8be074be94f19c41",
+      "crosscheck_status": "FAILED",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
-        "compared_count": 398,
-        "mismatch_count": 0,
+        "checked_at": "2026-10-29T15:11:38+08:00",
+        "compared_count": 406,
+        "mismatch_count": 1,
         "adjustment_events": 0,
-        "warnings": []
+        "warnings": [
+          "CROSSCHECK_SOURCE_NOT_INDEPENDENT"
+        ]
       },
       "source": [
-        "东方财富 kline (push2his.eastmoney.com)"
+        "东方财富 kline (push2his.eastmoney.com)",
+        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -551,28 +569,35 @@
     },
     {
       "symbol": "159263",
-      "bar_count": 310,
+      "bar_count": 318,
       "history_start": "2025-07-08",
-      "history_end": "2026-10-19",
-      "research_status": "SHORT_SAMPLE",
+      "history_end": "2026-10-29",
+      "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [],
-      "data_version": "sha256:20c9e46d494a92b6da54fe17372e5944614983fa2931fbfae175c975e51da1ff",
-      "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
-      "amount_quality": "PROVIDER_REPORTED",
+      "warnings": [
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED",
+        "CROSSCHECK_FAILED"
+      ],
+      "data_version": "sha256:ece0ffef94ac980666ea25ac0a5710154eab60a36bac6ef3d0ef64ca95ae48ec",
+      "crosscheck_status": "FAILED",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
-        "compared_count": 310,
-        "mismatch_count": 0,
+        "checked_at": "2026-10-29T15:11:38+08:00",
+        "compared_count": 318,
+        "mismatch_count": 1,
         "adjustment_events": 0,
-        "warnings": []
+        "warnings": [
+          "CROSSCHECK_SOURCE_NOT_INDEPENDENT"
+        ]
       },
       "source": [
-        "东方财富 kline (push2his.eastmoney.com)"
+        "东方财富 kline (push2his.eastmoney.com)",
+        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -590,28 +615,35 @@
     },
     {
       "symbol": "159259",
-      "bar_count": 273,
+      "bar_count": 281,
       "history_start": "2025-08-28",
-      "history_end": "2026-10-19",
-      "research_status": "SHORT_SAMPLE",
+      "history_end": "2026-10-29",
+      "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
-      "warnings": [],
-      "data_version": "sha256:cf216529f00ffbbd5006377d02ccc0831b68b0721d51893c771f718a5db1b828",
-      "crosscheck_status": "PASSED",
-      "adjustment_status": "VERIFIED",
-      "amount_quality": "PROVIDER_REPORTED",
+      "warnings": [
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED",
+        "CROSSCHECK_FAILED"
+      ],
+      "data_version": "sha256:410bc3b7c67b761b0d96f04bd06c8c760098a80ea670554e1a95210d97523693",
+      "crosscheck_status": "FAILED",
+      "adjustment_status": "REVIEW",
+      "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
-        "compared_count": 273,
-        "mismatch_count": 0,
+        "checked_at": "2026-10-29T15:11:38+08:00",
+        "compared_count": 281,
+        "mismatch_count": 1,
         "adjustment_events": 0,
-        "warnings": []
+        "warnings": [
+          "CROSSCHECK_SOURCE_NOT_INDEPENDENT"
+        ]
       },
       "source": [
-        "东方财富 kline (push2his.eastmoney.com)"
+        "东方财富 kline (push2his.eastmoney.com)",
+        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -629,32 +661,36 @@
     },
     {
       "symbol": "159209",
-      "bar_count": 380,
+      "bar_count": 388,
       "history_start": "2025-03-25",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
       "duplicate_dates": [],
       "warnings": [
-        "ADJUSTMENT_REVIEW"
+        "ADJUSTMENT_REVIEW",
+        "AMOUNT_ESTIMATED",
+        "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:fbc7ff67e662f64dc7b7b364563fe5c87f6b8ce9aa48b625f497a0074307545c",
-      "crosscheck_status": "PASSED",
+      "data_version": "sha256:54e9431c7d3c50a098f2514045cb79942c32331c98b9fac0aef71d8155f1119a",
+      "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
-      "amount_quality": "PROVIDER_REPORTED",
+      "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
-        "compared_count": 380,
-        "mismatch_count": 0,
-        "adjustment_events": 15,
+        "checked_at": "2026-10-29T15:11:38+08:00",
+        "compared_count": 388,
+        "mismatch_count": 1,
+        "adjustment_events": 16,
         "warnings": [
+          "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
           "INDEPENDENT_ADJUSTED_INCOMPLETE"
         ]
       },
       "source": [
-        "东方财富 kline (push2his.eastmoney.com)"
+        "东方财富 kline (push2his.eastmoney.com)",
+        "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
       ],
       "price_basis": "adjusted_ohlc",
       "metadata_status": "VERIFIED",
@@ -672,9 +708,9 @@
     },
     {
       "symbol": "512480",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -684,15 +720,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:4c1aca47b9dc8cad53d137ff44d1e64b21ed06673a6fe4a0cb5dba2a12db08d7",
+      "data_version": "sha256:aaf360ec55eade4491ac3a82720d9d170f7453ae03ee42f56ed7c0e113da4282",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 757,
-        "mismatch_count": 51,
+        "mismatch_count": 59,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -719,9 +755,9 @@
     },
     {
       "symbol": "515880",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -731,15 +767,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:25dc04a70d6da3767d1e15bd4532635726e52fbbcd4d2b92718325e194d91ee6",
+      "data_version": "sha256:c85cbf1297b66cf50070541f46fdae5398759bdd3baaf65ea6b3ae75ebf7b358",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 757,
-        "mismatch_count": 51,
+        "mismatch_count": 59,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -766,9 +802,9 @@
     },
     {
       "symbol": "159995",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -778,15 +814,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:77d438a0e63ee893740d97d18e344fa363a8dc1e0e39f2035d18368928e851e1",
+      "data_version": "sha256:67cfba942ec89bf13a524104b03cc84b6ae8c267156cb1b07f4352be4e93dfb2",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 757,
-        "mismatch_count": 51,
+        "mismatch_count": 59,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -813,9 +849,9 @@
     },
     {
       "symbol": "562500",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -825,15 +861,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:37487a6c3805ec0e78fbe34e0aa11e4c77022dac96fdb8e19a7c158871be1f84",
+      "data_version": "sha256:abc797ddbdb3531f93002fbd1d6ca4c1dfcaabfcbd3c2f1ffaa28e50d09dd1c8",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -860,9 +896,9 @@
     },
     {
       "symbol": "512880",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -872,15 +908,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:e2bf09a364307171264d1a94a75e1ca998fc77dc982c2cdc20e92bd915e995c7",
+      "data_version": "sha256:4c0b10573f9be8a7582b4ce5077af159f7f5f33cbd5b7f938cd0e3c7e28d02a5",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -907,9 +943,9 @@
     },
     {
       "symbol": "516160",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -919,15 +955,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:08b1949ac129b0adb97a467a76e0a3c965f364b97d0a08d16640aa6e13a7dbd2",
+      "data_version": "sha256:6dce4b038b3b7c989aa413c369a60affc741b6b6dfda0dd13d055debdfcb103e",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 757,
-        "mismatch_count": 51,
+        "mismatch_count": 59,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -954,9 +990,9 @@
     },
     {
       "symbol": "512170",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -966,15 +1002,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:1f94a5895e81d311f5047f9c446314488d2c4e42c389681868d70ef097a41d39",
+      "data_version": "sha256:97fefbcbdb9288d641103168ad9fd469d7bd61e5445e5527bef3980b6b62c1f1",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1001,9 +1037,9 @@
     },
     {
       "symbol": "515120",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1013,15 +1049,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:d94d324485653e0a2bc23010a481f09ad32fc439aaa309bcf51c1cfcc02fd378",
+      "data_version": "sha256:bdbf6f8c3c791b0902a92402802547e250d9568609b4cec5f88e2c5d3a9b8df6",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1048,9 +1084,9 @@
     },
     {
       "symbol": "159928",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1060,15 +1096,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:6a4be9be19039e03c796727b9506aa1bc97d6da5331f349b2fd2001b54032fde",
+      "data_version": "sha256:55e1308310f12983153684fbf7052d57bc73ef74bac8636ca705f7b0f1bfb837",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1095,9 +1131,9 @@
     },
     {
       "symbol": "512400",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1107,15 +1143,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:20a4b04c5667b3c956ec9a08cd95adcd8b0cb968ff40a1391684e3000a4ea8e7",
+      "data_version": "sha256:2ef4599458e33aef4d001215784523f67fc9584577731129ab2d03070c6518fb",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 3,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1142,9 +1178,9 @@
     },
     {
       "symbol": "159819",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1154,15 +1190,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:663f4b93ba5be79b19fa708648cbd4bbb25ef57da31dafedb5ab7bb7c4e30863",
+      "data_version": "sha256:579bb27742576ca1f08467d1f140d2f7d4ff5687f5ba3599d91b6c86d52241d1",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1189,9 +1225,9 @@
     },
     {
       "symbol": "159516",
-      "bar_count": 780,
+      "bar_count": 788,
       "history_start": "2023-07-27",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1201,15 +1237,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:192b4aebe0edb0a8bac4fb25db76c4783026d1f26cc482a50e49786240862bf1",
+      "data_version": "sha256:a9cefcd9a33cb2d07f454f8117f68bc74453c2c5389f9c679ffe0c596887a537",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 757,
-        "mismatch_count": 24,
+        "mismatch_count": 32,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1236,9 +1272,9 @@
     },
     {
       "symbol": "159611",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1248,15 +1284,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:b006c88ab38a392e83ed871b2f4e0acaa1333ac9d5bfda01573ad4d60bbb1342",
+      "data_version": "sha256:ebb49682fe3def318a9bb5918b51ee7351e16fc20866d3570ee13ab30b3f96fe",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1283,9 +1319,9 @@
     },
     {
       "symbol": "159206",
-      "bar_count": 387,
+      "bar_count": 395,
       "history_start": "2025-03-14",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
@@ -1295,14 +1331,14 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:51858928931de4ca5bb09d92533822e445d02339568b1f2fce8f0815ad6fdb34",
+      "data_version": "sha256:dbb6ef0797055c4150e8a2f6b640f5470057facdadf1866c040fabfa01ba41ad",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
-        "compared_count": 387,
+        "checked_at": "2026-10-29T15:11:38+08:00",
+        "compared_count": 395,
         "mismatch_count": 1,
         "adjustment_events": 0,
         "warnings": [
@@ -1329,9 +1365,9 @@
     },
     {
       "symbol": "512070",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1341,15 +1377,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:937481b65b10c52e539e02dfb44018e79d011ae6629f0880af9390f68d4a8a53",
+      "data_version": "sha256:b747161e071e465a5e62d83682e4d5ff2910d6712e5108e1f740d8bb560d5011",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1376,9 +1412,9 @@
     },
     {
       "symbol": "159967",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1388,15 +1424,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:638e4ef0803ddf5353093c3f6f19f3b35bdcab63f93e98b416134cfaae8e7970",
+      "data_version": "sha256:73337164af504961d72b05f237357c6e5f0381651a56569409072fc180ef8d2a",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1423,9 +1459,9 @@
     },
     {
       "symbol": "159326",
-      "bar_count": 507,
+      "bar_count": 515,
       "history_start": "2024-09-09",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "SHORT_SAMPLE",
       "walk_forward_eligible": false,
@@ -1435,14 +1471,14 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:6cb85a3741b45b74b63b1a77fde32cd1ee605be060309b4975acd4da8b24108e",
+      "data_version": "sha256:d65bfb6d9984832d4c698dba4efc310f54332258a92600a85d797ffaacb12445",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
-        "compared_count": 507,
+        "checked_at": "2026-10-29T15:11:38+08:00",
+        "compared_count": 515,
         "mismatch_count": 1,
         "adjustment_events": 0,
         "warnings": [
@@ -1469,9 +1505,9 @@
     },
     {
       "symbol": "588020",
-      "bar_count": 755,
+      "bar_count": 763,
       "history_start": "2023-08-31",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1481,15 +1517,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:2708365ad4a9c13c2584edbf24d7b141041143bfe73f1aefbe93fd38f30edac0",
+      "data_version": "sha256:66db8d9f6edef95aea60efa33522ce284982f1c22ccb1bf2dc2153c30cb763d0",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
-        "compared_count": 754,
-        "mismatch_count": 2,
+        "checked_at": "2026-10-29T15:11:38+08:00",
+        "compared_count": 757,
+        "mismatch_count": 7,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1516,9 +1552,9 @@
     },
     {
       "symbol": "512010",
-      "bar_count": 807,
+      "bar_count": 815,
       "history_start": "2023-06-16",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1528,15 +1564,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:b5e41e8be47929a7e835f30f91953f7b21f5ca92bbf0eaf3c92043d993704e11",
+      "data_version": "sha256:ece59a9e9007d651a3c34a91d418af9e58e941a0053de536760e3267616bf7ba",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 50,
+        "mismatch_count": 58,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1563,9 +1599,9 @@
     },
     {
       "symbol": "159758",
-      "bar_count": 759,
+      "bar_count": 767,
       "history_start": "2023-08-25",
-      "history_end": "2026-10-19",
+      "history_end": "2026-10-29",
       "research_status": "USABLE_WITH_WARNINGS",
       "sample_class": "FULL_SAMPLE",
       "walk_forward_eligible": false,
@@ -1575,15 +1611,15 @@
         "AMOUNT_ESTIMATED",
         "CROSSCHECK_FAILED"
       ],
-      "data_version": "sha256:21e38bdcb507049a97951311f1314cdb2071d8e40107b53a659718715ee34bcf",
+      "data_version": "sha256:efa8c3072be73bd41b27e423e87dba76d9f843d2a771b27f599a8416aa4f5d71",
       "crosscheck_status": "FAILED",
       "adjustment_status": "REVIEW",
       "amount_quality": "ESTIMATED",
       "crosscheck_receipt": {
         "source": "腾讯 fqkline 独立交叉核验 (web.ifzq.gtimg.cn)",
-        "checked_at": "2026-10-19T15:12:20+08:00",
+        "checked_at": "2026-10-29T15:11:38+08:00",
         "compared_count": 758,
-        "mismatch_count": 2,
+        "mismatch_count": 10,
         "adjustment_events": 0,
         "warnings": [
           "CROSSCHECK_SOURCE_NOT_INDEPENDENT",
@@ -1591,6 +1627,7 @@
         ]
       },
       "source": [
+        "东方财富 kline (push2his.eastmoney.com)",
         "腾讯 fqkline 原始+前复权 (web.ifzq.gtimg.cn); amount=OHLC均价×成交量(手)×100估算"
       ],
       "price_basis": "adjusted_ohlc",
