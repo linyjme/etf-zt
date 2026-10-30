@@ -273,6 +273,10 @@ class SwingService:
         self._alert_store: SwingAlertStore | None = None
         self._portfolio_projection: PortfolioProjection | None = None
         self._history: tuple[DailyBar, ...] = ()
+        # History visible to readers. The producer may stage a replacement on
+        # ``_history`` while it builds the next snapshot; readers keep using
+        # this committed tuple so that build does not block the page.
+        self._published_history: tuple[DailyBar, ...] = ()
         self._index_history: dict[str, tuple[DailyBar, ...]] = {
             str(code): tuple(value)
             for code, value in (index_history or {}).items()
@@ -304,8 +308,15 @@ class SwingService:
     # ---- Public read and lifecycle API ---------------------------------
 
     def snapshot(self) -> dict[str, object]:
-        with self.publish_condition:
+        # The producer can hold this lock while installing a snapshot. A page
+        # read must not wait that out: the published object is replaced as a
+        # whole and is not mutated afterward.
+        acquired = self.publish_condition.acquire(timeout=1.0)
+        try:
             return copy.deepcopy(self.published)
+        finally:
+            if acquired:
+                self.publish_condition.release()
 
     def health(self) -> dict[str, object]:
         snapshot = self.snapshot()
@@ -327,8 +338,12 @@ class SwingService:
         }
 
     def watchlist(self) -> dict[str, object]:
-        with self.publish_condition:
+        acquired = self.publish_condition.acquire(timeout=1.0)
+        try:
             return copy.deepcopy(self._published_watchlist_view)
+        finally:
+            if acquired:
+                self.publish_condition.release()
 
     def update_watchlist(self, symbol: str, enabled: bool) -> dict[str, object]:
         """Atomically persist and publish one validated watchlist toggle."""
@@ -482,8 +497,12 @@ class SwingService:
             store.retract_overlay(item.alert_id, reason)
 
     def portfolio(self) -> dict[str, object]:
-        with self.publish_condition:
+        acquired = self.publish_condition.acquire(timeout=1.0)
+        try:
             return copy.deepcopy(self._published_portfolio_view)
+        finally:
+            if acquired:
+                self.publish_condition.release()
 
     def backtest(
         self, symbol: str | None, scope: str,
@@ -509,7 +528,8 @@ class SwingService:
         with self.publish_condition:
             strategy = self._strategy
             history = tuple(
-                bar for bar in self._history if bar.symbol in selected_symbols
+                bar for bar in self._published_history
+                if bar.symbol in selected_symbols
             )
             metadata = {
                 item: self._metadata[item]
@@ -2077,7 +2097,8 @@ class SwingService:
             raise SwingServiceError(
                 f"limit must be an integer from 1 to {_MAX_ALERT_HISTORY_LIMIT}",
             )
-        with self.publish_condition:
+        acquired = self.publish_condition.acquire(timeout=1.0)
+        try:
             source = (
                 self._published_alerts_history
                 if include_retracted else self._published_alerts_current
@@ -2106,6 +2127,9 @@ class SwingService:
             }
             result["items"] = copy.deepcopy(selected)
             return result
+        finally:
+            if acquired:
+                self.publish_condition.release()
 
     def daily_quotes(
         self,
@@ -2125,7 +2149,8 @@ class SwingService:
             as_of = self.published.get("as_of_trading_date")
             retained = copy.deepcopy(tuple(self.events))
             history = tuple(
-                bar for bar in self._history if bar.symbol == normalized_symbol
+                bar for bar in self._published_history
+                if bar.symbol == normalized_symbol
             )
 
         reset = since == 0 or since > revision
@@ -2650,10 +2675,12 @@ class SwingService:
                     self._closed_dates,
                 )
                 self._history = self._history_store.load()
+                self._published_history = self._history
                 self._health["daily"] = "OK"
             except Exception as error:
                 self._history_store = None
                 self._history = ()
+                self._published_history = ()
                 self._health["daily"] = "BLOCKED"
                 self._errors["daily"] = self._safe_error(error)
         else:
@@ -3296,6 +3323,7 @@ class SwingService:
         )
         with self.publish_condition:
             self._history = merged
+            self._published_history = merged
             self._portfolio_projection = projection
             self._formal = formal
             self._health = next_health
@@ -3711,8 +3739,12 @@ class SwingService:
         errors: dict[str, str] | None = None,
         projection_is_explicit: bool = False,
     ) -> dict[str, object]:
-        """Build a snapshot from staged state without exposing that state."""
-        self.publish_condition.acquire()
+        """Build a snapshot from staged state without exposing that state.
+
+        Callers hold ``producer_lock``. The publish lock stays free so a page
+        read is not stuck behind indicator calculation. Readers of daily bars
+        use ``_published_history``, which this temporary swap does not replace.
+        """
         old = (
             self._watchlist,
             self._history,
@@ -3744,7 +3776,6 @@ class SwingService:
                 self._health,
                 self._errors,
             ) = old
-            self.publish_condition.release()
 
     def _write_watchlist(
         self, watchlist: Sequence[SwingWatchItem],

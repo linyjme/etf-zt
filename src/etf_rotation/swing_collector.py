@@ -551,7 +551,7 @@ class EastmoneyDailyCollector:
             raise SwingDataError(
                 f"{symbol} 腾讯kline缺少{expected_key}或首日昨收"
             )
-        if len(lines) > count + 1 or len(lines) > _MAX_COUNT + 1:
+        if len(lines) > count + 2 or len(lines) > _MAX_COUNT + 1:
             raise SwingDataError(f"{symbol} 腾讯kline条数超过count限制")
         bars = tuple(self._parse_tencent_line(symbol, line) for line in lines)
         dates = [bar.trading_date for bar in bars]
