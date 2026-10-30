@@ -697,6 +697,10 @@ class DailyHistoryStore:
 
         records: list[DailyBar] = []
         for line_number, line in enumerate(text[:-1].split("\n"), start=1):
+            # Windows checkouts may store CRLF. The carriage return is a line
+            # ending, not part of the canonical JSON object.
+            if line.endswith("\r"):
+                line = line[:-1]
             if not line:
                 raise SwingDataError(f"日线历史第{line_number}行为空")
             try:
@@ -845,6 +849,8 @@ class IndexHistoryStore:
             raise SwingDataError("指数日线历史不是有效UTF-8") from error
         records: list[DailyBar] = []
         for line_number, line in enumerate(text[:-1].split("\n"), start=1):
+            if line.endswith("\r"):
+                line = line[:-1]
             if not line:
                 raise SwingDataError(f"指数日线历史第{line_number}行为空")
             try:

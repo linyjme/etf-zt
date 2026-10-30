@@ -847,6 +847,16 @@ class DailyHistoryStoreTests(unittest.TestCase):
             json.dumps(result[0].to_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True),
         )
 
+    def test_crlf_line_endings_still_load_canonical_json(self) -> None:
+        written = self.store.upsert((self.bar(),))
+        canonical = self.path.read_bytes().replace(b"\n", b"\r\n")
+        self.path.write_bytes(canonical)
+
+        loaded = self.store.load()
+
+        self.assertEqual(loaded, written)
+        self.assertEqual(self.path.read_bytes(), canonical)
+
     def test_invalid_mixed_batch_makes_zero_byte_changes(self) -> None:
         self.store.upsert((self.bar(),))
         before = self.path.read_bytes()
@@ -949,15 +959,6 @@ class DailyHistoryStoreTests(unittest.TestCase):
         payload = self.bar().to_dict()
         noncanonical = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
         self.assert_history_rejected_without_rewrite(noncanonical)
-
-    def test_load_rejects_crlf_without_rewriting(self) -> None:
-        canonical = json.dumps(
-            self.bar().to_dict(),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        self.assert_history_rejected_without_rewrite((canonical + "\r\n").encode("utf-8"))
 
     def test_load_rejects_duplicate_json_key_without_rewriting(self) -> None:
         canonical = json.dumps(
